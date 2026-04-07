@@ -24,6 +24,7 @@
     "./package.json": "./package.json"
   },
   "publishConfig": {
+    "access": "public",
     "exports": {
       "./mobx-dialog": "./dist/mobx-dialog.mjs",
       "./mobx-form": "./dist/mobx-form.mjs",

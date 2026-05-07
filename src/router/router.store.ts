@@ -1,5 +1,5 @@
 import { createBrowserHistory, type History, type Location } from "history";
-import { makeAutoObservable, runInAction } from "mobx";
+import { action, computed, makeObservable, observable, runInAction } from "mobx";
 import { matchRoute } from "./make-routes";
 import { Redirect } from "./redirect";
 import type { Route } from "./route";
@@ -49,9 +49,15 @@ export class RouterStore {
   }
 
   constructor(config?: MobxRouterConfig) {
-    makeAutoObservable({
-      history: false,
-      routesDef: false,
+    makeObservable(this, {
+      location: observable.ref,
+      activeRoute: observable.ref,
+
+      search: computed,
+      pathParams: computed,
+      activeSegments: computed,
+
+      setLocation: action,
     });
 
     this.history = config?.history ?? createBrowserHistory();

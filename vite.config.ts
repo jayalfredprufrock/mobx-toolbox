@@ -30,6 +30,10 @@ export default defineConfig({
             }),
             rolldown: { filter: { code: "@" } },
           },
+          {
+            preset: () => ({ plugins: ["@kayakyakr/babel-plugin-mobx-async-action"] }),
+            rolldown: { filter: { code: "@action" } },
+          },
         ],
       }),
     ],

@@ -29,6 +29,7 @@
   },
   "devDependencies": {
     "@babel/plugin-proposal-decorators": "^7.28.0",
+    "@kayakyakr/babel-plugin-mobx-async-action": "^7.0.0",
     "@rolldown/plugin-babel": "^0.2.3",
     "@tsconfig/node24": "^24.0.4",
     "@types/node": "^24.12.0",

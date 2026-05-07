@@ -16,23 +16,12 @@
     "dist"
   ],
   "exports": {
-    "./mobx-dialog": "./src/mobx-dialog/index.ts",
-    "./mobx-form": "./src/mobx-form/index.ts",
-    "./mobx-router": "./src/mobx-router/index.ts",
-    "./mobx-util": "./src/mobx-util/index.ts",
-    "./react-util": "./src/react-util/index.ts",
+    "./dialog": "./dist/dialog.mjs",
+    "./form": "./dist/form.mjs",
+    "./react-util": "./dist/react-util.mjs",
+    "./router": "./dist/router.mjs",
+    "./util": "./dist/util.mjs",
     "./package.json": "./package.json"
-  },
-  "publishConfig": {
-    "access": "public",
-    "exports": {
-      "./mobx-dialog": "./dist/mobx-dialog.mjs",
-      "./mobx-form": "./dist/mobx-form.mjs",
-      "./mobx-router": "./dist/mobx-router.mjs",
-      "./mobx-util": "./dist/mobx-util.mjs",
-      "./react-util": "./dist/react-util.mjs",
-      "./package.json": "./package.json"
-    }
   },
   "scripts": {
     "dev": "vp run -r dev",

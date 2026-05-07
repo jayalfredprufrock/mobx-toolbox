@@ -1,5 +1,5 @@
 import { createBrowserHistory, type History, type Location } from "history";
-import { makeAutoObservable } from "mobx";
+import { makeAutoObservable, runInAction } from "mobx";
 import { matchRoute } from "./make-routes";
 import { Redirect } from "./redirect";
 import type { Route } from "./route";
@@ -151,7 +151,10 @@ export class RouterStore {
         return;
       }
 
-      this.activeRoute = matchedRoute;
+      runInAction(() => {
+        this.activeRoute = matchedRoute;
+      });
+
       await this.activeRoute?.load();
     } catch (e) {
       if (e instanceof Redirect) {

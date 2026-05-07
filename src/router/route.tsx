@@ -1,4 +1,4 @@
-import { computed } from "mobx";
+import { computed, makeObservable } from "mobx";
 import type { Outlet } from "./outlet";
 import type { Component, Guard, Obj } from "./types";
 
@@ -18,7 +18,7 @@ export class Route {
   readonly context: Obj;
   readonly params: Obj;
 
-  @computed get data(): Obj {
+  get data(): Obj {
     return Object.assign({}, ...this.outlets.map((o) => o.data));
   }
 
@@ -28,6 +28,10 @@ export class Route {
     this.context = def.context ?? {};
     this.outlets = def.outlets;
     this.params = def.params;
+
+    makeObservable(this, {
+      data: computed,
+    });
   }
 
   async guard(): Promise<void> {

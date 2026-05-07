@@ -1,4 +1,4 @@
-import { action, computed, observable } from "mobx";
+import { makeAutoObservable, observable, runInAction } from "mobx";
 import type { Route } from "./route";
 import type { Component, LazyComponent, Loader } from "./types";
 import { isLazyComponent } from "./util";
@@ -13,12 +13,12 @@ export type RouteSegmentState = "preloading" | "loading" | "error" | "ready";
 export const DefaultOutlet: Component = ({ children }) => children;
 
 export class Outlet {
-  @observable accessor state: RouteSegmentState = "preloading";
-  @observable.ref accessor promise: Promise<unknown> | undefined;
-  @observable.ref accessor data: unknown;
-  @observable.ref accessor component: Component | undefined;
+  state: RouteSegmentState = "preloading";
+  promise: Promise<unknown> | undefined;
+  data: unknown;
+  component: Component | undefined;
 
-  @computed get Component(): Component | undefined {
+  get Component(): Component | undefined {
     switch (this.state) {
       case "loading":
         return function Loading() {
@@ -33,9 +33,14 @@ export class Outlet {
     }
   }
 
-  constructor(readonly config: OutletConfig) {}
+  constructor(readonly config: OutletConfig) {
+    makeAutoObservable(this, {
+      promise: observable.ref,
+      data: observable.ref,
+      component: observable.ref,
+    });
+  }
 
-  @action
   async load(route: Route): Promise<void> {
     const promises: Promise<void>[] = [];
 
@@ -87,12 +92,10 @@ export class Outlet {
     await this.promise;
   }
 
-  @action
   setData(data: unknown) {
     this.data = data;
   }
 
-  @action
   setState(state: RouteSegmentState) {
     this.state = state;
   }
@@ -108,11 +111,13 @@ export class Outlet {
 
     if (isLazyComponent(this.config.component)) {
       const importResult = await this.config.component();
-      for (const exportName in importResult) {
-        if (exportName === "default" || exportName.endsWith("Page")) {
-          this.component = importResult[exportName];
+      runInAction(() => {
+        for (const exportName in importResult) {
+          if (exportName === "default" || exportName.endsWith("Page")) {
+            this.component = importResult[exportName];
+          }
         }
-      }
+      });
     } else {
       this.component = this.config.component;
     }

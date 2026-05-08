@@ -37,9 +37,13 @@ export const Router = observer(({ store }: RouterProps) => {
     return null;
   }
 
+  const Layout = store.activeRoute.layout ?? PassThrough;
+
   return (
     <routerContext.Provider value={store}>
-      <RouterOutlet route={store.activeRoute} outlets={store.activeRoute.outlets} />
+      <Layout route={store.activeRoute}>
+        <RouterOutlet route={store.activeRoute} outlets={store.activeRoute.outlets} />
+      </Layout>
     </routerContext.Provider>
   );
 });

@@ -17,6 +17,7 @@ export class Route {
   readonly guards: Guard[];
   readonly context: Obj;
   readonly params: Obj;
+  readonly layout?: Component;
 
   get data(): Obj {
     return Object.assign({}, ...this.outlets.map((o) => o.data));
@@ -28,6 +29,7 @@ export class Route {
     this.context = def.context ?? {};
     this.outlets = def.outlets;
     this.params = def.params;
+    this.layout = def.layout;
 
     makeObservable(this, {
       data: computed,

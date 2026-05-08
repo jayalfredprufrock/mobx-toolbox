@@ -22,10 +22,6 @@ export const makeRoute = (matchState: MatchState): Route => {
   const outlets = matchState.outlets.filter((o) => o !== undefined);
   const guards = matchState.guards.filter((g) => g !== undefined);
 
-  if (matchState.layout) {
-    outlets.unshift(new Outlet({ component: matchState.layout }));
-  }
-
   return new Route({ ...matchState, outlets, guards, path: matchState.segments.join("/") });
 };
 

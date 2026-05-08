@@ -34,11 +34,6 @@ export class Outlet {
   }
 
   constructor(readonly config: OutletConfig) {
-    if (config.component && !isLazyComponent(config.component) && !config.loader) {
-      this.state = "ready";
-      this.component = config.component;
-    }
-
     makeAutoObservable(this, {
       promise: observable.ref,
       data: observable.ref,

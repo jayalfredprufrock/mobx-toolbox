@@ -1,6 +1,6 @@
 import Schema, { Validator } from "typebox/schema";
-import Value from "typebox/value";
-import { type Static, type TSchema, Type } from "typebox";
+import * as Value from "typebox/value";
+import * as T from "typebox";
 import { makeAutoObservable, toJS } from "mobx";
 import type { FormFieldConfig } from "./form.types";
 
@@ -8,17 +8,17 @@ import type { FormFieldConfig } from "./form.types";
 // TODO: should also allow for "id", defaulting to name
 // TODO: probably shouldn't assume value is of correct type, maybe unknown?
 
-export class FormFieldModel<T extends TSchema = TSchema> {
+export class FormFieldModel<T extends T.TSchema = T.TSchema> {
   readonly name: string;
   readonly schema: T;
   readonly config: FormFieldConfig<T>;
   readonly validator: Validator<T>;
 
-  value: Static<T> | undefined;
+  value: T.Static<T> | undefined;
   touched = false;
 
   get valid(): boolean {
-    if (this.value === undefined && Type.IsOptional(this.schema)) return true;
+    if (this.value === undefined && T.IsOptional(this.schema)) return true;
     return this.validator.Check(this.value);
   }
 
@@ -26,7 +26,27 @@ export class FormFieldModel<T extends TSchema = TSchema> {
     if (this.valid || !this.touched) return "";
     // TODO: revisit this, now that .Errors returns success/fail
     const [_, errors] = this.validator.Errors(this.value);
-    return errors.at(0)?.message ?? "";
+    const error = errors.at(0);
+
+    if (!error) return "";
+
+    if (!T.IsOptional(this.schema)) {
+      return "This field is required.";
+    }
+
+    if ("errorMessage" in this.schema) {
+      if (typeof this.schema.errorMessage === "string") {
+        return this.schema.errorMessage;
+      } else if (typeof this.schema.errorMessage === "function") {
+        return this.schema.errorMessage(this.value, this.schema);
+      }
+    }
+
+    if (T.IsString(this.schema) && "format" in this.schema) {
+      return `Please enter a valid ${String(this.schema.format)}`;
+    }
+
+    return error.message;
   }
 
   constructor(config: FormFieldConfig<T>) {
@@ -44,10 +64,10 @@ export class FormFieldModel<T extends TSchema = TSchema> {
     this.setValue(config.initialValue);
   }
 
-  setValue(value?: Static<T>) {
+  setValue(value?: T.Static<T>) {
     // TODO: does this still make sense? If value is invalid,
     // then type will be wrong...revisit this
-    this.value = Value.Convert(this.schema, value) as Static<T>;
+    this.value = Value.Convert(this.schema, value) as T.Static<T>;
   }
 
   setTouched(touched: boolean) {
@@ -65,7 +85,7 @@ export class FormFieldModel<T extends TSchema = TSchema> {
   props(): any {
     return {
       name: this.name,
-      onChange: (v?: Static<T>) => this.setValue(v),
+      onChange: (v?: T.Static<T>) => this.setValue(v),
       value: this.value,
       onBlur: () => {
         this.setTouched(true);
@@ -73,7 +93,7 @@ export class FormFieldModel<T extends TSchema = TSchema> {
     };
   }
 
-  toJSON(): Static<T> | undefined {
+  toJSON(): T.Static<T> | undefined {
     return toJS(this.value);
   }
 }

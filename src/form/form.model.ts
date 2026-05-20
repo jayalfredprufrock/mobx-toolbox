@@ -1,4 +1,4 @@
-import Format from "typebox/format";
+import * as Format from "typebox/format";
 import { type Static, type TObject, type TSchema } from "typebox";
 import { makeAutoObservable } from "mobx";
 import type { FormConfig, FormFields } from "./form.types";
@@ -7,28 +7,6 @@ import { FormFieldModel } from "./form-field.model";
 // should these be here?
 Format.Set("password", () => true);
 Format.Set("phone", () => true);
-
-/*
-SetErrorFunction((param) => {
-  const { schema, value } = param;
-
-  const message =
-    typeof schema.errorMessage === "function" ? schema.errorMessage(param) : schema.errorMessage;
-
-  if (message !== undefined) return message;
-
-  if ((value === undefined || value === "") && !TypeGuard.IsOptional(schema)) {
-    return "This field is required.";
-  }
-
-  if (Type.IsString(schema)) {
-    if (Schema.IsFormat(schema) && schema.format === "email")
-      return "Please enter a valid email address.";
-  }
-
-  return DefaultErrorFunction(param);
-});
-*/
 
 // consider using enumerable to allow spreading of
 // field model instead of calling props() unless we need

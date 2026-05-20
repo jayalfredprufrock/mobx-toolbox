@@ -30,7 +30,7 @@ export class FormFieldModel<T extends T.TSchema = T.TSchema> {
 
     if (!error) return "";
 
-    if (!T.IsOptional(this.schema)) {
+    if (!T.IsOptional(this.schema) && (this.value === undefined || this.value === "")) {
       return "This field is required.";
     }
 

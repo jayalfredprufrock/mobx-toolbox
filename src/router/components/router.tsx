@@ -1,5 +1,5 @@
 import { observer } from "mobx-react-lite";
-import { createContext, useContext } from "react";
+import { createContext, Suspense, useContext } from "react";
 import type { Outlet } from "../outlet";
 import type { Route } from "../route";
 import type { RouterStore } from "../router.store";
@@ -42,7 +42,9 @@ export const Router = observer(({ store }: RouterProps) => {
   return (
     <routerContext.Provider value={store}>
       <Layout route={store.activeRoute}>
-        <RouterOutlet route={store.activeRoute} outlets={store.activeRoute.outlets} />
+        <Suspense fallback={null}>
+          <RouterOutlet route={store.activeRoute} outlets={store.activeRoute.outlets} />
+        </Suspense>
       </Layout>
     </routerContext.Provider>
   );

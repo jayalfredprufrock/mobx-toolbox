@@ -1,5 +1,4 @@
 import { makeAutoObservable, observable } from "mobx";
-import { lazy, type LazyExoticComponent } from "react";
 import type { Route } from "./route";
 import type { Component, LazyComponent, Loader } from "./types";
 import { isLazyComponent } from "./util";
@@ -20,58 +19,42 @@ export class Outlet {
   promise: Promise<unknown> | undefined;
   data: unknown;
 
-  // React.lazy wrapper for lazy page modules. Holding the resolved
-  // component reference inside React (rather than as a captured value
-  // on the Outlet) is what lets React Refresh swap the implementation
-  // in place when a page module is edited — Fast Refresh walks React
-  // fibers, not MobX state.
-  private readonly lazyComponent?: LazyExoticComponent<Component>;
+  // Plain (non-observable) reference. The page component must reach
+  // React unmediated by MobX — once MobX deep-observes the holder,
+  // React Refresh can no longer swap the page identity via family
+  // lookup on the original function. This mirrors how Route holds
+  // `layout` as a plain field under makeObservable.
+  component: Component | undefined;
 
   get Component(): Component | undefined {
     switch (this.state) {
       case "loading":
         return LoadingPlaceholder;
-
       case "ready":
-        if (this.lazyComponent) return this.lazyComponent;
-        return (this.config.component as Component | undefined) ?? DefaultOutlet;
-
+        return this.component ?? DefaultOutlet;
       default:
         return undefined;
     }
   }
 
   constructor(readonly config: OutletConfig) {
-    if (isLazyComponent(config.component)) {
-      const importer = config.component;
-      this.lazyComponent = lazy(async () => {
-        const importResult = await importer();
-        for (const exportName in importResult) {
-          if (exportName === "default" || exportName.endsWith("Page")) {
-            return { default: importResult[exportName] as Component };
-          }
-        }
-        throw new Error(
-          "Lazy route component module did not export `default` or a `*Page` named export",
-        );
-      });
+    if (!isLazyComponent(config.component)) {
+      this.component = config.component;
     }
 
-    makeAutoObservable<Outlet, "lazyComponent">(this, {
+    makeAutoObservable<Outlet, "component" | "config">(this, {
       promise: observable.ref,
       data: observable.ref,
-      lazyComponent: false,
+      component: false,
+      config: false,
     });
   }
 
   async load(route: Route): Promise<void> {
     const promises: Promise<void>[] = [];
 
-    if (isLazyComponent(this.config.component)) {
-      // pre-warm the dynamic import so the module is in the bundler's
-      // cache by the time React.lazy resolves it — avoids a Suspense
-      // fallback flash on navigation
-      promises.push(this.config.component().then(() => undefined));
+    if (isLazyComponent(this.config.component) && !this.component) {
+      promises.push(this.loadComponent());
     }
 
     if (this.config.loader) {
@@ -126,5 +109,19 @@ export class Outlet {
 
   private async loadData(route: Route): Promise<void> {
     await this.config.loader?.(route).then((data) => this.setData(data));
+  }
+
+  private async loadComponent(): Promise<void> {
+    if (!isLazyComponent(this.config.component)) return;
+    const module = await this.config.component();
+    for (const exportName in module) {
+      if (exportName === "default" || exportName.endsWith("Page")) {
+        this.component = module[exportName];
+        return;
+      }
+    }
+    throw new Error(
+      "Lazy route component module did not export `default` or a `*Page` named export",
+    );
   }
 }

@@ -50,18 +50,18 @@ export class FormFieldModel<T extends T.TSchema = T.TSchema> {
   }
 
   constructor(config: FormFieldConfig<T>) {
+    this.config = config;
+    this.name = config.name;
+    this.schema = config.schema;
+    this.validator = Schema.Compile(this.schema);
+    this.value = Value.Convert(this.schema, config.initialValue) as T.Static<T>;
+
     makeAutoObservable(this, {
       name: false,
       schema: false,
       config: false,
       validator: false,
     });
-
-    this.config = config;
-    this.name = config.name;
-    this.schema = config.schema;
-    this.validator = Schema.Compile(this.schema);
-    this.setValue(config.initialValue);
   }
 
   setValue(value?: T.Static<T>) {

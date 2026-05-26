@@ -16,6 +16,31 @@ export interface RouteConfig {
   [LOAD]?: Loader;
 }
 
+/**
+ * A route page definition.
+ *
+ * For eager (non-lazy) pages, pass a thunk that renders the component
+ * inline rather than a direct reference, so React Refresh / Fast
+ * Refresh works:
+ *
+ * ```tsx
+ * import { DashboardPage } from './routes/dashboard';
+ *
+ * const routes = makeRoutes()({
+ *   dashboard: { [PAGE]: () => <DashboardPage /> },
+ * });
+ * ```
+ *
+ * Passing the component directly (`[PAGE]: DashboardPage`) captures
+ * the reference at routes-config evaluation time — when the page
+ * module HMRs, the captured reference is stale and the DOM won't
+ * update until you navigate away and back. The thunk form keeps the
+ * ES module import binding live, so each render resolves the current
+ * page implementation.
+ *
+ * Lazy pages use the `() => import('./Page')` form (detected by the
+ * library) and follow the normal code-splitting flow.
+ */
 export interface Page extends Omit<RouteConfig, typeof WRAPPER> {
   [PAGE]: Component | LazyComponent;
 }

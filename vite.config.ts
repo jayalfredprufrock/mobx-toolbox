@@ -16,6 +16,7 @@ export default defineConfig({
     entry: {
       dialog: "src/dialog/index.ts",
       form: "src/form/index.ts",
+      "lazy-observable": "src/lazy-observable/index.ts",
       router: "src/router/index.ts",
       util: "src/util/index.ts",
       "react-util": "src/react-util/index.ts",

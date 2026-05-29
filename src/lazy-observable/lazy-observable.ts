@@ -184,7 +184,10 @@ export function lazyObservable<T>(
   };
 }
 
-export interface LazyObservableArray<T> extends Omit<LazyObservable<IObservableArray<T>>, "set"> {
+export interface LazyObservableArray<T = any> extends Omit<
+  LazyObservable<IObservableArray<T>>,
+  "set"
+> {
   set(value: T[]): void;
 }
 

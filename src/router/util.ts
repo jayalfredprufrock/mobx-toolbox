@@ -3,7 +3,7 @@ import type { Component, LazyComponent, Leaf, Obj, Page, Redirector } from "./ty
 
 export const resolvePath = (to: string, params?: Obj): string => {
   return to.replaceAll(/:[^/]*/g, (segment) => {
-    const value = params?.[segment.slice(0)];
+    const value = params?.[segment.slice(1)];
     if (!value)
       throw new Error(`Unable to resolve route '${to}. Paramater '${segment}' not specified.`);
     return value;

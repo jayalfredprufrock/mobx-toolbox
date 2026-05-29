@@ -54,11 +54,11 @@ export class Outlet {
     const promises: Promise<void>[] = [];
 
     if (isLazyComponent(this.config.component) && !this.component) {
-      promises.push(this.#loadComponent());
+      promises.push(this.loadComponent());
     }
 
     if (this.config.loader) {
-      promises.push(this.#loadData(route));
+      promises.push(this.loadData(route));
     }
 
     if (!promises.length) {
@@ -107,11 +107,11 @@ export class Outlet {
     this.state = state;
   }
 
-  async #loadData(route: Route): Promise<void> {
+  private async loadData(route: Route): Promise<void> {
     await this.config.loader?.(route).then((data) => this.setData(data));
   }
 
-  async #loadComponent(): Promise<void> {
+  private async loadComponent(): Promise<void> {
     if (!isLazyComponent(this.config.component)) return;
     const module = await this.config.component();
     for (const exportName in module) {

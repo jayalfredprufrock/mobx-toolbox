@@ -1,6 +1,8 @@
 export * from "./components";
 export * from "./make-routes";
+export * from "./outlet";
 export * from "./redirect";
+export { Route } from "./route";
 export * from "./router.store";
 export * from "./symbols";
 export * from "./types";

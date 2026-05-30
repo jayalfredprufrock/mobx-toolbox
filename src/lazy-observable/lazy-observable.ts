@@ -89,6 +89,7 @@ export function lazyObservable<T>(
     autorunDisposer = autorun(() => {
       _allowStateChanges(true, () => {
         status.set("loading");
+        error.set(undefined);
       });
       fetch()
         .then((newValue) => {
@@ -142,6 +143,17 @@ export function lazyObservable<T>(
     if (options?.debugName) {
       console.log(`lazyObservable ${options.debugName}`, "unobserved");
     }
+
+    // Errors are never cached regardless of resetOnUnobserved — failure state
+    // shouldn't persist across mounts, only successfully loaded values should.
+    if (status.get() === "error") {
+      _allowStateChanges(true, () => {
+        status.set("init");
+        error.set(undefined);
+      });
+      return;
+    }
+
     if (options?.resetOnUnobserved === "never") {
       return;
     } else if (typeof options?.resetOnUnobserved === "number") {

@@ -2,6 +2,10 @@ import type { InferLazyObservable, LazyObservable, LazyObservableArray } from ".
 import { Observer } from "mobx-react-lite";
 import type React from "react";
 
+function ThrowError({ error }: { error: unknown }): never {
+  throw error;
+}
+
 type LO = LazyObservable | LazyObservableArray;
 
 type ObserveTuple<O extends LO[]> = {
@@ -35,7 +39,7 @@ export function LazyObserver(
     <Observer>
       {() => {
         const failed = observeAsArray.find((o) => o.status === "error");
-        if (failed) throw failed.error;
+        if (failed) return <ThrowError error={failed.error} />;
         if (!observeAsArray.every((o) => o.loaded)) return placeholder;
         return (children as any)(...observeAsArray.map((o) => o.value));
       }}

@@ -15,6 +15,7 @@ export interface LazyObservable<T = any, TInitialValue = T | undefined> {
   set(value: T): void;
   reload(): Promise<T>;
   status: "init" | "loading" | "loaded" | "error";
+  error: unknown;
   loading: boolean;
   loaded: boolean;
 }
@@ -47,6 +48,7 @@ export function lazyObservable<T>(
 ): LazyObservable<T> {
   const value = observable.box<T>(options?.initialValue, { deep: !options?.shallow });
   const status = observable.box<LazyObservable<T>["status"]>("init");
+  const error = observable.box<unknown>(undefined);
 
   let resetTimer: NodeJS.Timeout;
   let autorunDisposer: IReactionDisposer;
@@ -72,6 +74,7 @@ export function lazyObservable<T>(
     _allowStateChanges(true, () => {
       value.set(options?.initialValue);
       status.set("init");
+      error.set(undefined);
     });
     return options?.initialValue;
   };
@@ -97,6 +100,7 @@ export function lazyObservable<T>(
         })
         .catch((e) => {
           _allowStateChanges(true, () => {
+            error.set(e);
             status.set("error");
             promiseReject?.(e);
           });
@@ -151,9 +155,11 @@ export function lazyObservable<T>(
 
   onBecomeObserved(value, onObserved);
   onBecomeObserved(status, onObserved);
+  onBecomeObserved(error, onObserved);
 
   onBecomeUnobserved(value, onUnobserved);
   onBecomeUnobserved(status, onUnobserved);
+  onBecomeUnobserved(error, onUnobserved);
 
   return {
     get value() {
@@ -161,6 +167,9 @@ export function lazyObservable<T>(
     },
     get status() {
       return status.get();
+    },
+    get error() {
+      return error.get();
     },
     get loading() {
       return status.get() === "loading";

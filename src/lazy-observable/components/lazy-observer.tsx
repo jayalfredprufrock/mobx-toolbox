@@ -34,6 +34,8 @@ export function LazyObserver(
   return (
     <Observer>
       {() => {
+        const failed = observeAsArray.find((o) => o.status === "error");
+        if (failed) throw failed.error;
         if (!observeAsArray.every((o) => o.loaded)) return placeholder;
         return (children as any)(...observeAsArray.map((o) => o.value));
       }}

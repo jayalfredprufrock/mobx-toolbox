@@ -91,7 +91,20 @@ export function lazyObservable<T>(
         status.set("loading");
         error.set(undefined);
       });
-      fetch()
+
+      let fetchPromise: Promise<T>;
+      try {
+        fetchPromise = fetch();
+      } catch (e) {
+        _allowStateChanges(true, () => {
+          error.set(e);
+          status.set("error");
+          promiseReject?.(e);
+        });
+        return;
+      }
+
+      fetchPromise
         .then((newValue) => {
           _allowStateChanges(true, () => {
             value.set(newValue);

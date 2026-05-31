@@ -19,6 +19,7 @@
     "./dialog": "./dist/dialog.mjs",
     "./form": "./dist/form.mjs",
     "./lazy-observable": "./dist/lazy-observable.mjs",
+    "./model": "./dist/model.mjs",
     "./react-util": "./dist/react-util.mjs",
     "./router": "./dist/router.mjs",
     "./util": "./dist/util.mjs",

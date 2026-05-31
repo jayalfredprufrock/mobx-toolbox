@@ -120,8 +120,9 @@ export class RouterStore {
   }
 
   setQueryParam(param: string, value: string): void {
-    this.search.set(param, value);
-    this.history.replace({ search: this.search.toString() });
+    const params = new URLSearchParams(this.location.search);
+    params.set(param, value);
+    this.history.replace({ search: params.toString() });
   }
 
   removeQueryParam(param: string): string | undefined {

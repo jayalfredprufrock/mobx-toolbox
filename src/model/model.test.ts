@@ -185,8 +185,8 @@ describe("makeStore", () => {
 
   test("remove is a no-op when no getAll configured", () => {
     const UserStore = makeStore(UserSchema, {
-      transform(data) {
-        return new UserModel(data, this);
+      transform(data, store) {
+        return new UserModel(data, store);
       },
     });
     const store = new UserStore();
@@ -198,8 +198,8 @@ describe("makeStore", () => {
     test("calls get fn and returns transformed model", async () => {
       const getFn = vi.fn().mockResolvedValue({ id: 1, name: "Alice", email: "a@example.com" });
       const UserStore = makeStore(UserSchema, {
-        transform(data) {
-          return new UserModel(data, this);
+        transform(data, store) {
+          return new UserModel(data, store);
         },
         get: getFn,
       });
@@ -218,8 +218,8 @@ describe("makeStore", () => {
         { id: 2, name: "Bob", email: "b@example.com" },
       ]);
       const UserStore = makeStore(UserSchema, {
-        transform(data) {
-          return new UserModel(data, this);
+        transform(data, store) {
+          return new UserModel(data, store);
         },
         getAll: getAllFn,
       });
@@ -238,8 +238,8 @@ describe("makeStore", () => {
         .mockResolvedValue([{ id: 1, name: "Alice", email: "a@example.com" }]);
       const createFn = vi.fn().mockResolvedValue({ id: 2, name: "Bob", email: "b@example.com" });
       const UserStore = makeStore(UserSchema, {
-        transform(data) {
-          return new UserModel(data, this);
+        transform(data, store) {
+          return new UserModel(data, store);
         },
         getAll: getAllFn,
         create: createFn,
@@ -259,8 +259,8 @@ describe("makeStore", () => {
         { id: 2, name: "Bob", email: "b@example.com" },
       ]);
       const UserStore = makeStore(UserSchema, {
-        transform(data) {
-          return new UserModel(data, this);
+        transform(data, store) {
+          return new UserModel(data, store);
         },
         getAll: getAllFn,
       });

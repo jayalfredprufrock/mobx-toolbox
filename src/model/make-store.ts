@@ -20,10 +20,10 @@ type StoreThis<M> = {
 };
 
 // Infer M from config: when transform is present use its return type, else use R.
-type InferModel<R, Cfg> = Cfg extends { transform: (data: any) => infer M } ? M : R;
+type InferModel<R, Cfg> = Cfg extends { transform: (...args: any[]) => infer M } ? M : R;
 
 export interface StoreConfig<R> {
-  transform?: (data: R) => any;
+  transform?: (data: R, store: { remove(model: any): void }) => any;
   get?: (...args: any[]) => Promise<R>;
   getAll?: (...args: any[]) => Promise<R[]>;
   create?: (...args: any[]) => Promise<R>;
@@ -55,16 +55,16 @@ export function makeStore<S extends T.TObject>(
 ): StoreConstructor<any, any> {
   type R = T.Static<S>;
 
-  const transformFn: (data: R) => any = config?.transform ?? ((data) => data);
-
   class Store {
-    // Bound `transform` so user-provided `this` keyword resolves to the store instance.
     private readonly _transform: (data: R) => any;
 
     all?: LazyObservableArray<any>;
 
     constructor() {
-      this._transform = transformFn.bind(this as any);
+      const rawTransform = config?.transform;
+      this._transform = rawTransform
+        ? (data: R) => rawTransform.call(this, data, this)
+        : (data: R) => data as any;
 
       makeObservable<this, "_transform">(this, {
         _transform: false,
@@ -80,7 +80,6 @@ export function makeStore<S extends T.TObject>(
     }
 
     remove(model: any): void {
-      console.log("model", model);
       this.all?.value?.remove?.(model);
     }
   }

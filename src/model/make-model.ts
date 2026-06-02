@@ -193,6 +193,7 @@ export function makeModel<S extends T.TObject>(
     proto.delete = async function (...rest: any[]) {
       const params = this.buildParams();
       const result = params === undefined ? await del(...rest) : await del(params, ...rest);
+      console.log("delete", this.store);
       this.store?.remove?.(this);
       return result;
     };

@@ -1,3 +1,4 @@
+import * as T from "typebox";
 import { lazyObservableArray, type LazyObservableArray } from "../lazy-observable/lazy-observable";
 import { action, makeObservable, runInAction } from "mobx";
 
@@ -18,8 +19,11 @@ type StoreThis<M> = {
   remove(model: M): void;
 };
 
-export interface StoreConfig<R, M> {
-  transform: (data: R) => M;
+// Infer M from config: when transform is present use its return type, else use R.
+type InferModel<R, Cfg> = Cfg extends { transform: (data: any) => infer M } ? M : R;
+
+export interface StoreConfig<R> {
+  transform?: (data: R) => any;
   get?: (...args: any[]) => Promise<R>;
   getAll?: (...args: any[]) => Promise<R[]>;
   create?: (...args: any[]) => Promise<R>;
@@ -40,24 +44,34 @@ export type StoreConstructor<M, Cfg> = {
 // makeStore
 // -----------------------------------------------------------------------------
 
-export function makeStore<R, M, Cfg extends StoreConfig<R, M>>(
-  config: Cfg & ThisType<StoreThis<M>>,
-): StoreConstructor<M, Cfg> {
+export function makeStore<S extends T.TObject>(schema: S): StoreConstructor<T.Static<S>, {}>;
+export function makeStore<S extends T.TObject, Cfg extends StoreConfig<T.Static<S>>>(
+  schema: S,
+  config: Cfg & ThisType<StoreThis<InferModel<T.Static<S>, Cfg>>>,
+): StoreConstructor<InferModel<T.Static<S>, Cfg>, Cfg>;
+export function makeStore<S extends T.TObject>(
+  schema: S,
+  config?: StoreConfig<T.Static<S>>,
+): StoreConstructor<any, any> {
+  type R = T.Static<S>;
+
+  const transformFn: (data: R) => any = config?.transform ?? ((data) => data);
+
   class Store {
     // Bound `transform` so user-provided `this` keyword resolves to the store instance.
-    private readonly _transform: (data: R) => M;
+    private readonly _transform: (data: R) => any;
 
-    all?: LazyObservableArray<M>;
+    all?: LazyObservableArray<any>;
 
     constructor() {
-      this._transform = config.transform.bind(this as any);
+      this._transform = transformFn.bind(this as any);
 
       makeObservable<this, "_transform">(this, {
         _transform: false,
         remove: action,
       });
 
-      if (config.getAll) {
+      if (config?.getAll) {
         this.all = lazyObservableArray(async () => {
           const items = await (config.getAll as (...args: any[]) => Promise<R[]>)();
           return items.map((item) => this._transform(item));
@@ -65,7 +79,7 @@ export function makeStore<R, M, Cfg extends StoreConfig<R, M>>(
       }
     }
 
-    remove(model: M): void {
+    remove(model: any): void {
       const value = this.all?.value;
       if (!value) return;
       const idx = value.indexOf(model);
@@ -75,20 +89,20 @@ export function makeStore<R, M, Cfg extends StoreConfig<R, M>>(
 
   const proto = Store.prototype as any;
 
-  if (config.get) {
+  if (config?.get) {
     const get = config.get;
     proto.get = function (...args: any[]) {
       return get(...args).then((data: R) => this._transform(data));
     };
   }
 
-  if (config.getAll) {
+  if (config?.getAll) {
     proto.getAll = function () {
       return this.all.getOrLoad();
     };
   }
 
-  if (config.create) {
+  if (config?.create) {
     const create = config.create;
     proto.create = async function (...args: any[]) {
       const data = await create(...args);
@@ -100,7 +114,7 @@ export function makeStore<R, M, Cfg extends StoreConfig<R, M>>(
     };
   }
 
-  return Store as unknown as StoreConstructor<M, Cfg>;
+  return Store as unknown as StoreConstructor<any, any>;
 }
 
 export type { LazyObservableArray };

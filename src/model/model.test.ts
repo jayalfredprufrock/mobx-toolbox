@@ -14,8 +14,6 @@ const UserSchema = T.Object({
   email: T.String(),
 });
 
-type User = T.Static<typeof UserSchema>;
-
 // ---------------------------------------------------------------------------
 // makeModel
 // ---------------------------------------------------------------------------
@@ -176,9 +174,18 @@ describe("makeModel", () => {
 describe("makeStore", () => {
   const UserModel = makeModel(UserSchema);
 
+  test("works without transform (models are raw schema objects)", async () => {
+    const getAllFn = vi.fn().mockResolvedValue([{ id: 1, name: "Alice", email: "a@example.com" }]);
+    const UserStore = makeStore(UserSchema, { getAll: getAllFn });
+    const store = new UserStore() as any;
+    const users = await store.getAll();
+    expect(users[0].id).toBe(1);
+    expect(users[0].name).toBe("Alice");
+  });
+
   test("remove is a no-op when no getAll configured", () => {
-    const UserStore = makeStore({
-      transform(data: User) {
+    const UserStore = makeStore(UserSchema, {
+      transform(data) {
         return new UserModel(data, this);
       },
     });
@@ -190,8 +197,8 @@ describe("makeStore", () => {
   describe("get", () => {
     test("calls get fn and returns transformed model", async () => {
       const getFn = vi.fn().mockResolvedValue({ id: 1, name: "Alice", email: "a@example.com" });
-      const UserStore = makeStore({
-        transform(data: User) {
+      const UserStore = makeStore(UserSchema, {
+        transform(data) {
           return new UserModel(data, this);
         },
         get: getFn,
@@ -210,8 +217,8 @@ describe("makeStore", () => {
         { id: 1, name: "Alice", email: "a@example.com" },
         { id: 2, name: "Bob", email: "b@example.com" },
       ]);
-      const UserStore = makeStore({
-        transform(data: User) {
+      const UserStore = makeStore(UserSchema, {
+        transform(data) {
           return new UserModel(data, this);
         },
         getAll: getAllFn,
@@ -230,8 +237,8 @@ describe("makeStore", () => {
         .fn()
         .mockResolvedValue([{ id: 1, name: "Alice", email: "a@example.com" }]);
       const createFn = vi.fn().mockResolvedValue({ id: 2, name: "Bob", email: "b@example.com" });
-      const UserStore = makeStore({
-        transform(data: User) {
+      const UserStore = makeStore(UserSchema, {
+        transform(data) {
           return new UserModel(data, this);
         },
         getAll: getAllFn,
@@ -251,8 +258,8 @@ describe("makeStore", () => {
         { id: 1, name: "Alice", email: "a@example.com" },
         { id: 2, name: "Bob", email: "b@example.com" },
       ]);
-      const UserStore = makeStore({
-        transform(data: User) {
+      const UserStore = makeStore(UserSchema, {
+        transform(data) {
           return new UserModel(data, this);
         },
         getAll: getAllFn,

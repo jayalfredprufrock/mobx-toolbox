@@ -88,11 +88,12 @@ class UserInstance extends UserModel {
 
 ## Defining a store
 
-`makeStore(config)` returns a class that manages a collection of models.
+`makeStore(schema, config?)` returns a class that manages a collection of models. The schema is used to type the raw API response (`R = T.Static<S>`) so all config methods and the `transform` parameter are fully typed.
 
 ```ts
-const UserStore = makeStore({
+const UserStore = makeStore(UserSchema, {
   transform(data) {
+    // data is typed as T.Static<typeof UserSchema> — no annotation needed
     return new UserModel(data, this); // `this` is the store instance
   },
   get: (id: number) => api.getUser(id),
@@ -101,6 +102,15 @@ const UserStore = makeStore({
 });
 
 const userStore = new UserStore();
+```
+
+`transform` is optional. When omitted, models are the raw schema objects (`M = R`):
+
+```ts
+const UserStore = makeStore(UserSchema, {
+  getAll: () => api.getUsers(),
+});
+// store.all.value is LazyObservableArray<T.Static<typeof UserSchema>>
 ```
 
 ### Store methods and properties
@@ -134,7 +144,7 @@ const UserModel = makeModel(UserSchema, {
   delete: ({ id }) => api.delete(`/users/${id}`),
 });
 
-const UserStore = makeStore({
+const UserStore = makeStore(UserSchema, {
   transform(data) {
     return new UserModel(data, this);
   },
@@ -176,6 +186,8 @@ import type {
 **`buildParams` returns `undefined` when `keys` is empty.** All internal method implementations branch on `params === undefined` to decide whether to prepend the params argument. If you override `buildParams()` and return `undefined`, the methods behave as if no keys were configured.
 
 **`store.remove` is called only if the store reference exists and exposes a `remove` method.** The `ModelStore` interface makes `remove` optional — stores that do not manage a collection can omit it.
+
+**`transform` is optional.** When omitted, the model type is `T.Static<S>` (the raw schema type). When provided, the model type is its return type.
 
 **`transform` is bound to the store instance.** Inside `transform`, `this` refers to the store. This allows the transform to pass `this` as the store reference to the model constructor, wiring up `model.store`.
 

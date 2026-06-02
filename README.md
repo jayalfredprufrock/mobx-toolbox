@@ -98,7 +98,7 @@ const UserModel = makeModel(T.Object({ id: T.Number(), name: T.String() }), {
   delete: ({ id }) => api.delete(`/users/${id}`),
 });
 
-const UserStore = makeStore({
+const UserStore = makeStore(UserSchema, {
   transform(data) {
     return new UserModel(data, this);
   },

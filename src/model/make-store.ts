@@ -80,10 +80,8 @@ export function makeStore<S extends T.TObject>(
     }
 
     remove(model: any): void {
-      const value = this.all?.value;
-      if (!value) return;
-      const idx = value.indexOf(model);
-      if (idx >= 0) value.splice(idx, 1);
+      console.log("model", model);
+      this.all?.value?.remove?.(model);
     }
   }
 

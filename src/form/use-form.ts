@@ -1,9 +1,9 @@
 import type { TObject } from "typebox";
 import { useRef } from "react";
 import { FormModel } from "./form.model";
-import type { FormConfig } from "./form.types";
+import type { FormConfig, FormSchema } from "./form.types";
 
-export const useForm = <T extends TObject = TObject>(
+export const useForm = <T extends FormSchema = TObject>(
   schema: T,
   config: FormConfig<T>,
 ): FormModel<T> => {

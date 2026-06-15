@@ -342,3 +342,91 @@ describe("FormModel", () => {
     });
   });
 });
+
+// ---------------------------------------------------------------------------
+// FormModel — discriminated unions
+// ---------------------------------------------------------------------------
+
+const PaymentSchema = T.Union([
+  T.Object({
+    method: T.Literal("card"),
+    holder: T.String({ minLength: 1 }),
+    cardNumber: T.String({ minLength: 4 }),
+  }),
+  T.Object({
+    method: T.Literal("bank"),
+    holder: T.String({ minLength: 1 }),
+    routing: T.String({ minLength: 4 }),
+  }),
+]);
+
+describe("FormModel (discriminated union)", () => {
+  const makePaymentForm = (initialValues?: Partial<T.Static<typeof PaymentSchema>>) =>
+    new FormModel(PaymentSchema, {
+      handleSubmit: vi.fn().mockResolvedValue(undefined),
+      initialValues,
+    });
+
+  test("merges fields across all variants", () => {
+    const form = makePaymentForm();
+    expect(form.fields.method).toBeInstanceOf(FormFieldModel);
+    expect(form.fields.holder).toBeInstanceOf(FormFieldModel); // shared
+    expect(form.rawFields.cardNumber).toBeInstanceOf(FormFieldModel); // card-only
+    expect(form.rawFields.routing).toBeInstanceOf(FormFieldModel); // bank-only
+  });
+
+  test("rawFields exposes shared and variant fields; fields exposes only shared", () => {
+    const form = makePaymentForm();
+    expect(Object.keys(form.rawFields).sort()).toEqual([
+      "cardNumber",
+      "holder",
+      "method",
+      "routing",
+    ]);
+    // same underlying field instances, just a different typed view
+    expect(form.rawFields.method).toBe(form.fields.method);
+  });
+
+  test("discriminator field accepts any variant's literal", () => {
+    const form = makePaymentForm({ method: "card" });
+    expect(form.fields.method.valid).toBe(true);
+    form.fields.method.setValue("bank");
+    expect(form.fields.method.valid).toBe(true);
+  });
+
+  test("valid is false until the active variant is fully satisfied", () => {
+    const form = makePaymentForm({ method: "card", holder: "Ada" });
+    expect(form.valid).toBe(false); // cardNumber missing
+    form.rawFields.cardNumber.setValue("1234");
+    expect(form.valid).toBe(true);
+  });
+
+  test("inactive variant's fields don't affect validity", () => {
+    // routing is required by the bank variant, but card is active
+    const form = makePaymentForm({ method: "card", holder: "Ada", cardNumber: "1234" });
+    expect(form.valid).toBe(true);
+  });
+
+  test("toJSON strips fields not belonging to the active variant", () => {
+    const form = makePaymentForm({ method: "card", holder: "Ada", cardNumber: "1234" });
+    form.rawFields.routing.setValue("9999"); // stray value from the other variant
+    expect(form.toJSON()).toEqual({ method: "card", holder: "Ada", cardNumber: "1234" });
+  });
+
+  test("switching the discriminator changes which object validates", () => {
+    const form = makePaymentForm({ method: "card", holder: "Ada", cardNumber: "1234" });
+    expect(form.valid).toBe(true);
+    form.fields.method.setValue("bank");
+    expect(form.valid).toBe(false); // routing now required
+    form.rawFields.routing.setValue("9999");
+    expect(form.valid).toBe(true);
+    expect(form.toJSON()).toEqual({ method: "bank", holder: "Ada", routing: "9999" });
+  });
+
+  test("validate() returns whole-object validity", () => {
+    const form = makePaymentForm({ method: "bank", holder: "Ada" });
+    expect(form.validate()).toBe(false);
+    form.rawFields.routing.setValue("9999");
+    expect(form.validate()).toBe(true);
+  });
+});

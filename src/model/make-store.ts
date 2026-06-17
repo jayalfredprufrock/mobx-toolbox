@@ -1,6 +1,7 @@
 import * as T from "typebox";
 import { lazyObservableArray, type LazyObservableArray } from "../lazy-observable/lazy-observable";
 import { action, makeObservable, runInAction } from "mobx";
+import type { ModelSchema } from "./make-model";
 
 // -----------------------------------------------------------------------------
 // Type plumbing
@@ -44,12 +45,12 @@ export type StoreConstructor<M, Cfg> = {
 // makeStore
 // -----------------------------------------------------------------------------
 
-export function makeStore<S extends T.TObject>(schema: S): StoreConstructor<T.Static<S>, {}>;
-export function makeStore<S extends T.TObject, Cfg extends StoreConfig<T.Static<S>>>(
+export function makeStore<S extends ModelSchema>(schema: S): StoreConstructor<T.Static<S>, {}>;
+export function makeStore<S extends ModelSchema, Cfg extends StoreConfig<T.Static<S>>>(
   schema: S,
   config: Cfg & ThisType<StoreThis<InferModel<T.Static<S>, Cfg>>>,
 ): StoreConstructor<InferModel<T.Static<S>, Cfg>, Cfg>;
-export function makeStore<S extends T.TObject>(
+export function makeStore<S extends ModelSchema>(
   schema: S,
   config?: StoreConfig<T.Static<S>>,
 ): StoreConstructor<any, any> {

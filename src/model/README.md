@@ -49,7 +49,7 @@ type UserInstance = InstanceType<typeof UserModel>;
 | `reload(...rest)`       | Calls the `reload` fn, then calls `setData` with the result                       |
 | `update(body, ...rest)` | Calls the `update` fn with the body, then calls `setData`                         |
 | `delete(...rest)`       | Calls the `delete` fn, then calls `store.remove(this)`                            |
-| `setData(partial)`      | Merges a partial update into the observable fields                                |
+| `setData(resource)`     | Replaces the model's data with a complete resource (full replace, not a merge)    |
 | `toJSON()`              | Returns a plain object with all schema-defined fields                             |
 | `buildParams()`         | Returns `{ [key]: this[key] }` for each configured key, or `undefined` if no keys |
 
@@ -83,6 +83,74 @@ class UserInstance extends UserModel {
 ```
 
 `getMobxAnnotations()` is merged into the `makeObservable` call in the constructor, allowing subclasses to add their own observable fields without re-calling `makeObservable`.
+
+### `setData` replaces, it does not merge
+
+`setData` takes a **complete** resource and reassigns every field — fields absent from the argument become `undefined`. It deliberately does not accept a partial: a partial update could leave the model in an incoherent state (especially across a discriminated union — see below). To change a single field, assign it directly inside an action, or go through `update`/`actions` (which pass the full API response to `setData`).
+
+```ts
+// ❌ rejected at compile time
+user.setData({ name: "Bob" });
+// ✅ full resource
+runInAction(() => user.setData({ id: 1, name: "Bob", email: "bob@example.com" }));
+// ✅ single field
+runInAction(() => (user.name = "Bob"));
+```
+
+## Discriminated unions — `makeUnionModel`
+
+For a `T.Union` of objects, use `makeUnionModel(schema, discriminator, config?)`. It takes the discriminator property name and returns a model whose instance exposes the **shared** fields directly; variant-specific fields are reached through the `is`/`as` guards. `makeModel` itself only accepts a single `T.Object`.
+
+```ts
+const PaymentSchema = T.Union([
+  T.Object({ kind: T.Literal("card"), id: T.Number(), cardNumber: T.String() }),
+  T.Object({ kind: T.Literal("bank"), id: T.Number(), routing: T.String() }),
+]);
+
+const PaymentModel = makeUnionModel(PaymentSchema, "kind", { keys: ["id"] as const });
+const payment = new PaymentModel({ kind: "card", id: 1, cardNumber: "4242" });
+
+payment.id; // ✅ shared field
+payment.kind; // ✅ discriminator
+// payment.cardNumber          ← type error: variant field hidden until guarded
+
+if (payment.is("card")) {
+  payment.cardNumber; // ✅ same instance, variant field revealed
+}
+
+const card = payment.as("card"); // (this & CardVariant) | undefined
+if (card) card.cardNumber;
+```
+
+### Why not just `makeModel(union)` with discriminator narrowing?
+
+Because the resulting instance type would be a union, and **a union type cannot be a class base** (`class X extends Model {}` fails with TS2509). `makeUnionModel` keeps the base instance a single object type (shared fields + `is`/`as`), so models stay subclassable:
+
+```ts
+class Payment extends PaymentModel {
+  get label() {
+    if (this.is("card")) return `card ${this.cardNumber}`;
+    if (this.is("bank")) return `bank ${this.routing}`;
+    return "?";
+  }
+}
+```
+
+### Guards
+
+| Method      | Returns                                                               |
+| ----------- | --------------------------------------------------------------------- |
+| `is(value)` | Type guard — `true` reveals the variant's fields on the same instance |
+| `as(value)` | The same instance narrowed to that variant, or `undefined`            |
+
+### Things to know
+
+- **`keys`/`buildParams` are limited to shared fields.** `keyof` a union collapses to the keys present in every variant (e.g. `id`) — exactly what you want for a keyed resource. The `discriminator` argument must likewise be a shared key.
+- **All variants' fields are observable.** Every property across the union is made `observable.ref` up front, so `setData` stays reactive even when it switches the active variant. `toJSON` runs `Value.Clean` to emit only the active variant's fields.
+- **`setData` switches variants cleanly.** It takes the full resource and reassigns every field, so moving between variants clears the previous variant's fields on the live instance (not just in `toJSON`).
+- **Reflection still sees every key.** `Object.keys`, spread, and `in` expose all union properties (inactive ones as `undefined`); only typed access (via the guards) and `toJSON` are variant-faithful. This is the deliberate trade for a subclassable, reactive model.
+
+`makeStore` accepts a union schema too, so a store of union models (built in `transform` via `makeUnionModel`) is fully typed.
 
 ---
 
@@ -169,8 +237,10 @@ await user.delete(); // also calls userStore.remove(user)
 
 ```ts
 import type {
-  ModelConfig, // config object passed to makeModel
+  ModelSchema, // a TObject, or a TUnion of TObjects (discriminated union)
+  ModelConfig, // config object passed to makeModel / makeUnionModel
   ModelConstructor, // the class returned by makeModel
+  UnionModelConstructor, // the class returned by makeUnionModel
   ModelStore, // minimal interface a store must satisfy (has remove?)
   StoreConfig, // config object passed to makeStore
   StoreConstructor, // the class returned by makeStore

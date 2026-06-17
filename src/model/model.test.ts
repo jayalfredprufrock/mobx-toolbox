@@ -1,7 +1,7 @@
 import { describe, expect, test, vi } from "vite-plus/test";
 import * as T from "typebox";
-import { runInAction } from "mobx";
-import { makeModel } from "./make-model";
+import { autorun, runInAction } from "mobx";
+import { makeModel, makeUnionModel } from "./make-model";
 import { makeStore } from "./make-store";
 
 // ---------------------------------------------------------------------------
@@ -27,10 +27,10 @@ describe("makeModel", () => {
     expect(user.email).toBe("alice@example.com");
   });
 
-  test("setData updates fields in place", () => {
+  test("setData replaces fields in place", () => {
     const UserModel = makeModel(UserSchema);
     const user = new UserModel({ id: 1, name: "Alice", email: "alice@example.com" });
-    runInAction(() => user.setData({ name: "Bob" }));
+    runInAction(() => user.setData({ id: 1, name: "Bob", email: "alice@example.com" }));
     expect(user.name).toBe("Bob");
     expect(user.id).toBe(1);
   });
@@ -164,6 +164,107 @@ describe("makeModel", () => {
       await (user as any).activate({ role: "admin" });
       expect(activateFn).toHaveBeenCalledWith({ role: "admin" });
     });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// makeUnionModel — discriminated unions
+// ---------------------------------------------------------------------------
+
+const PaymentSchema = T.Union([
+  T.Object({ kind: T.Literal("card"), id: T.Number(), cardNumber: T.String() }),
+  T.Object({ kind: T.Literal("bank"), id: T.Number(), routing: T.String() }),
+]);
+
+describe("makeUnionModel", () => {
+  test("exposes shared fields and the discriminator", () => {
+    const PaymentModel = makeUnionModel(PaymentSchema, "kind");
+    const card = new PaymentModel({ kind: "card", id: 1, cardNumber: "4242" });
+    expect(card.id).toBe(1);
+    expect(card.kind).toBe("card");
+    expect(PaymentModel.discriminator).toBe("kind");
+  });
+
+  test("is() guards the variant and reveals its fields", () => {
+    const PaymentModel = makeUnionModel(PaymentSchema, "kind");
+    const model = new PaymentModel({ kind: "card", id: 1, cardNumber: "4242" });
+    expect(model.is("card")).toBe(true);
+    expect(model.is("bank")).toBe(false);
+    if (model.is("card")) {
+      expect(model.cardNumber).toBe("4242"); // variant field exposed on the same instance
+    } else {
+      throw new Error("unreachable");
+    }
+  });
+
+  test("as() returns the narrowed instance or undefined", () => {
+    const PaymentModel = makeUnionModel(PaymentSchema, "kind");
+    const model = new PaymentModel({ kind: "bank", id: 2, routing: "021" });
+    const bank = model.as("bank");
+    expect(bank).toBe(model); // same instance handed back
+    expect(bank?.routing).toBe("021");
+    expect(model.as("card")).toBeUndefined();
+  });
+
+  test("toJSON emits only the active variant's fields", () => {
+    const PaymentModel = makeUnionModel(PaymentSchema, "kind");
+    // foreign-variant keys exist on the instance (all observable) but are cleaned out
+    const card = new PaymentModel({ kind: "card", id: 1, cardNumber: "4242", routing: "x" } as any);
+    const json = card.toJSON();
+    expect(json).toEqual({ kind: "card", id: 1, cardNumber: "4242" });
+    expect("routing" in json).toBe(false);
+    expect(Object.getPrototypeOf(json)).toBe(Object.prototype);
+  });
+
+  test("setData reactively switches variants and clears the previous variant", () => {
+    const PaymentModel = makeUnionModel(PaymentSchema, "kind");
+    const model = new PaymentModel({ kind: "card", id: 1, cardNumber: "4242" });
+
+    const seen: (string | undefined)[] = [];
+    const dispose = autorun(() => seen.push((model as any).routing));
+
+    runInAction(() => model.setData({ kind: "bank", id: 1, routing: "021" }));
+    dispose();
+
+    expect(seen).toEqual([undefined, "021"]); // new variant field reacted
+    expect(model.kind).toBe("bank");
+    expect((model as any).cardNumber).toBeUndefined(); // previous variant cleared
+    expect(model.toJSON()).toEqual({ kind: "bank", id: 1, routing: "021" });
+  });
+
+  test("buildParams uses the shared key", () => {
+    const PaymentModel = makeUnionModel(PaymentSchema, "kind", { keys: ["id"] as const });
+    const card = new PaymentModel({ kind: "card", id: 7, cardNumber: "4242" });
+    expect(card.buildParams()).toEqual({ id: 7 });
+  });
+
+  test("reload replaces data via the keyed fn", async () => {
+    const reloadFn = vi.fn().mockResolvedValue({ kind: "card", id: 1, cardNumber: "9999" });
+    const PaymentModel = makeUnionModel(PaymentSchema, "kind", {
+      keys: ["id"] as const,
+      reload: reloadFn,
+    });
+    const card = new PaymentModel({ kind: "card", id: 1, cardNumber: "4242" });
+    await card.reload();
+    expect(reloadFn).toHaveBeenCalledWith({ id: 1 });
+    if (card.is("card")) expect(card.cardNumber).toBe("9999");
+  });
+
+  test("a subclass can add methods that use the guards", () => {
+    const PaymentModel = makeUnionModel(PaymentSchema, "kind");
+    class Payment extends PaymentModel {
+      describe() {
+        if (this.is("card")) return `card ${this.cardNumber}`;
+        if (this.is("bank")) return `bank ${this.routing}`;
+        return "?";
+      }
+    }
+    expect(new Payment({ kind: "bank", id: 1, routing: "021" }).describe()).toBe("bank 021");
+  });
+
+  test("static schema is the union", () => {
+    const PaymentModel = makeUnionModel(PaymentSchema, "kind");
+    expect(PaymentModel.schema).toBe(PaymentSchema);
   });
 });
 

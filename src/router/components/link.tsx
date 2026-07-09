@@ -20,6 +20,7 @@ export type LinkPropsBase<
   I extends React.ElementType = C,
 > = LinkComponentProps<C> & {
   exact?: boolean;
+  preserveSearch?: boolean;
   ref?: React.Ref<React.ComponentRef<I>>;
 };
 
@@ -43,7 +44,7 @@ export const makeLinkComponent = <C extends React.ElementType, I extends React.E
   C: C,
   baseProps?: Partial<LinkComponentProps<C>> & { as?: I },
 ) => {
-  return observer(({ to, params, exact, children, ...props }: any) => {
+  return observer(({ to, params, exact, preserveSearch, children, ...props }: any) => {
     const router = useRouter();
     const mergedProps = { ...baseProps, ...props };
 
@@ -59,7 +60,7 @@ export const makeLinkComponent = <C extends React.ElementType, I extends React.E
       (event: React.MouseEvent<HTMLElement>) => {
         event.preventDefault();
         if (props.disabled) return;
-        router.navigate({ to, ...(params as any) } as NavigateOptions<RoutePath>);
+        router.navigate({ to, preserveSearch, ...(params as any) } as NavigateOptions<RoutePath>);
       },
       [router, params, to, props.disabled],
     );

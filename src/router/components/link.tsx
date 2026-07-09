@@ -12,7 +12,7 @@ import { useRouter } from "./router";
 
 type LinkComponentProps<C extends React.ElementType> = Omit<
   React.ComponentProps<C>,
-  " ref" | "exact" | "to" | "params" | "onClick"
+  "ref" | "exact" | "to" | "params" | "onClick" | "asChild"
 >;
 
 export type LinkPropsBase<

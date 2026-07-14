@@ -54,7 +54,7 @@ export class FormFieldModel<T extends T.TSchema = T.TSchema> {
     this.name = config.name;
     this.schema = config.schema;
     this.validator = Schema.Compile(this.schema);
-    this.value = Value.Convert(this.schema, config.initialValue) as T.Static<T>;
+    this.value = this.convertValue(config.initialValue);
 
     makeAutoObservable(this, {
       name: false,
@@ -67,7 +67,17 @@ export class FormFieldModel<T extends T.TSchema = T.TSchema> {
   setValue(value?: T.Static<T>) {
     // TODO: does this still make sense? If value is invalid,
     // then type will be wrong...revisit this
-    this.value = Value.Convert(this.schema, value) as T.Static<T>;
+    this.value = this.convertValue(value);
+  }
+
+  private convertValue(value: unknown): T.Static<T> | undefined {
+    // Value.Convert fabricates zero-values for undefined primitives ("" / 0 / false).
+    // Only "" and false faithfully represent an empty control; a fabricated 0 reads
+    // as real input (e.g. an epoch-0 date), so everything else stays undefined.
+    if (value === undefined && !T.IsString(this.schema) && !T.IsBoolean(this.schema)) {
+      return undefined;
+    }
+    return Value.Convert(this.schema, value) as T.Static<T>;
   }
 
   setTouched(touched: boolean) {

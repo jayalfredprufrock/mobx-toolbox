@@ -21,6 +21,18 @@ describe("FormFieldModel", () => {
       expect(field.value).toBe("");
     });
 
+    test("value stays undefined when no initialValue given for T.Integer()", () => {
+      // Value.Convert would fabricate 0 here, which renders as real input
+      // (e.g. an epoch-0 date in a date control) — it must stay undefined.
+      const field = new FormFieldModel({ name: "bornAt", schema: T.Integer() });
+      expect(field.value).toBeUndefined();
+    });
+
+    test("value is coerced to false when no initialValue given for T.Boolean()", () => {
+      const field = new FormFieldModel({ name: "subscribed", schema: T.Boolean() });
+      expect(field.value).toBe(false);
+    });
+
     test("value is set from initialValue", () => {
       const field = new FormFieldModel({
         name: "age",
@@ -67,6 +79,16 @@ describe("FormFieldModel", () => {
       field.setValue(undefined);
       // TypeBox Value.Convert coerces undefined → "" for string schemas
       expect(field.value).toBe("");
+    });
+
+    test("setting undefined clears numeric fields to undefined", () => {
+      const field = new FormFieldModel({
+        name: "bornAt",
+        schema: T.Integer(),
+        initialValue: 518405528375,
+      });
+      field.setValue(undefined);
+      expect(field.value).toBeUndefined();
     });
 
     test("value is reactive", () => {

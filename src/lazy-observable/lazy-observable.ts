@@ -219,7 +219,8 @@ export function lazyObservable<T>(
 }
 
 export interface LazyObservableArray<T = any> extends Omit<
-  LazyObservable<IObservableArray<T>>,
+  // value is never undefined: lazyObservableArray always seeds initialValue with []
+  LazyObservable<IObservableArray<T>, IObservableArray<T>>,
   "set"
 > {
   set(value: T[]): void;
@@ -233,7 +234,10 @@ export function lazyObservableArray<T>(
   fetch: () => Promise<T[]>,
   options?: LazyObservableArrayOptions<T>,
 ): LazyObservableArray<T> {
-  return lazyObservable(fetch, { initialValue: [], ...options }) as LazyObservableArray<T>;
+  return lazyObservable(fetch, {
+    ...options,
+    initialValue: options?.initialValue ?? [],
+  }) as LazyObservableArray<T>;
 }
 
 export type InferLazyObservable<O> =

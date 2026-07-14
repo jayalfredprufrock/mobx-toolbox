@@ -185,6 +185,24 @@ describe("lazyObservableArray", () => {
   test("starts with an empty array as initial value", () => {
     const lazy = lazyObservableArray(() => Promise.resolve([1, 2, 3]));
     expect(lazy.value).toEqual([]);
+
+    // value is typed as non-optional — no `?? []` guard needed at call sites
+    const _values: number[] = lazy.value;
+    void _values;
+  });
+
+  test("respects an explicit initialValue", () => {
+    const lazy = lazyObservableArray(() => Promise.resolve([1, 2, 3]), {
+      initialValue: [9],
+    });
+    expect(lazy.value).toEqual([9]);
+  });
+
+  test("explicit undefined initialValue still falls back to []", () => {
+    const lazy = lazyObservableArray(() => Promise.resolve([1, 2, 3]), {
+      initialValue: undefined,
+    });
+    expect(lazy.value).toEqual([]);
   });
 
   test("loads array when observed", async () => {

@@ -1,10 +1,14 @@
 import { describe, expect, test, vi, beforeEach, afterEach } from "vite-plus/test";
 import { createMemoryHistory } from "history";
+import { DefaultErrorPage, RouteErrorBoundary } from "./components/error";
+import { RouterError } from "./errors";
 import { makeRoutes, matchRoute } from "./make-routes";
+import type { Outlet } from "./outlet";
 import { redirect, Redirect } from "./redirect";
+import type { Route } from "./route";
 import { RouterStore } from "./router.store";
-import { GUARD, PAGE, REDIRECT } from "./symbols";
-import type { Guard } from "./types";
+import { ERROR, GUARD, LAYOUT, LOAD, PAGE, REDIRECT, WRAPPER } from "./symbols";
+import type { ExtractPaths, Guard } from "./types";
 
 const PageA = () => null;
 const PageB = () => null;
@@ -55,8 +59,45 @@ describe("matchRoute", () => {
     expect(route.params).toEqual({ id: "42" });
   });
 
-  test("throws on unknown path", () => {
-    expect(() => matchRoute("/nonexistent", routes)).toThrow("Not Found.");
+  test("$param route keys surface as :param typed paths", () => {
+    const dynamicPath = "/users/:id" satisfies ExtractPaths<typeof routes>;
+    expect(dynamicPath).toBe("/users/:id");
+  });
+
+  test("supports quoted :param route keys", () => {
+    const r = makeRoutes()({
+      posts: {
+        ":slug": PageA,
+      },
+    });
+    const route = matchRoute("/posts/hello-world", r);
+    expect(route.params).toEqual({ slug: "hello-world" });
+
+    const typedPath = "/posts/:slug" satisfies ExtractPaths<typeof r>;
+    expect(typedPath).toBe("/posts/:slug");
+  });
+
+  test("throws RouterError NOT_FOUND on unknown path", () => {
+    expect(() => matchRoute("/nonexistent", routes)).toThrow(RouterError);
+    try {
+      matchRoute("/nonexistent", routes);
+      expect.unreachable();
+    } catch (e) {
+      const error = e as RouterError;
+      expect(error.type).toBe("NOT_FOUND");
+      expect(error.path).toBe("/nonexistent");
+    }
+  });
+
+  test("throws RouterError NOT_FOUND on extra segments after a leaf", () => {
+    try {
+      matchRoute("/users/42/extra", routes);
+      expect.unreachable();
+    } catch (e) {
+      const error = e as RouterError;
+      expect(error.type).toBe("NOT_FOUND");
+      expect(error.path).toBe("/users/42/extra");
+    }
   });
 
   test("throws Redirect when route has [REDIRECT]", () => {
@@ -119,6 +160,13 @@ describe("RouterStore", () => {
     users: {
       index: PageC,
       $id: PageA,
+    },
+    teams: {
+      $teamId: {
+        users: {
+          $userId: PageA,
+        },
+      },
     },
   });
 
@@ -191,9 +239,31 @@ describe("RouterStore", () => {
       expect(router.doesPathMatch("/users", true)).toBe(false);
     });
 
-    test("matches dynamic segment with $param pattern", async () => {
+    test("matches dynamic segment with :param pattern", async () => {
       const { router } = await makeRouter("/users/42");
-      expect(router.doesPathMatch("/users/$id")).toBe(true);
+      expect(router.doesPathMatch("/users/:id")).toBe(true);
+    });
+
+    test("does not treat $param as a wildcard in path strings", async () => {
+      const { router } = await makeRouter("/users/42");
+      expect(router.doesPathMatch("/users/$id")).toBe(false);
+    });
+  });
+
+  describe("pathParams", () => {
+    test("returns params without the $ prefix", async () => {
+      const { router } = await makeRouter("/users/42");
+      expect(router.pathParams).toEqual({ id: "42" });
+    });
+
+    test("captures params from non-consecutive dynamic segments", async () => {
+      const { router } = await makeRouter("/teams/7/users/42");
+      expect(router.pathParams).toEqual({ teamId: "7", userId: "42" });
+    });
+
+    test("is empty for static routes", async () => {
+      const { router } = await makeRouter("/about");
+      expect(router.pathParams).toEqual({});
     });
   });
 
@@ -214,6 +284,22 @@ describe("RouterStore", () => {
       const { router, history } = await makeRouter("/");
       router.navigate({ to: "/about", search: { q: "hello" } });
       expect(history.location.search).toContain("q=hello");
+    });
+
+    test("resolves :params into the pathname", async () => {
+      const { router, history } = await makeRouter("/");
+      router.navigate({ to: "/users/:id", params: { id: "42" } });
+      expect(history.location.pathname).toBe("/users/42");
+    });
+
+    test("requires params for dynamic paths at both type and runtime level", async () => {
+      const { router } = await makeRouter("/");
+      // @ts-expect-error — "/users/:id" requires params
+      expect(() => router.navigate({ to: "/users/:id" })).toThrow("Parameter ':id' not specified");
+      // @ts-expect-error — params must not be passed for static paths
+      router.navigate({ to: "/about", params: { id: "42" } });
+      // @ts-expect-error — redirect enforces params the same way
+      expect(redirect({ to: "/users/:id" })).toBeInstanceOf(Redirect);
     });
   });
 
@@ -246,6 +332,229 @@ describe("RouterStore", () => {
       router.routesDef = routes;
       await router.setLocation(history.location);
       expect(router.query).toEqual({ a: "1", b: "2" });
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Error handling
+// ---------------------------------------------------------------------------
+
+describe("error handling", () => {
+  const AppShell = ({ children }: any) => children;
+  const AdminLayout = ({ children }: any) => children;
+  const AdminWrapper = ({ children }: any) => children;
+  const RootErrorPage = () => null;
+  const AdminErrorPage = () => null;
+
+  class AccessDeniedError extends Error {}
+
+  beforeEach(() => {
+    vi.spyOn(console, "error").mockImplementation(() => {});
+  });
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  const makeRouter = async (routes: any, initialPath: string) => {
+    const history = createMemoryHistory({ initialEntries: [initialPath] });
+    const router = new RouterStore({ history });
+    router.routesDef = routes;
+    await router.setLocation(history.location);
+    return { router, history };
+  };
+
+  // invoke an outlet's Component the way RouterOutlet would and return the element
+  const renderOutlet = (outlet: Outlet | undefined, route?: Route): any =>
+    (outlet?.Component as any)?.({ route });
+
+  describe("unknown URLs (404)", () => {
+    test("renders the DefaultErrorPage when no [ERROR] is defined", async () => {
+      const routes = makeRoutes()({ about: PageB });
+      const { router } = await makeRouter(routes, "/nope");
+
+      const route = router.activeRoute;
+      expect(route?.error?.type).toBe("NOT_FOUND");
+      expect(renderOutlet(route?.outlets.at(-1), route).type).toBe(DefaultErrorPage);
+    });
+
+    test("uses the root [ERROR] when defined", async () => {
+      const routes = makeRoutes()({ [ERROR]: RootErrorPage, about: PageB });
+      const { router } = await makeRouter(routes, "/nope");
+
+      const element = renderOutlet(router.activeRoute?.outlets.at(-1), router.activeRoute);
+      expect(element.type).toBe(RootErrorPage);
+      expect(element.props.error.type).toBe("NOT_FOUND");
+      expect(element.props.error.path).toBe("/nope");
+    });
+
+    test("keeps layout and wrappers of the matched prefix and uses the nearest [ERROR]", async () => {
+      const routes = makeRoutes()({
+        [LAYOUT]: AppShell,
+        [ERROR]: RootErrorPage,
+        admin: {
+          [WRAPPER]: AdminWrapper,
+          [ERROR]: AdminErrorPage,
+          users: PageA,
+        },
+      });
+      const { router } = await makeRouter(routes, "/admin/nope");
+
+      const route = router.activeRoute;
+      expect(route?.error?.type).toBe("NOT_FOUND");
+      expect(route?.layout).toBe(AppShell);
+      // admin's wrapper is preserved, followed by the error outlet
+      expect(route?.outlets).toHaveLength(2);
+      expect(route?.outlets[0]?.Component).toBe(AdminWrapper);
+      expect(renderOutlet(route?.outlets.at(-1), route).type).toBe(AdminErrorPage);
+    });
+  });
+
+  describe("guard failures", () => {
+    test("an app-level error renders the nearest [ERROR] with type GUARD and preserves the URL", async () => {
+      const denied = new AccessDeniedError("missing role");
+      const routes = makeRoutes()({
+        [LAYOUT]: AppShell,
+        [ERROR]: RootErrorPage,
+        admin: {
+          [LAYOUT]: AdminLayout,
+          [GUARD]: async () => {
+            throw denied;
+          },
+          [ERROR]: AdminErrorPage,
+          users: PageA,
+        },
+      });
+      const { router, history } = await makeRouter(routes, "/admin/users");
+
+      const route = router.activeRoute;
+      expect(route?.error?.type).toBe("GUARD");
+      expect(route?.error?.cause).toBe(denied);
+      expect(renderOutlet(route?.outlets.at(-1), route).type).toBe(AdminErrorPage);
+      // the failing level's own [LAYOUT] override applies — that level did match
+      expect(route?.layout).toBe(AdminLayout);
+      expect(history.location.pathname).toBe("/admin/users");
+    });
+
+    test("a root-level guard failure bubbles to the root [ERROR], not a nested one", async () => {
+      const routes = makeRoutes()({
+        [LAYOUT]: AppShell,
+        [ERROR]: RootErrorPage,
+        [GUARD]: async () => {
+          throw new Error("nope");
+        },
+        admin: { [LAYOUT]: AdminLayout, [ERROR]: AdminErrorPage, users: PageA },
+      });
+      const { router } = await makeRouter(routes, "/admin/users");
+
+      expect(router.activeRoute?.error?.type).toBe("GUARD");
+      const element = renderOutlet(router.activeRoute?.outlets.at(-1), router.activeRoute);
+      expect(element.type).toBe(RootErrorPage);
+      // a [LAYOUT] override deeper than the throwing guard does not apply
+      expect(router.activeRoute?.layout).toBe(AppShell);
+    });
+
+    test("a guard throwing RouterError passes it through unwrapped", async () => {
+      const routes = makeRoutes()({
+        [ERROR]: RootErrorPage,
+        secret: {
+          [GUARD]: async () => {
+            throw new RouterError("NOT_FOUND");
+          },
+          [PAGE]: PageA,
+        },
+      });
+      const { router } = await makeRouter(routes, "/secret");
+
+      expect(router.activeRoute?.error?.type).toBe("NOT_FOUND");
+      expect(router.activeRoute?.error?.cause).toBeUndefined();
+    });
+  });
+
+  describe("loader failures", () => {
+    test("a failing loader renders the nearest [ERROR] in its own outlet slot", async () => {
+      const cause = new Error("fetch failed");
+      const routes = makeRoutes()({
+        [ERROR]: RootErrorPage,
+        dashboard: {
+          [LOAD]: async () => {
+            throw cause;
+          },
+          [PAGE]: PageA,
+        },
+      });
+      const { router } = await makeRouter(routes, "/dashboard");
+
+      const route = router.activeRoute;
+      // navigation itself succeeded — this is not a synthetic error route
+      expect(route?.error).toBeUndefined();
+
+      const pageOutlet = route?.outlets.at(-1);
+      expect(pageOutlet?.state).toBe("error");
+      expect(pageOutlet?.error?.type).toBe("LOAD");
+      expect(pageOutlet?.error?.cause).toBe(cause);
+      expect(renderOutlet(pageOutlet, route).type).toBe(RootErrorPage);
+    });
+
+    test("a loader throwing Redirect navigates", async () => {
+      const routes = makeRoutes()({
+        about: PageB,
+        dashboard: {
+          [LOAD]: async () => {
+            throw redirect({ to: "/about" });
+          },
+          [PAGE]: PageA,
+        },
+      });
+      const { history } = await makeRouter(routes, "/dashboard");
+
+      expect(history.location.pathname).toBe("/about");
+    });
+
+    test("a loader throwing RouterError('NOT_FOUND') keeps the type", async () => {
+      const routes = makeRoutes()({
+        dashboard: {
+          [LOAD]: async () => {
+            throw new RouterError("NOT_FOUND");
+          },
+          [PAGE]: PageA,
+        },
+      });
+      const { router } = await makeRouter(routes, "/dashboard");
+
+      const pageOutlet = router.activeRoute?.outlets.at(-1);
+      expect(pageOutlet?.error?.type).toBe("NOT_FOUND");
+      expect(renderOutlet(pageOutlet, router.activeRoute).type).toBe(DefaultErrorPage);
+    });
+  });
+
+  describe("RouteErrorBoundary", () => {
+    test("wraps render crashes as RouterError('RENDER') and passes RouterError through", () => {
+      const boom = new Error("boom");
+      const state = RouteErrorBoundary.getDerivedStateFromError(boom);
+      expect(state.error).toBeInstanceOf(RouterError);
+      expect(state.error?.type).toBe("RENDER");
+      expect(state.error?.cause).toBe(boom);
+
+      const passthrough = RouteErrorBoundary.getDerivedStateFromError(new RouterError("LOAD"));
+      expect(passthrough.error?.type).toBe("LOAD");
+    });
+
+    test("renders children without an error and the fallback with one", () => {
+      const route = {} as Route;
+      const boundary = new RouteErrorBoundary({
+        route,
+        fallback: RootErrorPage,
+        children: "content",
+      });
+
+      expect(boundary.render()).toBe("content");
+
+      boundary.state = { error: new RouterError("RENDER") };
+      const element = boundary.render() as any;
+      expect(element.type).toBe(RootErrorPage);
+      expect(element.props.error.type).toBe("RENDER");
+      expect(element.props.route).toBe(route);
     });
   });
 });

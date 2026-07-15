@@ -60,7 +60,7 @@ export const makeLinkComponent = <C extends React.ElementType, I extends React.E
       (event: React.MouseEvent<HTMLElement>) => {
         event.preventDefault();
         if (props.disabled) return;
-        router.navigate({ to, preserveSearch, ...(params as any) } as NavigateOptions<RoutePath>);
+        router.navigate({ to, preserveSearch, params } as NavigateOptions<RoutePath>);
       },
       [router, params, to, props.disabled],
     );

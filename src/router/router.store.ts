@@ -1,6 +1,7 @@
 import { createBrowserHistory, type History, type Location } from "history";
 import { action, computed, makeObservable, observable, runInAction } from "mobx";
-import { matchRoute } from "./make-routes";
+import { RouterError } from "./errors";
+import { makeErrorRoute, matchRoute } from "./make-routes";
 import { Redirect } from "./redirect";
 import type { Route } from "./route";
 import type { Component, MobxRouterConfig, NavigateOptions, Obj, RoutePath, Routes } from "./types";
@@ -29,19 +30,7 @@ export class RouterStore {
   }
 
   get pathParams(): Record<string, string> {
-    const params = {} as Record<string, string>;
-
-    const paramSegments = this.activeSegments.filter((segment) => segment.startsWith("$"));
-    const pathValues = this.location.pathname.split("/").slice(1);
-
-    paramSegments.forEach((segment, index) => {
-      const value = pathValues[index + 1];
-      if (value) {
-        params[segment] = value;
-      }
-    });
-
-    return params as Record<string, string>;
+    return { ...this.activeRoute?.params };
   }
 
   get activeSegments(): string[] {
@@ -75,7 +64,7 @@ export class RouterStore {
   doesPathMatch<P extends RoutePath>(path: P, exact?: boolean): boolean {
     const segments = path.slice(1).split("/");
     const segmentsMatch = segments.every(
-      (segment, i) => segment === this.activeSegments[i] || segment.startsWith("$"),
+      (segment, i) => segment === this.activeSegments[i] || segment.startsWith(":"),
     );
 
     return (
@@ -147,8 +136,9 @@ export class RouterStore {
 
     this.location = location;
 
+    let matchedRoute: Route | undefined;
     try {
-      const matchedRoute = matchRoute(location.pathname, this.routesDef);
+      matchedRoute = matchRoute(location.pathname, this.routesDef);
 
       await matchedRoute.guard();
 
@@ -168,7 +158,23 @@ export class RouterStore {
         this.navigate(e.options);
         return;
       }
-      throw e;
+
+      // navigating within a guard before it threw — treat as a redirect
+      if (this.location !== location) {
+        return;
+      }
+
+      const error =
+        e instanceof RouterError
+          ? e
+          : new RouterError("RENDER", { cause: e, path: location.pathname });
+      console.error(error);
+
+      const errorRoute = makeErrorRoute(error, location.pathname, matchedRoute);
+      runInAction(() => {
+        this.activeRoute = errorRoute;
+      });
+      await errorRoute.load();
     }
   }
 }

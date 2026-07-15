@@ -1,6 +1,7 @@
 import type { History } from "history";
+import type { RouterError } from "./errors";
 import type { Route } from "./route";
-import { CONTEXT, GUARD, LAYOUT, LOAD, PAGE, REDIRECT, WRAPPER } from "./symbols";
+import { CONTEXT, ERROR, GUARD, LAYOUT, LOAD, PAGE, REDIRECT, WRAPPER } from "./symbols";
 
 export type Component = React.FC<any>;
 export type LazyComponent = () => Promise<any>;
@@ -8,12 +9,32 @@ export type Obj<T = any> = Record<string, T>;
 export type Loader = (route: Route) => Promise<any>;
 export type Guard = (route: Route) => Promise<void>;
 
+/** The props every `[ERROR]` component receives. */
+export interface ErrorComponentProps {
+  route: Route;
+  error: RouterError;
+}
+
+/** @internal a guard together with the route level that declared it */
+export interface GuardEntry {
+  guard: Guard;
+  depth: number;
+}
+
+/** @internal per-level snapshot used to build synthetic error routes */
+export interface MatchLevel {
+  wrapper?: Component;
+  layout?: Component;
+  errorComponent?: Component;
+}
+
 export interface RouteConfig {
   [CONTEXT]?: Obj;
   [LAYOUT]?: Component;
   [WRAPPER]?: Component;
   [GUARD]?: Guard;
   [LOAD]?: Loader;
+  [ERROR]?: Component;
 }
 
 /**
@@ -93,6 +114,11 @@ export type StaticRoutePath = Exclude<RoutePath, `${string}:${string}`>;
 
 export type JoinSegments<S1, S2> = `/${S1 extends string ? S1 : ""}${S2 extends string ? S2 : ""}`;
 
+// Route keys use `$param` (valid unquoted object key) or quoted `":param"`;
+// path strings always use backend-style `:param`. This rewrites the `$` key
+// spelling to the path spelling; `:` keys pass through unchanged.
+export type SegmentName<S> = S extends `$${infer Param}` ? `:${Param}` : S;
+
 export type ExtractParam<P, NextPart> = P extends `:${infer Param}`
   ? Record<Param, string> & NextPart
   : NextPart;
@@ -105,7 +131,7 @@ export type ExtractPaths<R> = {
     ? S extends "index"
       ? "/"
       : R[S] extends Leaf
-        ? `/${S}`
-        : JoinSegments<S, ExtractPaths<R[S]>>
+        ? `/${SegmentName<S> extends string ? SegmentName<S> : ""}`
+        : JoinSegments<SegmentName<S>, ExtractPaths<R[S]>>
     : never;
 }[keyof R];

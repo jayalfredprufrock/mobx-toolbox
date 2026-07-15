@@ -1,4 +1,5 @@
 export * from "./components";
+export * from "./errors";
 export * from "./make-routes";
 export * from "./outlet";
 export * from "./redirect";

@@ -3,6 +3,7 @@ import { createContext, useContext } from "react";
 import type { Route } from "../route";
 import type { RouterStore } from "../router.store";
 import type { Component } from "../types";
+import { DefaultErrorPage, RouteErrorBoundary } from "./error";
 
 export const PassThrough: Component = ({ children }) => children;
 
@@ -33,17 +34,32 @@ export interface RouterProps {
 }
 
 export const Router = observer(({ store }: RouterProps) => {
-  if (!store.activeRoute) {
+  const route = store.activeRoute;
+  if (!route) {
     return null;
   }
 
-  const Layout = store.activeRoute.layout ?? PassThrough;
-  const components = store.activeRoute.outlets.map((o) => o.Component);
+  const Layout = route.layout ?? PassThrough;
+  const components = route.outlets.map((o) => o.Component);
+  const outlet = <RouterOutlet route={route} components={components} />;
+
+  // Render crashes in pages/wrappers funnel to the nearest [ERROR]
+  // component; the layout survives. On synthetic error routes the
+  // boundary is omitted so a crashing [ERROR] component propagates
+  // out of <Router> — a developer bug that should stay loud. Layout
+  // crashes propagate for the same reason.
+  const fallback = route.levels.at(-1)?.errorComponent ?? DefaultErrorPage;
 
   return (
     <routerContext.Provider value={store}>
-      <Layout route={store.activeRoute}>
-        <RouterOutlet route={store.activeRoute} components={components} />
+      <Layout route={route}>
+        {route.error ? (
+          outlet
+        ) : (
+          <RouteErrorBoundary key={store.location.key} route={route} fallback={fallback}>
+            {outlet}
+          </RouteErrorBoundary>
+        )}
       </Layout>
     </routerContext.Provider>
   );

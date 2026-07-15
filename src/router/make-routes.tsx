@@ -1,8 +1,10 @@
+import { DefaultErrorPage } from "./components/error";
+import { RouterError } from "./errors";
 import { Outlet } from "./outlet";
 import { Redirect } from "./redirect";
 import { Route } from "./route";
-import { CONTEXT, GUARD, LAYOUT, LOAD, PAGE, REDIRECT, WRAPPER } from "./symbols";
-import type { Component, Guard, Obj, Routes } from "./types";
+import { CONTEXT, ERROR, GUARD, LAYOUT, LOAD, PAGE, REDIRECT, WRAPPER } from "./symbols";
+import type { Component, GuardEntry, MatchLevel, Obj, Routes } from "./types";
 import { isComponent, isLazyComponent, isLeaf, isPage, isRedirect } from "./util";
 
 const pathToSegments = (path: string): string[] => {
@@ -14,30 +16,85 @@ export interface MatchState {
   context: Obj;
   params: Obj;
   outlets: (Outlet | undefined)[];
-  guards: (Guard | undefined)[];
+  guards: GuardEntry[];
+  levels: MatchLevel[];
   layout?: Component;
+  errorComponent?: Component;
 }
 
 export const makeRoute = (matchState: MatchState): Route => {
   const outlets = matchState.outlets.filter((o) => o !== undefined);
-  const guards = matchState.guards.filter((g) => g !== undefined);
 
-  return new Route({ ...matchState, outlets, guards, path: matchState.segments.join("/") });
+  return new Route({ ...matchState, outlets, path: matchState.segments.join("/") });
+};
+
+/**
+ * Builds the synthetic route rendered when navigation fails. Bubbles
+ * from the failing level (`error.depth`, defaulting to the deepest
+ * matched level) to the nearest `[ERROR]` component, preserving the
+ * `[LAYOUT]` and `[WRAPPER]`s accumulated up to that level. Ancestor
+ * `[LOAD]` loaders are intentionally not run — error routes never
+ * fetch data.
+ */
+export const makeErrorRoute = (
+  error: RouterError,
+  pathname: string,
+  source?: { levels: MatchLevel[]; params: Obj; context: Obj },
+): Route => {
+  const levels = error.state?.levels ?? source?.levels ?? [];
+  const depth = Math.min(error.depth ?? levels.length - 1, levels.length - 1);
+  const level = depth >= 0 ? levels[depth] : undefined;
+
+  const ErrorComponent = level?.errorComponent ?? DefaultErrorPage;
+  const outlets = levels
+    .slice(0, depth + 1)
+    .flatMap((l) => (l.wrapper ? [new Outlet({ component: l.wrapper })] : []));
+  outlets.push(
+    new Outlet({ component: (props: Obj) => <ErrorComponent {...props} error={error} /> }),
+  );
+
+  return new Route({
+    path: pathname.replace(/^\/+/, ""),
+    outlets,
+    guards: [],
+    levels: [],
+    params: error.state?.params ?? source?.params ?? {},
+    context: error.state?.context ?? source?.context ?? {},
+    layout: level?.layout,
+    error,
+  });
+};
+
+const notFound = (state: MatchState, attemptedSegments: string[]): RouterError => {
+  const error = new RouterError("NOT_FOUND", {
+    path: `/${attemptedSegments.filter((s) => s !== "").join("/")}`,
+  });
+  error.state = state;
+  return error;
 };
 
 export const matchRoute = (path: string, routeDef: Routes, matchState?: MatchState): Route => {
+  const depth = matchState?.levels.length ?? 0;
+  const layout = routeDef[LAYOUT] ?? matchState?.layout;
+  const errorComponent = routeDef[ERROR] ?? matchState?.errorComponent;
+
   const state: MatchState = {
     segments: [],
     params: {},
     ...matchState,
-    layout: routeDef[LAYOUT] ?? matchState?.layout,
+    layout,
+    errorComponent,
     context: { ...matchState?.context, ...routeDef[CONTEXT] },
-    guards: [...(matchState?.guards ?? []), routeDef[GUARD]],
+    guards: [
+      ...(matchState?.guards ?? []),
+      ...(routeDef[GUARD] ? [{ guard: routeDef[GUARD], depth }] : []),
+    ],
     outlets: [
       ...(matchState?.outlets ?? []),
-      routeDef[WRAPPER] ? new Outlet({ component: routeDef[WRAPPER] }) : undefined,
-      routeDef[LOAD] ? new Outlet({ loader: routeDef[LOAD] }) : undefined,
+      routeDef[WRAPPER] ? new Outlet({ component: routeDef[WRAPPER], errorComponent }) : undefined,
+      routeDef[LOAD] ? new Outlet({ loader: routeDef[LOAD], errorComponent }) : undefined,
     ],
+    levels: [...(matchState?.levels ?? []), { wrapper: routeDef[WRAPPER], layout, errorComponent }],
   };
 
   const [segment, ...remainingSegments] = pathToSegments(path);
@@ -46,7 +103,9 @@ export const matchRoute = (path: string, routeDef: Routes, matchState?: MatchSta
   let defAtSegment = routeDef[segment || "index"];
 
   if (!defAtSegment) {
-    const matchedSegment = Object.keys(routeDef).find((segment) => segment.startsWith("$"));
+    const matchedSegment = Object.keys(routeDef).find(
+      (segment) => segment.startsWith("$") || segment.startsWith(":"),
+    );
     if (matchedSegment) {
       defAtSegment = routeDef[matchedSegment];
       state.params[matchedSegment.slice(1)] = segment;
@@ -54,14 +113,14 @@ export const matchRoute = (path: string, routeDef: Routes, matchState?: MatchSta
   }
 
   if (!defAtSegment) {
-    throw new Error("Not Found.");
+    throw notFound(state, [...state.segments, segment ?? "", ...remainingSegments]);
   }
 
   state.segments.push(segment ?? "index");
 
   if (isLeaf(defAtSegment)) {
     if (remainingPath) {
-      throw new Error("Not Found.");
+      throw notFound(state, [...state.segments, ...remainingSegments]);
     }
 
     if (isRedirect(defAtSegment)) {
@@ -73,7 +132,7 @@ export const matchRoute = (path: string, routeDef: Routes, matchState?: MatchSta
     }
 
     if (isComponent(defAtSegment) || isLazyComponent(defAtSegment)) {
-      state.outlets.push(new Outlet({ component: defAtSegment }));
+      state.outlets.push(new Outlet({ component: defAtSegment, errorComponent }));
       return makeRoute(state);
     }
   }
@@ -82,14 +141,23 @@ export const matchRoute = (path: string, routeDef: Routes, matchState?: MatchSta
 
   if (isPage(defAtSegment)) {
     state.layout = defAtSegment[LAYOUT] ?? state.layout;
+    state.errorComponent = defAtSegment[ERROR] ?? state.errorComponent;
     Object.assign(state.context, defAtSegment[CONTEXT]);
-    state.guards.push(defAtSegment[GUARD]);
+    if (defAtSegment[GUARD]) {
+      state.guards.push({ guard: defAtSegment[GUARD], depth });
+    }
     state.outlets.push(
       new Outlet({
         component: defAtSegment[PAGE],
         loader: defAtSegment[LOAD],
+        errorComponent: state.errorComponent,
       }),
     );
+    state.levels[state.levels.length - 1] = {
+      ...state.levels[state.levels.length - 1],
+      layout: state.layout,
+      errorComponent: state.errorComponent,
+    };
 
     return makeRoute(state);
   }
@@ -111,8 +179,7 @@ export const makeRoutes =
     // - no forward slashes in keys
     // - at most one variable segment per level
     // - only lowercase letters (except variables)
-    // - paths/variables cannot contain $ that aren't at the beginning
+    // - paths/variables cannot contain $ or : that aren't at the beginning
     // - path variables must be unique across a path
-
     return routes;
   };

@@ -48,7 +48,7 @@ The string key `"index"` maps to the parent path (e.g., `dashboard.index` render
 
 ### Dynamic segments
 
-Use `$paramName` as the route key for URL parameters. The value is available on `route.params` without the `$`.
+Use `$paramName` as the route key for URL parameters. The `$` spelling exists only because `:paramName` would need quoting as an object key — in every _path string_ (`navigate`, `<Link to>`, `doesPathMatch`, typed `RoutePath`s) the same segment is written backend-style as `:paramName`, like Express or React Router (and like Remix, which uses `$` in file names but `:` in paths). If you prefer strict backend parity, a quoted `":paramName"` route key works too and behaves identically.
 
 ```tsx
 const routes = makeRoutes()({
@@ -57,9 +57,11 @@ const routes = makeRoutes()({
     $id: UserDetailPage, // "/users/42" → route.params.id === "42"
   },
 });
+
+router.navigate({ to: "/users/:id", params: { id: "42" } }); // typed path is "/users/:id"
 ```
 
-Only one dynamic segment is allowed per nesting level.
+The param value is available on `route.params` (and `router.pathParams`) without any prefix. Only one dynamic segment is allowed per nesting level.
 
 ## Type-safe paths
 
@@ -259,6 +261,73 @@ const routes = makeRoutes()({
 });
 ```
 
+## `[ERROR]` — error handling
+
+`[ERROR]` sets the component rendered when navigation or loading fails at or below that level. Like `[LAYOUT]`, it inherits down the tree and can be overridden. The error UI renders **inside** the `[LAYOUT]` and `[WRAPPER]`s of the matched route prefix — an access-denied message shows up within the current app shell, not on a bare page. The attempted URL is preserved (no redirect).
+
+```tsx
+import { ERROR, RouterError } from "@mobx-toolbox/router";
+import type { ErrorComponentProps } from "@mobx-toolbox/router";
+
+const routes = makeRoutes()({
+  [LAYOUT]: AppShell,
+  [ERROR]: AppError, // catches anything at or below the root
+
+  admin: {
+    [GUARD]: requireAdmin,
+    [ERROR]: AdminError, // overrides AppError for admin/*; renders inside AppShell
+    users: AdminUsersPage,
+  },
+});
+
+function AppError({ error, route }: ErrorComponentProps) {
+  if (error.type === "NOT_FOUND") return <NotFound404 path={error.path} />;
+  if (error.cause instanceof AccessDeniedError) return <AccessDenied />;
+  return <SomethingWentWrong error={error} />;
+}
+```
+
+### `RouterError`
+
+Every `[ERROR]` component receives `{ route, error }` where `error` is a `RouterError`. The `type` field discriminates the failure source; when the router wraps an application-level error (thrown by a guard or loader), the original is preserved on the standard `error.cause`.
+
+| `type`        | Fires when                                                     | `cause`          |
+| ------------- | -------------------------------------------------------------- | ---------------- |
+| `"NOT_FOUND"` | No route matches the URL                                       | —                |
+| `"GUARD"`     | A guard throws anything other than `Redirect` or `RouterError` | The thrown value |
+| `"LOAD"`      | A loader or lazy component import fails                        | The thrown value |
+| `"RENDER"`    | A page or `[WRAPPER]` component crashes during render          | The thrown value |
+
+Guards and loaders may also throw `RouterError` directly and it passes through unwrapped — `throw new RouterError("NOT_FOUND")` from a loader is the idiom for "entity doesn't exist, show a 404 in this slot".
+
+### How each failure renders
+
+- **Unknown URL** — the nearest `[ERROR]` along the _matched prefix_ renders, keeping that prefix's layout and wrappers. With no `[ERROR]` anywhere, a minimal built-in `DefaultErrorPage` renders instead — no blank screens.
+- **Guard failure** — bubbling is depth-aware: the error resolves from the level whose guard threw, so a root guard failing on `/admin/users` renders the root `[ERROR]`, not admin's. Ancestor guards run before child guards, and the URL stays put.
+- **Loader failure** — the error renders **in that outlet's slot only**; the rest of the page (and any sibling loaders' content) stays intact.
+- **Render crash** — an internal error boundary inside the layout catches page/wrapper crashes and renders the nearest `[ERROR]` with `type: "RENDER"`. The layout survives, so navigation remains usable.
+
+Error routes never run ancestor `[LOAD]` loaders — wrappers render without `route.data` on an error route.
+
+### Redirect on unknown routes
+
+Prefer redirecting over a 404 page? `[ERROR]` components render with full router context, so:
+
+```tsx
+const AppError = ({ error }: ErrorComponentProps) =>
+  error.type === "NOT_FOUND" ? <Navigate to="/" replace /> : <SomethingWentWrong error={error} />;
+```
+
+### What is deliberately NOT caught
+
+A crash in the `[LAYOUT]` component itself — or in an `[ERROR]` component — propagates out of `<Router>`. These are developer bugs, not runtime states: in development you get the error overlay and a real stack trace instead of a masking error page. For last-resort production protection, wrap the router in your own boundary:
+
+```tsx
+<MyAppErrorBoundary>
+  <Router store={router} />
+</MyAppErrorBoundary>
+```
+
 ## Navigation
 
 ### Programmatic
@@ -349,6 +418,7 @@ route.params; // Record<string, string> — URL params, e.g. { id: "42" }
 route.context; // Record<string, any> — merged [CONTEXT] from ancestor routes
 route.data; // Record<string, any> — merged return values of all [LOAD] functions
 route.layout; // Component | undefined — resolved [LAYOUT]
+route.error; // RouterError | undefined — set on synthetic error routes
 route.outlets; // Outlet[] — internal; represents each rendered segment
 route.guards; // Guard[] — internal; the full resolved guard chain
 ```
@@ -370,6 +440,8 @@ Both forms are caught by the router after a guard throws; the router then calls 
 ## Key types
 
 ```ts
+import { RouterError } from "@mobx-toolbox/router"; // class — thrown/wrapped on navigation failures
+
 import type {
   Guard, // (route: Route) => Promise<void>
   Loader, // (route: Route) => Promise<unknown>
@@ -381,6 +453,8 @@ import type {
   DynamicRoutePath, // paths with :params
   NavigateOptions, // { to, params?, replace?, search?, preserveSearch?, state? }
   MobxRouterConfig, // { history? }
+  RouterErrorType, // "NOT_FOUND" | "GUARD" | "LOAD" | "RENDER"
+  ErrorComponentProps, // { route: Route; error: RouterError }
 } from "@mobx-toolbox/router";
 ```
 
@@ -388,13 +462,17 @@ import type {
 
 ## Agent notes
 
-**Symbol keys must be imported.** `PAGE`, `GUARD`, `LOAD`, `LAYOUT`, `WRAPPER`, `CONTEXT`, `REDIRECT` are `unique symbol` values exported from `@mobx-toolbox/router`. They must be used as computed keys `[PAGE]: ...`. String keys like `"guard"` are treated as path segments, not metadata.
+**`$` is for route keys only; `:` is for path strings.** Dynamic segments are declared as `$id` keys in the routes object, but every path string in the API (`navigate({ to })`, `<Link to>`, `doesPathMatch`, `resolvePath`, the `RoutePath` union) spells that segment `:id`. A `$id` spelling inside a path string is treated as a literal segment and will not match or resolve.
+
+**Symbol keys must be imported.** `PAGE`, `GUARD`, `LOAD`, `LAYOUT`, `WRAPPER`, `CONTEXT`, `REDIRECT`, `ERROR` are `unique symbol` values exported from `@mobx-toolbox/router`. They must be used as computed keys `[PAGE]: ...`. String keys like `"guard"` are treated as path segments, not metadata.
+
+**Errors produce synthetic routes.** When matching, a guard, or the whole navigation fails, `router.activeRoute` is set to a synthetic route with `route.error: RouterError` set and an outlet chain ending in the nearest `[ERROR]` component (or `DefaultErrorPage`). Check `route.error` to distinguish an error route from a normal one. Layout and error-component render crashes are deliberately NOT caught by the router — wrap `<Router>` in an app-level ErrorBoundary for last-resort protection.
 
 **Lazy component detection is source-string based.** `isLazyComponent` checks `fn.toString().startsWith("() => import(")`. Minified, transpiled, or wrapped functions will fail this check and be treated as eager. Always write lazy routes as inline `() => import('./Module')` arrow functions — not `async () =>`, not assigned to an intermediate variable.
 
 **Module augmentation is required for typed paths.** Without augmenting `MobxRouter`, `RoutePath` is `string` and no path checking occurs. The augmentation must be in a file included in the TypeScript compilation.
 
-**`"index"` is the root key for a path level.** To render at `/dashboard`, the route tree needs either `dashboard: Component` (leaf) or `dashboard: { index: Component, ... }` (nested). A nested object without `index` produces a "Not Found" error when navigating to the parent path.
+**`"index"` is the root key for a path level.** To render at `/dashboard`, the route tree needs either `dashboard: Component` (leaf) or `dashboard: { index: Component, ... }` (nested). A nested object without `index` produces a `NOT_FOUND` error route when navigating to the parent path.
 
 **Guard execution order.** Guards are collected from outermost to innermost route level and run in that order. A thrown `Redirect` stops the chain immediately. Navigating inside a guard via `router.navigate()` also terminates the remaining chain because the router checks `this.location !== location` after each guard.
 

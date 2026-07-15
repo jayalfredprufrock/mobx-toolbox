@@ -5,7 +5,7 @@ export const resolvePath = (to: string, params?: Obj): string => {
   return to.replaceAll(/:[^/]*/g, (segment) => {
     const value = params?.[segment.slice(1)];
     if (!value)
-      throw new Error(`Unable to resolve route '${to}. Paramater '${segment}' not specified.`);
+      throw new Error(`Unable to resolve route '${to}'. Parameter '${segment}' not specified.`);
     return value;
   });
 };

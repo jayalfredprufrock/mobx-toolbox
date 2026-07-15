@@ -23,6 +23,7 @@ export interface RouteErrorBoundaryProps {
 
 interface RouteErrorBoundaryState {
   error?: RouterError;
+  route?: Route;
 }
 
 /**
@@ -31,6 +32,11 @@ interface RouteErrorBoundaryState {
  * inside the `[LAYOUT]` so the layout survives page crashes; crashes in
  * the layout itself (or in the fallback) propagate out of `<Router>` by
  * design — those are developer bugs that should stay loud.
+ *
+ * Deliberately NOT keyed by location: the boundary must be transparent
+ * to reconciliation (a key would remount the entire subtree and re-fire
+ * every effect on each navigation). Instead, a captured error is cleared
+ * when a new Route object arrives.
  */
 export class RouteErrorBoundary extends React.Component<
   RouteErrorBoundaryProps,
@@ -40,6 +46,16 @@ export class RouteErrorBoundary extends React.Component<
 
   static getDerivedStateFromError(cause: unknown): RouteErrorBoundaryState {
     return { error: cause instanceof RouterError ? cause : new RouterError("RENDER", { cause }) };
+  }
+
+  static getDerivedStateFromProps(
+    props: RouteErrorBoundaryProps,
+    state: RouteErrorBoundaryState,
+  ): Partial<RouteErrorBoundaryState> | null {
+    if (state.route === props.route) return null;
+    // a new Route object means a navigation occurred — clear any
+    // captured error so the boundary doesn't keep a stale fallback
+    return { route: props.route, error: undefined };
   }
 
   override render(): React.ReactNode {

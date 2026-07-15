@@ -47,7 +47,9 @@ export const Router = observer(({ store }: RouterProps) => {
   // component; the layout survives. On synthetic error routes the
   // boundary is omitted so a crashing [ERROR] component propagates
   // out of <Router> — a developer bug that should stay loud. Layout
-  // crashes propagate for the same reason.
+  // crashes propagate for the same reason. The boundary is unkeyed on
+  // purpose — it resets itself when the route changes — so navigation
+  // reconciles by component type instead of remounting the subtree.
   const fallback = route.levels.at(-1)?.errorComponent ?? DefaultErrorPage;
 
   return (
@@ -56,7 +58,7 @@ export const Router = observer(({ store }: RouterProps) => {
         {route.error ? (
           outlet
         ) : (
-          <RouteErrorBoundary key={store.location.key} route={route} fallback={fallback}>
+          <RouteErrorBoundary route={route} fallback={fallback}>
             {outlet}
           </RouteErrorBoundary>
         )}

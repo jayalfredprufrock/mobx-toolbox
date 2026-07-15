@@ -75,6 +75,13 @@ export class RouterStore {
   }
 
   navigate<P extends RoutePath>(options: NavigateOptions<P>): void {
+    // navigating to the current URL attaches no new information — skip
+    // the navigation (and its view transition) entirely so redundant
+    // navigations (e.g. clicking an already-active link) cause no churn
+    if (!options.state && this.isCurrentLocation(options)) {
+      return;
+    }
+
     if (!document.startViewTransition) {
       this._navigate(options);
     } else {
@@ -84,7 +91,19 @@ export class RouterStore {
   }
 
   _navigate<P extends RoutePath>(options: NavigateOptions<P>): void {
-    const { to, replace, state, search = {}, preserveSearch, params } = options;
+    const location = this.resolveLocation(options);
+
+    if (options.replace) {
+      this.history.replace(location, options.state);
+    } else {
+      this.history.push(location, options.state);
+    }
+  }
+
+  private resolveLocation<P extends RoutePath>(
+    options: NavigateOptions<P>,
+  ): { pathname: string; search: string | undefined } {
+    const { to, search = {}, preserveSearch, params } = options;
 
     const searchParams = search instanceof URLSearchParams ? search : new URLSearchParams(search);
 
@@ -96,22 +115,25 @@ export class RouterStore {
       }
     }
 
-    const location = {
+    return {
       pathname: resolvePath(to, params),
       search: searchParams.size ? `?${searchParams.toString()}` : undefined,
     };
+  }
 
-    if (replace) {
-      this.history.replace(location, state);
-    } else {
-      this.history.push(location, state);
-    }
+  private isCurrentLocation<P extends RoutePath>(options: NavigateOptions<P>): boolean {
+    if (!this.location) return false;
+
+    const target = this.resolveLocation(options);
+    return (
+      target.pathname === this.location.pathname && (target.search ?? "") === this.location.search
+    );
   }
 
   setQueryParam(param: string, value: string): void {
     const params = new URLSearchParams(this.location.search);
     params.set(param, value);
-    this.history.replace({ search: params.toString() });
+    this.history.replace({ search: `?${params.toString()}` });
   }
 
   removeQueryParam(param: string): string | undefined {
@@ -119,7 +141,7 @@ export class RouterStore {
     const value = params.get(param) ?? undefined;
     if (value !== undefined) {
       params.delete(param);
-      this.history.replace({ search: params.toString() });
+      this.history.replace({ search: params.size ? `?${params.toString()}` : "" });
     }
     return value;
   }
@@ -131,6 +153,16 @@ export class RouterStore {
     // and should really be handled server-side
     if (location.pathname !== "/" && location.pathname.endsWith("/")) {
       this.history.replace({ ...location, pathname: location.pathname.slice(0, -1) });
+      return;
+    }
+
+    // a same-pathname change (query params, history state) can't affect
+    // which route matches, its guards, or its loaders (none of which can
+    // observe search params) — update the observable location without
+    // rebuilding the route, so query-param changes don't refetch loaders
+    // or replace activeRoute
+    if (this.activeRoute && this.location?.pathname === location.pathname) {
+      this.location = location;
       return;
     }
 

@@ -301,6 +301,58 @@ describe("RouterStore", () => {
       // @ts-expect-error — redirect enforces params the same way
       expect(redirect({ to: "/users/:id" })).toBeInstanceOf(Redirect);
     });
+
+    test("navigating to the current URL is a no-op", async () => {
+      const { router, history } = await makeRouter("/about");
+      const before = router.activeRoute;
+      router.navigate({ to: "/about" });
+      expect(history.index).toBe(0);
+      expect(router.activeRoute).toBe(before);
+    });
+
+    test("the no-op comparison includes search params", async () => {
+      const { router, history } = await makeRouter("/about?q=1");
+      router.navigate({ to: "/about", search: { q: "1" } });
+      expect(history.index).toBe(0);
+
+      router.navigate({ to: "/about", search: { q: "2" } });
+      expect(history.index).toBe(1);
+      expect(history.location.search).toBe("?q=2");
+    });
+
+    test("navigating to the current URL with state still navigates", async () => {
+      const { router, history } = await makeRouter("/about");
+      router.navigate({ to: "/about", state: { fromMenu: true } });
+      expect(history.index).toBe(1);
+    });
+  });
+
+  describe("same-pathname location changes", () => {
+    test("query-param changes do not rebuild the route or re-run loaders", async () => {
+      let loads = 0;
+      const loaderRoutes = makeRoutes()({
+        dashboard: {
+          [LOAD]: async () => {
+            loads++;
+            return {};
+          },
+          [PAGE]: PageA,
+        },
+      });
+      const history = createMemoryHistory({ initialEntries: ["/dashboard"] });
+      const router = new RouterStore({ history });
+      router.initialize(loaderRoutes);
+      await vi.waitFor(() => expect(router.activeRoute).toBeDefined());
+      await vi.waitFor(() => expect(loads).toBe(1));
+      const route = router.activeRoute;
+
+      router.setQueryParam("page", "2");
+      await vi.waitFor(() => expect(router.location.search).toBe("?page=2"));
+
+      expect(router.activeRoute).toBe(route);
+      expect(loads).toBe(1);
+      expect(router.query).toEqual({ page: "2" });
+    });
   });
 
   describe("query params", () => {
@@ -538,6 +590,37 @@ describe("error handling", () => {
 
       const passthrough = RouteErrorBoundary.getDerivedStateFromError(new RouterError("LOAD"));
       expect(passthrough.error?.type).toBe("LOAD");
+    });
+
+    test("resets its captured error when a new route is rendered", () => {
+      const routeA = {} as Route;
+      const routeB = {} as Route;
+
+      // simulate React's lifecycle: mount, crash, re-render, navigate
+      let state = {
+        ...RouteErrorBoundary.getDerivedStateFromProps(
+          { route: routeA, fallback: RootErrorPage },
+          {},
+        ),
+      };
+      state = { ...state, ...RouteErrorBoundary.getDerivedStateFromError(new Error("boom")) };
+      expect(state.error).toBeDefined();
+
+      // re-render with the same route keeps the error (no reset loop)
+      expect(
+        RouteErrorBoundary.getDerivedStateFromProps(
+          { route: routeA, fallback: RootErrorPage },
+          state,
+        ),
+      ).toBeNull();
+
+      // a new Route object (navigation) clears the error without a remount
+      const next = RouteErrorBoundary.getDerivedStateFromProps(
+        { route: routeB, fallback: RootErrorPage },
+        state,
+      );
+      expect(next?.error).toBeUndefined();
+      expect(next?.route).toBe(routeB);
     });
 
     test("renders children without an error and the fallback with one", () => {

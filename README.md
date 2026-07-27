@@ -1,6 +1,6 @@
 # mobx-toolbox
 
-A collection of MobX + React utilities: lazy-loading observables, model/store factories, a client-side router, form state management, dialog management, and general-purpose React hooks.
+A collection of MobX + React utilities: lazy-loading observables, model/store factories, a client-side router, form state management, dialog management, a headless virtualized table, and general-purpose React hooks.
 
 ## Installation
 
@@ -8,18 +8,24 @@ A collection of MobX + React utilities: lazy-loading observables, model/store fa
 pnpm add @jayalfredprufrock/mobx-toolbox mobx mobx-react-lite
 ```
 
-Peer dependencies:
-
-| Package                    | Required for                                                        |
-| -------------------------- | ------------------------------------------------------------------- |
-| `mobx` + `mobx-react-lite` | all modules                                                         |
-| `typebox`                  | `form`, `model`                                                     |
-| `history`                  | `router`                                                            |
-| `react`                    | `dialog`, `form`, `lazy-observable`, `react-util`, `router`, `util` |
+Peer dependencies are per-module — see the **Requires** column below. `typebox` and `history` are declared optional, so they are only pulled in if you reach for `form`/`model` or `router`.
 
 ---
 
 ## Modules
+
+Each module is its own entry point — import from `@jayalfredprufrock/mobx-toolbox/<module>` so you only pull in what you use.
+
+| Module                                | Summary                                                                       | Requires                                      |
+| ------------------------------------- | ----------------------------------------------------------------------------- | --------------------------------------------- |
+| [`dialog`](#dialog)                   | Dialog/modal stack with state transitions for enter/exit animations           | `mobx`, `mobx-react-lite`, `react`            |
+| [`form`](#form)                       | Schema-driven form state with TypeBox validation and submit lifecycle         | `mobx`, `mobx-react-lite`, `react`, `typebox` |
+| [`lazy-observable`](#lazy-observable) | Observables that fetch on first observation and reset when unobserved         | `mobx`, `mobx-react-lite`, `react`            |
+| [`model`](#model)                     | Observable model classes and collection stores from TypeBox schemas           | `mobx`, `typebox`                             |
+| [`react-util`](#react-util)           | General-purpose React hooks: async state, debouncing, resize, mount lifecycle | `react`                                       |
+| [`router`](#router)                   | Client-side router with symbol-keyed guards, loaders and layouts              | `mobx`, `mobx-react-lite`, `react`, `history` |
+| [`table`](#table)                     | Headless, virtualized data table                                              | `mobx`, `mobx-react-lite`, `react`            |
+| [`util`](#util)                       | Small MobX + React utilities — `mutable`, `useAutorun`                        | `mobx`, `react`                               |
 
 ### [`dialog`](src/dialog/README.md)
 
@@ -115,6 +121,24 @@ await userStore.all.value[0].delete(); // removes from store too
 
 ---
 
+### [`react-util`](src/react-util/README.md)
+
+General-purpose React hooks: async state management, debouncing, resize observation, and mount lifecycle helpers.
+
+```ts
+import { useAsync, useDebouncedCallback } from "@jayalfredprufrock/mobx-toolbox/react-util";
+
+// Runs on mount; re-runs when deps change; handles loading/error/value
+const state = useAsync(async (signal) => fetchUser(id), [id]);
+
+// Stable debounced callback, safe to call after unmount
+const save = useDebouncedCallback((value) => persist(value), []);
+```
+
+→ [Full docs](src/react-util/README.md)
+
+---
+
 ### [`router`](src/router/README.md)
 
 MobX-based client-side router for React. Routes are plain objects; symbol-keyed metadata controls guards, loaders, and layouts.
@@ -150,21 +174,34 @@ function App() {
 
 ---
 
-### [`react-util`](src/react-util/README.md)
+### [`table`](src/table/README.md)
 
-General-purpose React hooks: async state management, debouncing, resize observation, and mount lifecycle helpers.
+Headless, virtualized data table. The model owns columns, widths, sorting, selection, expansion and the render window; the components own only structure and ARIA.
 
-```ts
-import { useAsync, useDebouncedCallback } from "@jayalfredprufrock/mobx-toolbox/react-util";
+```tsx
+import { useTable, Table } from "@jayalfredprufrock/mobx-toolbox/table";
 
-// Runs on mount; re-runs when deps change; handles loading/error/value
-const state = useAsync(async (signal) => fetchUser(id), [id]);
+function UserTable({ users }) {
+  const table = useTable({ rows: users, columns: ["name", "email", { selection: true }] });
 
-// Stable debounced callback, safe to call after unmount
-const save = useDebouncedCallback((value) => persist(value), []);
+  return (
+    <Table.Root table={table}>
+      <Table.Header>
+        {(column) => <Table.ColumnHeader column={column}>{column.title}</Table.ColumnHeader>}
+      </Table.Header>
+      <Table.Body>
+        {(row) => (
+          <Table.Row row={row}>
+            {(column) => <Table.Cell column={column}>{String(column.getValue(row))}</Table.Cell>}
+          </Table.Row>
+        )}
+      </Table.Body>
+    </Table.Root>
+  );
+}
 ```
 
-→ [Full docs](src/react-util/README.md)
+→ [Full docs](src/table/README.md)
 
 ---
 

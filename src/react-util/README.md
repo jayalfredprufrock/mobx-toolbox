@@ -117,17 +117,17 @@ useMountEffect(() => {
 });
 ```
 
-## `useResizeObserver`
+## `useResize`
 
-Tracks the size of a DOM element using `ResizeObserver` (with a `window.resize` fallback for environments that don't support it).
+Tracks the **content-box** size of a DOM element using `ResizeObserver` (with a `window.resize` fallback for environments that don't support it).
 
 ```ts
-import { useResizeObserver } from "@jayalfredprufrock/mobx-toolbox/react-util";
+import { useResize } from "@jayalfredprufrock/mobx-toolbox/react-util";
 
 function ResizableBox() {
   const ref = useRef<HTMLDivElement>(null);
 
-  useResizeObserver(ref, (width, height) => {
+  useResize(ref, (width, height) => {
     console.log("new size:", width, height);
   });
 
@@ -135,4 +135,8 @@ function ResizableBox() {
 }
 ```
 
-The callback fires once on mount with the initial size, then again whenever the element resizes.
+The callback fires with the initial size before the first paint, then again whenever the element resizes.
+
+Content box means padding, border and scrollbars are all excluded. That matters when the measurement feeds back into layout: a width that included the scrollbar would size children to overflow the very box you measured. It also means a scrollbar (or a reserved `scrollbar-gutter` strip) appearing or disappearing is reported as a real size change. Values are fractional — round at the point of use if you need integers.
+
+`onResize` is read through a ref, so an inline arrow is fine: the observer is created once per element and always calls your latest callback. This is the hook the `table` module uses to measure its viewport.

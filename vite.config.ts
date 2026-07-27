@@ -19,6 +19,7 @@ export default defineConfig({
       "lazy-observable": "src/lazy-observable/index.ts",
       model: "src/model/index.ts",
       router: "src/router/index.ts",
+      table: "src/table/index.ts",
       util: "src/util/index.ts",
       "react-util": "src/react-util/index.ts",
     },

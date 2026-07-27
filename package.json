@@ -22,6 +22,7 @@
     "./model": "./dist/model.mjs",
     "./react-util": "./dist/react-util.mjs",
     "./router": "./dist/router.mjs",
+    "./table": "./dist/table.mjs",
     "./util": "./dist/util.mjs",
     "./package.json": "./package.json"
   },

@@ -60,12 +60,20 @@ const userStore = {
 };
 
 const UserCard = observer(() => {
-  if (userStore.user.loading) return <Spinner />;
   if (userStore.user.error) return <Error />;
+  if (!userStore.user.loaded) return <Spinner />;
   return <div>{userStore.user.value?.name}</div>;
 });
-// Accessing `user.loading` inside observer triggers the fetch automatically.
+// Reading the observable inside observer triggers the fetch automatically.
 ```
+
+**Gate on `loaded`, not `loading`.** The fetch is kicked off one microtask after the render that first observes the lazy — see [Load timing](#load-timing) — so `status` is still `"init"` during that render and `loading` is `false`. Branching on `loading` therefore renders the loaded branch once (with no value) before the spinner appears. `!loaded` covers `"init"`, `"loading"` and `"error"` uniformly, which is what `LazyObserver` does internally.
+
+### Load timing
+
+`onBecomeObserved` fires synchronously, which inside an `observer()` component means _during its render_. Starting the fetch there would write `status` mid-render and force-update any other mounted component observing the same lazy, which React rejects — `Cannot update a component while rendering a different component`.
+
+So the implicit load-on-observe is deferred by a microtask: still the same task, long before any fetch could resolve, but past the render pass. Explicit `getOrLoad()` / `reload()` are **not** deferred — they aren't called from a render pass, and they start loading synchronously.
 
 ## `lazyObservableArray`
 

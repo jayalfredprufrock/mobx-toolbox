@@ -131,6 +131,31 @@ export function lazyObservable<T>(
   };
 
   let observedCount = 0;
+  let loadScheduled = false;
+
+  /**
+   * MobX fires `onBecomeObserved` synchronously, which for an `observer()` component means *during
+   * its render*. Calling `load()` there writes `status` mid-render, and if another mounted component
+   * already observes this lazy, mobx-react-lite force-updates it while React is rendering something
+   * else — which React rejects ("Cannot update a component while rendering a different component").
+   *
+   * Deferring to a microtask moves the write just past the render pass. It still runs in the same
+   * task, well before any fetch could resolve, so the only observable difference is that `status`
+   * reads "init" rather than "loading" during that first render.
+   */
+  const scheduleLoad = (): void => {
+    if (loadScheduled) return;
+    loadScheduled = true;
+    queueMicrotask(() => {
+      loadScheduled = false;
+      // the lazy may have been unobserved again before this ran (a component that mounted and
+      // immediately unmounted), or been loaded explicitly via reload()/getOrLoad()/set()
+      if (!observedCount) return;
+      if (status.get() === "error" || status.get() === "init") {
+        load();
+      }
+    });
+  };
 
   const onObserved = () => {
     observedCount = Math.min(2, observedCount + 1);
@@ -143,7 +168,7 @@ export function lazyObservable<T>(
     }
     clearTimeout(resetTimer);
     if (status.get() === "error" || status.get() === "init") {
-      load();
+      scheduleLoad();
     }
   };
 

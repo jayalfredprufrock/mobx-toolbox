@@ -6,6 +6,9 @@ export default defineConfig({
   },
   fmt: {},
   lint: { options: { typeAware: true, typeCheck: true } },
+  test: {
+    setupFiles: ["./test-setup.ts"],
+  },
   pack: {
     minify: false,
     platform: "browser",

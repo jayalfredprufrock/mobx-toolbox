@@ -35,14 +35,57 @@ describe("lazyObservable", () => {
     expect(lazy.value).toBe(0);
   });
 
-  test("transitions to loading when first observed", () => {
+  // Load-on-observe is deferred by a microtask so it never mutates state inside the render pass of
+  // the component that triggered it — see `scheduleLoad`. These three tests pin that contract.
+
+  test("transitions to loading a microtask after being first observed", async () => {
     const fetchFn = vi.fn().mockResolvedValue(42);
     const lazy = lazyObservable(fetchFn);
 
     observe(() => void lazy.value);
 
+    // still untouched in the synchronous turn that observed it
+    expect(lazy.status).toBe("init");
+    expect(lazy.loading).toBe(false);
+    expect(fetchFn).not.toHaveBeenCalled();
+
+    await Promise.resolve();
+
     expect(lazy.status).toBe("loading");
     expect(lazy.loading).toBe(true);
+    expect(fetchFn).toHaveBeenCalledOnce();
+  });
+
+  test("skips the deferred load when unobserved again before it runs", async () => {
+    const fetchFn = vi.fn().mockResolvedValue(42);
+    const lazy = lazyObservable(fetchFn);
+
+    const dispose = observe(() => void lazy.value);
+    dispose(); // gone within the same turn, e.g. a component that mounted and immediately unmounted
+    disposeList = disposeList.filter((d) => d !== dispose);
+
+    await Promise.resolve();
+
+    expect(fetchFn).not.toHaveBeenCalled();
+    expect(lazy.status).toBe("init");
+  });
+
+  test("an explicit getOrLoad still loads synchronously and is not double-fetched", async () => {
+    const fetchFn = vi.fn().mockResolvedValue(42);
+    const lazy = lazyObservable(fetchFn);
+
+    observe(() => void lazy.value);
+    // imperative calls are never in a render pass, so they are not deferred
+    const promise = lazy.getOrLoad();
+    expect(lazy.status).toBe("loading");
+    expect(fetchFn).toHaveBeenCalledOnce();
+
+    await promise;
+    await Promise.resolve();
+
+    // the queued microtask sees a non-init status and stands down
+    expect(fetchFn).toHaveBeenCalledOnce();
+    expect(lazy.value).toBe(42);
   });
 
   test("loads value when observed", async () => {

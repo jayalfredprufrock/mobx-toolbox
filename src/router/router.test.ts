@@ -1198,3 +1198,76 @@ describe("React Refresh invariants", () => {
     expect(router.activeRoute?.outlets.at(-1)?.Component).toBe(PageB);
   });
 });
+
+describe("loading signals for indicator UI", () => {
+  const deferred = () => {
+    let resolve!: (value?: unknown) => void;
+    const promise = new Promise((res) => {
+      resolve = res as any;
+    });
+    return { promise, resolve };
+  };
+
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  test("a cold load shows [LOADING] but never the progress bar", async () => {
+    const load = deferred();
+    const routes = makeRoutes()({ slow: { [LOAD]: () => load.promise, [PAGE]: PageB } });
+    const history = createMemoryHistory({ initialEntries: ["/slow"] });
+    const router = new RouterStore({ history });
+    router.initialize(routes as any);
+
+    // skeleton on screen: isLoading is set, but there is no previous page,
+    // so a bar would be redundant with the skeleton
+    await vi.advanceTimersByTimeAsync(300);
+    expect(router.isLoading).toBe(true);
+    expect(router.isSlowNavigation).toBe(false);
+
+    // the hold window after data arrives — isLoading is still true because
+    // the skeleton is still up, and activeRoute is now set, so a naive
+    // `isLoading && activeRoute` check would flash a bar here
+    load.resolve({ a: 1 });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(router.isLoading).toBe(true);
+    expect(router.activeRoute).toBeDefined();
+    expect(router.isSlowNavigation).toBe(false);
+
+    await vi.advanceTimersByTimeAsync(300);
+    expect(router.isLoading).toBe(false);
+    expect(router.isSlowNavigation).toBe(false);
+  });
+
+  test("a warm navigation shows the progress bar and never [LOADING]", async () => {
+    const load = deferred();
+    const routes = makeRoutes()({
+      index: PageA,
+      slow: { [LOAD]: () => load.promise, [PAGE]: PageB },
+    });
+    const history = createMemoryHistory({ initialEntries: ["/"] });
+    const router = new RouterStore({ history });
+    router.initialize(routes as any);
+    await vi.advanceTimersByTimeAsync(0);
+
+    // inside the debounce: in flight, but nothing shown yet
+    router.navigate({ to: "/slow" } as any);
+    await vi.advanceTimersByTimeAsync(100);
+    expect(router.isNavigating).toBe(true);
+    expect(router.isSlowNavigation).toBe(false);
+
+    // past the debounce: bar over the still-rendered previous page. The
+    // pending route's outlets are not rendered, so [LOADING] cannot appear.
+    await vi.advanceTimersByTimeAsync(300);
+    expect(router.isSlowNavigation).toBe(true);
+    expect(router.activeRoute?.path).toBe("");
+
+    load.resolve({ a: 1 });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(router.isSlowNavigation).toBe(false);
+    expect(router.activeRoute?.path).toBe("slow");
+  });
+});

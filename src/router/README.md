@@ -375,7 +375,7 @@ Navigation does not blank the screen. When you navigate, the router matches, run
 
 That splits loading UI into two cases, and they want different things:
 
-**Warm navigation — drive an indicator off `router.isLoading`.** The old page is intact, so the right UI is an unobtrusive progress cue, not a placeholder:
+**Warm navigation — a progress bar in the layout.** The old page is intact, so the right UI is an unobtrusive progress cue, not a placeholder. Put it in the `[LAYOUT]`, which stays mounted across navigation:
 
 ```tsx
 import { observer } from "mobx-react-lite";
@@ -385,14 +385,77 @@ const AppShell = observer(({ children }) => {
   return (
     <div>
       <Nav />
-      {router.isLoading && <TopProgressBar />}
-      <main data-busy={router.isLoading}>{children}</main>
+      {router.isSlowNavigation && <div className="progress-bar" />}
+      <main data-busy={router.isSlowNavigation}>{children}</main>
     </div>
   );
 });
 ```
 
-`isLoading` is debounced (see the timings below), so navigations that resolve quickly never flip it and the bar never flickers. `router.isNavigating` is the undebounced version — accurate, but it flips for every navigation however fast, so it will flicker if you render off it. Use it for logic, not pixels.
+The bar needs no JS state or timers. Conditionally rendering it means each slow navigation mounts a fresh element whose CSS animation starts from zero:
+
+```css
+.progress-bar {
+  position: fixed;
+  inset: 0 auto auto 0;
+  height: 3px;
+  background: hsl(220 90% 55%);
+  /* Long duration + heavy ease-out: creeps toward 100% and decelerates, so
+     it never visibly completes before the route lands. This is a cue that
+     something is happening, not real progress — loaders report none. */
+  animation: progress-creep 6s cubic-bezier(0, 0.6, 0.2, 1) forwards;
+}
+
+@keyframes progress-creep {
+  from {
+    width: 0;
+  }
+  to {
+    width: 100%;
+  }
+}
+```
+
+### Choosing the signal: should the bar coexist with `[LOADING]`?
+
+Both are legitimate designs, and the choice is one computed either way:
+
+| You want                                                  | Use                       |
+| --------------------------------------------------------- | ------------------------- |
+| Bar on warm navigations only; skeleton owns the cold load | `router.isSlowNavigation` |
+| Bar whenever anything is loading, skeleton included       | `router.isLoading`        |
+
+`isSlowNavigation` makes the two **mutually exclusive**. It is true only when a pending route has passed the debounce _and_ a page is already on screen, so the cold load — where `[LOADING]` renders instead — is excluded.
+
+`isLoading` makes the bar a superset: true whenever an indicator is warranted anywhere, which includes the whole cold-load skeleton phase. The `[LAYOUT]` renders during a cold load (from `pendingRoute`), so a bar inside it appears above the skeleton, and it stays continuously visible from the skeleton through to the finished page with no gap.
+
+Here is what each is true for:
+
+| Phase                         | `isNavigating` | `isLoading` | `isSlowNavigation` | `[LOADING]` on screen |
+| ----------------------------- | -------------- | ----------- | ------------------ | --------------------- |
+| cold load, inside debounce    | ✓              | —           | —                  | no                    |
+| cold load, skeleton up        | ✓              | ✓           | —                  | yes                   |
+| cold load, hold after data    | —              | ✓           | —                  | yes                   |
+| cold load, settled            | —              | —           | —                  | no                    |
+| warm nav, inside the debounce | ✓              | —           | —                  | no                    |
+| warm nav, slow load           | ✓              | ✓           | ✓                  | no                    |
+| warm nav, settled             | —              | —           | —                  | no                    |
+
+Note the third row: `isNavigating` has already gone false during the cold-load hold, because the route has landed and `pendingRoute` is cleared while the skeleton is still held on screen. So `isLoading && isNavigating` would blink the bar out just before the content appears — if you want the always-visible bar, use `isLoading` alone.
+
+`router.isNavigating` is the undebounced "something is in flight" — accurate, but it flips for every navigation however fast, so a bar driven off it flickers. Use it for logic, not pixels.
+
+**Cold load — `[LOADING]` renders.** On the first navigation there's no previous page to preserve, so the pending route renders and each pending outlet shows the nearest `[LOADING]` component. It inherits down the tree and can be overridden exactly like `[ERROR]`:
+
+````tsx
+import { LOADING, ERROR } from "@mobx-toolbox/router";
+
+const routes = makeRoutes()({
+  [LAYOUT]: AppShell,
+  [LOADING]: AppSkeleton, // shown at or below the root during a cold load
+  [ERROR]: AppError,
+
+  reports: {
 
 **Cold load — `[LOADING]` renders.** On the first navigation there's no previous page to preserve, so the pending route renders and each pending outlet shows the nearest `[LOADING]` component. It inherits down the tree and can be overridden exactly like `[ERROR]`:
 
@@ -414,7 +477,7 @@ const routes = makeRoutes()({
 function AppSkeleton({ route }: LoadingComponentProps) {
   return <SkeletonGrid />;
 }
-```
+````
 
 `[LOADING]` renders inside the `[LAYOUT]` and any wrappers ahead of it, so your app shell is present around the skeleton. With no `[LOADING]` anywhere, a minimal built-in `DefaultLoadingPage` (`<p>Loading...</p>`) renders — define a root-level `[LOADING]` to replace it.
 
@@ -563,7 +626,8 @@ router.location                        // History Location — updates as soon a
 router.activeRoute                     // Route | undefined — the page currently rendered
 router.pendingRoute                    // Route | undefined — the route being guarded/loaded
 router.isNavigating                    // boolean — a navigation is in flight (undebounced)
-router.isLoading                       // boolean — it has been slow enough to show an indicator
+router.isLoading                       // boolean — any loading indicator is warranted
+router.isSlowNavigation                // boolean — slow nav with a page already on screen
 router.search                          // URLSearchParams (reactive)
 router.query                           // Record<string, string> — parsed search params
 router.pathParams                      // Record<string, string> — URL params

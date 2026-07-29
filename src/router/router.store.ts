@@ -51,21 +51,39 @@ export class RouterStore {
    * `true` from the moment a navigation starts until it lands. Covers the
    * guard phase too, so it's the honest answer to "is something in
    * flight" — but it flips for every navigation, however fast, so it will
-   * flicker if you render an indicator straight off it. Use
-   * {@link isLoading} for that.
+   * flicker if you render an indicator straight off it. Use it for logic;
+   * see {@link isLoading} for what to render from.
    */
   get isNavigating(): boolean {
     return this.pendingRoute !== undefined;
   }
 
   /**
-   * `true` once a pending navigation has been slow enough to be worth
-   * telling the user about. Debounced by `LOADING_DELAY_MS`, so quick
-   * navigations never flip it — drive progress bars and dimmed states off
-   * this one.
+   * `true` whenever a loading indicator is warranted *anywhere*: either a
+   * pending navigation has passed `LOADING_DELAY_MS`, or a cold load's
+   * `[LOADING]` component is on screen (including through the
+   * minimum-duration hold). Debounced, so quick navigations never flip it.
+   *
+   * Use this for a layout progress bar that should stay visible alongside
+   * a cold load's `[LOADING]` skeleton. For a bar that yields to the
+   * skeleton instead, use {@link isSlowNavigation}.
    */
   get isLoading(): boolean {
     return this.pendingRoute?.isLoading ?? this.activeRoute?.isLoading ?? false;
+  }
+
+  /**
+   * `true` when a navigation has been slow enough to be worth showing
+   * *and* there is already a page on screen to show it over — the usual
+   * signal for a layout-level progress bar.
+   *
+   * Excludes the cold load, where the pending route's `[LOADING]`
+   * component is on screen instead, so a bar driven off this is mutually
+   * exclusive with `[LOADING]`. Use {@link isLoading} if you want both at
+   * once.
+   */
+  get isSlowNavigation(): boolean {
+    return !!this.pendingRoute?.isLoading && this.activeRoute !== undefined;
   }
 
   constructor(config?: MobxRouterConfig) {
@@ -79,6 +97,7 @@ export class RouterStore {
       activeSegments: computed,
       isNavigating: computed,
       isLoading: computed,
+      isSlowNavigation: computed,
 
       setLocation: action,
     });

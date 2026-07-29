@@ -3,7 +3,7 @@ import { RouterError } from "./errors";
 import { Outlet } from "./outlet";
 import { Redirect } from "./redirect";
 import { Route } from "./route";
-import { CONTEXT, ERROR, GUARD, LAYOUT, LOAD, PAGE, REDIRECT, WRAPPER } from "./symbols";
+import { CONTEXT, ERROR, GUARD, LAYOUT, LOAD, LOADING, PAGE, REDIRECT, WRAPPER } from "./symbols";
 import type { Component, GuardEntry, MatchLevel, Obj, Routes } from "./types";
 import { isComponent, isLazyComponent, isLeaf, isPage, isRedirect } from "./util";
 
@@ -20,6 +20,7 @@ export interface MatchState {
   levels: MatchLevel[];
   layout?: Component;
   errorComponent?: Component;
+  loadingComponent?: Component;
 }
 
 export const makeRoute = (matchState: MatchState): Route => {
@@ -49,8 +50,10 @@ export const makeErrorRoute = (
   const outlets = levels
     .slice(0, depth + 1)
     .flatMap((l) => (l.wrapper ? [new Outlet({ component: l.wrapper })] : []));
+  // `route` only — `[ERROR]` components never receive children, on the
+  // synthetic-route path or the in-slot one
   outlets.push(
-    new Outlet({ component: (props: Obj) => <ErrorComponent {...props} error={error} /> }),
+    new Outlet({ component: ({ route }: Obj) => <ErrorComponent route={route} error={error} /> }),
   );
 
   return new Route({
@@ -77,6 +80,7 @@ export const matchRoute = (path: string, routeDef: Routes, matchState?: MatchSta
   const depth = matchState?.levels.length ?? 0;
   const layout = routeDef[LAYOUT] ?? matchState?.layout;
   const errorComponent = routeDef[ERROR] ?? matchState?.errorComponent;
+  const loadingComponent = routeDef[LOADING] ?? matchState?.loadingComponent;
 
   const state: MatchState = {
     segments: [],
@@ -84,6 +88,7 @@ export const matchRoute = (path: string, routeDef: Routes, matchState?: MatchSta
     ...matchState,
     layout,
     errorComponent,
+    loadingComponent,
     context: { ...matchState?.context, ...routeDef[CONTEXT] },
     guards: [
       ...(matchState?.guards ?? []),
@@ -91,8 +96,12 @@ export const matchRoute = (path: string, routeDef: Routes, matchState?: MatchSta
     ],
     outlets: [
       ...(matchState?.outlets ?? []),
-      routeDef[WRAPPER] ? new Outlet({ component: routeDef[WRAPPER], errorComponent }) : undefined,
-      routeDef[LOAD] ? new Outlet({ loader: routeDef[LOAD], errorComponent }) : undefined,
+      routeDef[WRAPPER]
+        ? new Outlet({ component: routeDef[WRAPPER], errorComponent, loadingComponent })
+        : undefined,
+      routeDef[LOAD]
+        ? new Outlet({ loader: routeDef[LOAD], errorComponent, loadingComponent })
+        : undefined,
     ],
     levels: [...(matchState?.levels ?? []), { wrapper: routeDef[WRAPPER], layout, errorComponent }],
   };
@@ -132,7 +141,7 @@ export const matchRoute = (path: string, routeDef: Routes, matchState?: MatchSta
     }
 
     if (isComponent(defAtSegment) || isLazyComponent(defAtSegment)) {
-      state.outlets.push(new Outlet({ component: defAtSegment, errorComponent }));
+      state.outlets.push(new Outlet({ component: defAtSegment, errorComponent, loadingComponent }));
       return makeRoute(state);
     }
   }
@@ -142,6 +151,7 @@ export const matchRoute = (path: string, routeDef: Routes, matchState?: MatchSta
   if (isPage(defAtSegment)) {
     state.layout = defAtSegment[LAYOUT] ?? state.layout;
     state.errorComponent = defAtSegment[ERROR] ?? state.errorComponent;
+    state.loadingComponent = defAtSegment[LOADING] ?? state.loadingComponent;
     Object.assign(state.context, defAtSegment[CONTEXT]);
     if (defAtSegment[GUARD]) {
       state.guards.push({ guard: defAtSegment[GUARD], depth });
@@ -151,6 +161,7 @@ export const matchRoute = (path: string, routeDef: Routes, matchState?: MatchSta
         component: defAtSegment[PAGE],
         loader: defAtSegment[LOAD],
         errorComponent: state.errorComponent,
+        loadingComponent: state.loadingComponent,
       }),
     );
     state.levels[state.levels.length - 1] = {

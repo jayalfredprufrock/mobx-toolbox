@@ -1,6 +1,6 @@
 import { computed, makeObservable } from "mobx";
 import { RouterError } from "./errors";
-import type { Outlet } from "./outlet";
+import type { LoadOptions, Outlet } from "./outlet";
 import { Redirect } from "./redirect";
 import type { Component, Guard, GuardEntry, MatchLevel, Obj } from "./types";
 
@@ -33,6 +33,26 @@ export class Route {
     return Object.assign({}, ...this.outlets.map((o) => o.data));
   }
 
+  /**
+   * `true` once a pending outlet has crossed the debounce threshold and
+   * its `[LOADING]` component is on screen. This is the signal to drive
+   * layout-level indicators (a top progress bar, a dimmed shell) — it
+   * stays `false` through the quiet window, so navigations that resolve
+   * quickly never flash an indicator.
+   */
+  get isLoading(): boolean {
+    return this.outlets.some((o) => o.state === "loading");
+  }
+
+  /**
+   * `true` whenever any outlet is still resolving, including the quiet
+   * window before `isLoading` flips. Use this to reason about whether
+   * navigation has settled (tests, effects) — not to render indicators.
+   */
+  get isPending(): boolean {
+    return this.outlets.some((o) => o.state === "preloading" || o.state === "loading");
+  }
+
   constructor(def: RouteConfig) {
     this.path = def.path;
     this.guardEntries = def.guards;
@@ -46,6 +66,8 @@ export class Route {
 
     makeObservable(this, {
       data: computed,
+      isLoading: computed,
+      isPending: computed,
     });
   }
 
@@ -62,7 +84,7 @@ export class Route {
     }
   }
 
-  async load(): Promise<void> {
-    await Promise.all(this.outlets.map((outlet) => outlet.load(this)));
+  async load(options?: LoadOptions): Promise<void> {
+    await Promise.all(this.outlets.map((outlet) => outlet.load(this, options)));
   }
 }

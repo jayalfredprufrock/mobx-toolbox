@@ -3,11 +3,11 @@ import { createMemoryHistory } from "history";
 import { DefaultErrorPage, RouteErrorBoundary } from "./components/error";
 import { RouterError } from "./errors";
 import { makeRoutes, matchRoute } from "./make-routes";
-import type { Outlet } from "./outlet";
+import { DefaultLoadingPage, Outlet } from "./outlet";
 import { redirect, Redirect } from "./redirect";
 import type { Route } from "./route";
 import { RouterStore } from "./router.store";
-import { ERROR, GUARD, LAYOUT, LOAD, PAGE, REDIRECT, WRAPPER } from "./symbols";
+import { ERROR, GUARD, LAYOUT, LOAD, LOADING, PAGE, REDIRECT, WRAPPER } from "./symbols";
 import type { ExtractPaths, Guard } from "./types";
 
 const PageA = () => null;
@@ -639,5 +639,562 @@ describe("error handling", () => {
       expect(element.props.error.type).toBe("RENDER");
       expect(element.props.route).toBe(route);
     });
+  });
+
+  describe("in-slot errors drop children", () => {
+    test("a failing loader's [ERROR] does not render the outlets below it", async () => {
+      const routes = makeRoutes()({
+        [ERROR]: RootErrorPage,
+        dashboard: {
+          [LOAD]: async () => {
+            throw new Error("fetch failed");
+          },
+          users: PageA,
+        },
+      });
+      const { router } = await makeRouter(routes, "/dashboard/users");
+
+      // the load outlet failed while the page outlet below it went ready;
+      // forwarding children would paint PageA without route.data
+      const loadOutlet = router.activeRoute?.outlets[0];
+      expect(loadOutlet?.state).toBe("error");
+      const element = (loadOutlet?.Component as any)?.({
+        route: router.activeRoute,
+        children: "BELOW",
+      });
+      expect(element.type).toBe(RootErrorPage);
+      expect(element.props.children).toBeUndefined();
+    });
+  });
+});
+
+describe("loading states", () => {
+  const RootLoadingPage = () => null;
+  const AdminLoadingPage = () => null;
+  const PageLoadingPage = () => null;
+
+  const deferred = () => {
+    let resolve!: (value?: unknown) => void;
+    const promise = new Promise((res) => {
+      resolve = res as any;
+    });
+    return { promise, resolve };
+  };
+
+  // start a navigation without awaiting it, advancing just far enough for
+  // the router to set pendingRoute and begin loading its outlets
+  const startNavigation = async (routes: any, initialPath: string) => {
+    const history = createMemoryHistory({ initialEntries: [initialPath] });
+    const router = new RouterStore({ history });
+    router.routesDef = routes;
+    const navigation = router.setLocation(history.location);
+    await vi.advanceTimersByTimeAsync(0);
+    return { router, navigation };
+  };
+
+  const renderOutlet = (outlet: Outlet | undefined, route?: Route): any =>
+    (outlet?.Component as any)?.({ route });
+
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  test("a pending outlet renders nothing during the debounce window", async () => {
+    const load = deferred();
+    const routes = makeRoutes()({
+      [LOADING]: RootLoadingPage,
+      dashboard: { [LOAD]: () => load.promise, [PAGE]: PageA },
+    });
+    const { router } = await startNavigation(routes, "/dashboard");
+
+    const route = router.pendingRoute;
+    const pageOutlet = route?.outlets.at(-1);
+    expect(pageOutlet?.state).toBe("preloading");
+    expect(pageOutlet?.Component).toBeUndefined();
+
+    // in flight, but not long enough to show an indicator
+    expect(route?.isPending).toBe(true);
+    expect(route?.isLoading).toBe(false);
+  });
+
+  test("crossing the debounce window renders the nearest [LOADING]", async () => {
+    const load = deferred();
+    const routes = makeRoutes()({
+      [LOADING]: RootLoadingPage,
+      dashboard: { [LOAD]: () => load.promise, [PAGE]: PageA },
+    });
+    const { router } = await startNavigation(routes, "/dashboard");
+
+    await vi.advanceTimersByTimeAsync(300);
+
+    const route = router.pendingRoute;
+    const pageOutlet = route?.outlets.at(-1);
+    expect(pageOutlet?.state).toBe("loading");
+    expect(route?.isLoading).toBe(true);
+    expect(route?.isPending).toBe(true);
+    expect(renderOutlet(pageOutlet, route).type).toBe(RootLoadingPage);
+  });
+
+  test("falls back to DefaultLoadingPage when no [LOADING] is defined", async () => {
+    const load = deferred();
+    const routes = makeRoutes()({
+      dashboard: { [LOAD]: () => load.promise, [PAGE]: PageA },
+    });
+    const { router } = await startNavigation(routes, "/dashboard");
+    await vi.advanceTimersByTimeAsync(300);
+
+    const pageOutlet = router.pendingRoute?.outlets.at(-1);
+    expect(renderOutlet(pageOutlet, router.pendingRoute).type).toBe(DefaultLoadingPage);
+  });
+
+  test("[LOADING] inherits down the tree and a nested one overrides it", async () => {
+    const load = deferred();
+    const routes = makeRoutes()({
+      [LOADING]: RootLoadingPage,
+      admin: {
+        [LOADING]: AdminLoadingPage,
+        [LOAD]: () => load.promise,
+        users: PageA,
+      },
+    });
+    const { router } = await startNavigation(routes, "/admin/users");
+    await vi.advanceTimersByTimeAsync(300);
+
+    const loadOutlet = router.pendingRoute?.outlets[0];
+    expect(loadOutlet?.state).toBe("loading");
+    expect(renderOutlet(loadOutlet, router.pendingRoute).type).toBe(AdminLoadingPage);
+  });
+
+  test("[LOADING] on a [PAGE] applies to that page's outlet", async () => {
+    const load = deferred();
+    const routes = makeRoutes()({
+      [LOADING]: RootLoadingPage,
+      dashboard: {
+        [LOADING]: PageLoadingPage,
+        [LOAD]: () => load.promise,
+        [PAGE]: PageA,
+      },
+    });
+    const { router } = await startNavigation(routes, "/dashboard");
+    await vi.advanceTimersByTimeAsync(300);
+
+    const pageOutlet = router.pendingRoute?.outlets.at(-1);
+    expect(renderOutlet(pageOutlet, router.pendingRoute).type).toBe(PageLoadingPage);
+  });
+
+  test("the [LOADING] component receives route and never children", async () => {
+    const load = deferred();
+    const routes = makeRoutes()({
+      [LOADING]: RootLoadingPage,
+      dashboard: { [LOAD]: () => load.promise, users: PageA },
+    });
+    const { router } = await startNavigation(routes, "/dashboard/users");
+    await vi.advanceTimersByTimeAsync(300);
+
+    const route = router.pendingRoute;
+    const loadOutlet = route?.outlets[0];
+    const element = (loadOutlet?.Component as any)?.({ route, children: "BELOW" });
+    expect(element.props.route).toBe(route);
+    expect(element.props.children).toBeUndefined();
+  });
+
+  test("a fast loader never leaves the quiet window", async () => {
+    const routes = makeRoutes()({
+      [LOADING]: RootLoadingPage,
+      dashboard: { [LOAD]: async () => ({ a: 1 }), [PAGE]: PageA },
+    });
+    const { router, navigation } = await startNavigation(routes, "/dashboard");
+    await navigation;
+
+    const route = router.activeRoute;
+    const pageOutlet = route?.outlets.at(-1);
+    expect(pageOutlet?.state).toBe("ready");
+    expect(route?.isLoading).toBe(false);
+    expect(route?.isPending).toBe(false);
+  });
+
+  test("a slow loader holds the indicator for the minimum duration after resolving", async () => {
+    const load = deferred();
+    const routes = makeRoutes()({
+      [LOADING]: RootLoadingPage,
+      dashboard: { [LOAD]: () => load.promise, [PAGE]: PageA },
+    });
+    const { router, navigation } = await startNavigation(routes, "/dashboard");
+    await vi.advanceTimersByTimeAsync(300);
+
+    const route = router.pendingRoute;
+    const pageOutlet = route?.outlets.at(-1);
+    expect(pageOutlet?.state).toBe("loading");
+
+    load.resolve({ a: 1 });
+    await navigation;
+
+    // data is in, but the indicator is held back to avoid a flicker
+    expect(pageOutlet?.state).toBe("loading");
+    expect(route?.isLoading).toBe(true);
+
+    await vi.advanceTimersByTimeAsync(300);
+    expect(pageOutlet?.state).toBe("ready");
+    expect(route?.isLoading).toBe(false);
+  });
+
+  test("isLoading is false on a route whose outlets have no work to do", async () => {
+    const routes = makeRoutes()({ dashboard: PageA });
+    const { router, navigation } = await startNavigation(routes, "/dashboard");
+    await navigation;
+
+    expect(router.activeRoute?.isPending).toBe(false);
+    expect(router.activeRoute?.isLoading).toBe(false);
+  });
+});
+
+describe("deferred route swap", () => {
+  const deferred = () => {
+    let resolve!: (value?: unknown) => void;
+    const promise = new Promise((res) => {
+      resolve = res as any;
+    });
+    return { promise, resolve };
+  };
+
+  // a warm router: already showing a page, with the history listener wired
+  // so navigate() drives setLocation the way it does in an app
+  const makeWarmRouter = async (routes: any) => {
+    const history = createMemoryHistory({ initialEntries: ["/"] });
+    const router = new RouterStore({ history });
+    router.initialize(routes);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(router.activeRoute?.path).toBe("");
+    return { router, history };
+  };
+
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  test("the previous page stays active until the pending route has loaded", async () => {
+    const load = deferred();
+    const { router } = await makeWarmRouter(
+      makeRoutes()({
+        index: PageA,
+        slow: { [LOAD]: () => load.promise, [PAGE]: PageB },
+      }),
+    );
+
+    router.navigate({ to: "/slow" } as any);
+    await vi.advanceTimersByTimeAsync(0);
+
+    // the old page is still on screen; the new one is only pending
+    expect(router.activeRoute?.path).toBe("");
+    expect(router.pendingRoute?.path).toBe("slow");
+    expect(router.isNavigating).toBe(true);
+    expect(router.isLoading).toBe(false);
+
+    // still holding the old page once the indicator threshold passes
+    await vi.advanceTimersByTimeAsync(300);
+    expect(router.isLoading).toBe(true);
+    expect(router.activeRoute?.path).toBe("");
+
+    load.resolve({ a: 1 });
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(router.activeRoute?.path).toBe("slow");
+    expect(router.pendingRoute).toBeUndefined();
+    expect(router.isNavigating).toBe(false);
+    expect(router.isLoading).toBe(false);
+  });
+
+  test("a warm navigation does not hold content back once the data arrives", async () => {
+    const load = deferred();
+    const { router } = await makeWarmRouter(
+      makeRoutes()({
+        index: PageA,
+        slow: { [LOAD]: () => load.promise, [PAGE]: PageB },
+      }),
+    );
+
+    router.navigate({ to: "/slow" } as any);
+    await vi.advanceTimersByTimeAsync(300); // long enough to cross the debounce
+
+    load.resolve({ a: 1 });
+    await vi.advanceTimersByTimeAsync(0);
+
+    // no minimum-duration hold: the previous page was on screen, not an
+    // indicator, so there is nothing to keep from flashing
+    expect(router.activeRoute?.outlets.at(-1)?.state).toBe("ready");
+    expect(router.isLoading).toBe(false);
+  });
+
+  test("a cold load does hold, so the [LOADING] component can't flash", async () => {
+    const load = deferred();
+    const routes = makeRoutes()({ slow: { [LOAD]: () => load.promise, [PAGE]: PageB } });
+    const history = createMemoryHistory({ initialEntries: ["/slow"] });
+    const router = new RouterStore({ history });
+    router.initialize(routes);
+
+    await vi.advanceTimersByTimeAsync(300);
+    const pending = router.pendingRoute;
+    expect(pending?.isLoading).toBe(true);
+
+    load.resolve({ a: 1 });
+    await vi.advanceTimersByTimeAsync(0);
+
+    // data is in and the route has landed, but the indicator is held
+    expect(router.activeRoute?.path).toBe("slow");
+    expect(pending?.outlets.at(-1)?.state).toBe("loading");
+    expect(router.isLoading).toBe(true);
+
+    await vi.advanceTimersByTimeAsync(300);
+    expect(pending?.outlets.at(-1)?.state).toBe("ready");
+    expect(router.isLoading).toBe(false);
+  });
+
+  test("a second navigation wins and the first no longer swaps", async () => {
+    const slowLoad = deferred();
+    const { router } = await makeWarmRouter(
+      makeRoutes()({
+        index: PageA,
+        slow: { [LOAD]: () => slowLoad.promise, [PAGE]: PageB },
+        other: PageC,
+      }),
+    );
+
+    router.navigate({ to: "/slow" } as any);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(router.pendingRoute?.path).toBe("slow");
+
+    router.navigate({ to: "/other" } as any);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(router.activeRoute?.path).toBe("other");
+    expect(router.pendingRoute).toBeUndefined();
+
+    // the abandoned navigation finishes late and must not clobber the URL
+    slowLoad.resolve({ a: 1 });
+    await vi.advanceTimersByTimeAsync(400);
+    expect(router.activeRoute?.path).toBe("other");
+    expect(router.pendingRoute).toBeUndefined();
+  });
+
+  test("a query-param change during a pending navigation does not cancel it", async () => {
+    const load = deferred();
+    const { router } = await makeWarmRouter(
+      makeRoutes()({
+        index: PageA,
+        slow: { [LOAD]: () => load.promise, [PAGE]: PageB },
+      }),
+    );
+
+    router.navigate({ to: "/slow" } as any);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(router.pendingRoute?.path).toBe("slow");
+
+    // same pathname, so this must not re-match or invalidate the in-flight
+    // navigation — staleness is compared by pathname, not Location identity
+    router.setQueryParam("q", "x");
+    await vi.advanceTimersByTimeAsync(0);
+    expect(router.isNavigating).toBe(true);
+
+    load.resolve({ a: 1 });
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(router.activeRoute?.path).toBe("slow");
+    expect(router.query).toEqual({ q: "x" });
+  });
+
+  test("a guard failure replaces the pending route with the error route", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    const { router } = await makeWarmRouter(
+      makeRoutes()({
+        index: PageA,
+        secret: {
+          [GUARD]: async () => {
+            throw new Error("denied");
+          },
+          [PAGE]: PageB,
+        },
+      }),
+    );
+
+    router.navigate({ to: "/secret" } as any);
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(router.activeRoute?.error?.type).toBe("GUARD");
+    expect(router.pendingRoute).toBeUndefined();
+    expect(router.isNavigating).toBe(false);
+    vi.restoreAllMocks();
+  });
+});
+
+describe("view transitions", () => {
+  const deferred = () => {
+    let resolve!: (value?: unknown) => void;
+    const promise = new Promise((res) => {
+      resolve = res as any;
+    });
+    return { promise, resolve };
+  };
+
+  // Models the real API: the browser captures the old snapshot, then calls
+  // the update callback asynchronously, then animates.
+  const stubViewTransitions = (opts: { readyRejects?: boolean } = {}) => {
+    const startViewTransition = vi.fn((cb: () => void) => ({
+      ready: opts.readyRejects ? Promise.reject(new Error("skipped")) : Promise.resolve(),
+      updateCallbackDone: Promise.resolve().then(() => {
+        cb();
+      }),
+      finished: Promise.resolve(),
+      skipTransition: () => {},
+    }));
+    vi.stubGlobal("document", { startViewTransition, activeElement: null });
+    return startViewTransition;
+  };
+
+  const routesWithSlowPage = (load: Promise<unknown>) =>
+    makeRoutes()({
+      index: PageA,
+      slow: { [LOAD]: () => load, [PAGE]: PageB },
+    });
+
+  const warmRouter = async (routes: any, config: any = {}) => {
+    const history = createMemoryHistory({ initialEntries: ["/"] });
+    const router = new RouterStore({ history, ...config });
+    router.initialize(routes);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(router.activeRoute?.path).toBe("");
+    return { router, history };
+  };
+
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  test("wraps the route swap and not the load phase", async () => {
+    const startViewTransition = stubViewTransitions();
+    const load = deferred();
+    const { router } = await warmRouter(routesWithSlowPage(load.promise));
+
+    router.navigate({ to: "/slow" } as any);
+    await vi.advanceTimersByTimeAsync(400);
+
+    // still loading: starting the transition here would freeze the page on
+    // its old snapshot for the whole fetch
+    expect(startViewTransition).not.toHaveBeenCalled();
+    expect(router.isLoading).toBe(true);
+
+    load.resolve({ a: 1 });
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(startViewTransition).toHaveBeenCalledTimes(1);
+    expect(router.activeRoute?.path).toBe("slow");
+  });
+
+  test("the swap happens inside the update callback, not before it", async () => {
+    let capturedCallback: (() => void) | undefined;
+    const startViewTransition = vi.fn((cb: () => void) => {
+      capturedCallback = cb;
+      return {
+        ready: Promise.resolve(),
+        updateCallbackDone: Promise.resolve(),
+        finished: Promise.resolve(),
+        skipTransition: () => {},
+      };
+    });
+    vi.stubGlobal("document", { startViewTransition, activeElement: null });
+
+    const { router } = await warmRouter(makeRoutes()({ index: PageA, other: PageC }));
+
+    router.navigate({ to: "/other" } as any);
+    await vi.advanceTimersByTimeAsync(0);
+
+    // the callback was handed over but never invoked by this stub, so the
+    // old route must still be active — proving the swap is inside it
+    expect(startViewTransition).toHaveBeenCalledTimes(1);
+    expect(router.activeRoute?.path).toBe("");
+
+    capturedCallback?.();
+    expect(router.activeRoute?.path).toBe("other");
+  });
+
+  test("does not transition on a cold load", async () => {
+    const startViewTransition = stubViewTransitions();
+    const history = createMemoryHistory({ initialEntries: ["/"] });
+    const router = new RouterStore({ history });
+    router.initialize(makeRoutes()({ index: PageA }));
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(router.activeRoute?.path).toBe("");
+    expect(startViewTransition).not.toHaveBeenCalled();
+  });
+
+  test("swaps directly when the browser has no support", async () => {
+    // the outer beforeEach stubs startViewTransition as undefined
+    const { router } = await warmRouter(makeRoutes()({ index: PageA, other: PageC }));
+
+    router.navigate({ to: "/other" } as any);
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(router.activeRoute?.path).toBe("other");
+  });
+
+  test("a skipped transition does not break the navigation", async () => {
+    const startViewTransition = stubViewTransitions({ readyRejects: true });
+    const { router } = await warmRouter(makeRoutes()({ index: PageA, other: PageC }));
+
+    router.navigate({ to: "/other" } as any);
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(startViewTransition).toHaveBeenCalledTimes(1);
+    expect(router.activeRoute?.path).toBe("other");
+  });
+
+  test("viewTransitions: false opts out entirely", async () => {
+    const startViewTransition = stubViewTransitions();
+    const { router } = await warmRouter(makeRoutes()({ index: PageA, other: PageC }), {
+      viewTransitions: false,
+    });
+
+    router.navigate({ to: "/other" } as any);
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(startViewTransition).not.toHaveBeenCalled();
+    expect(router.activeRoute?.path).toBe("other");
+  });
+});
+
+describe("React Refresh invariants", () => {
+  test("an outlet holds the page component by plain reference, unwrapped by MobX", () => {
+    const outlet = new Outlet({ component: PageA });
+
+    // React Refresh swaps implementations by looking up the *registered*
+    // function in its family map. If MobX wrapped this field (as
+    // makeAutoObservable does for function values by default) the identity
+    // reaching React would be an action wrapper that belongs to no family,
+    // and edits to a page would stop hot-updating. `component: false` in
+    // the annotations is what prevents that — this asserts it stays.
+    expect(outlet.component).toBe(PageA);
+    outlet.setState("ready");
+    expect(outlet.Component).toBe(PageA);
+  });
+
+  test("a directly referenced component reaches React through the route chain", async () => {
+    const routes = makeRoutes()({ dashboard: { [PAGE]: PageA }, plain: PageB });
+    const history = createMemoryHistory({ initialEntries: ["/dashboard"] });
+    const router = new RouterStore({ history });
+    router.routesDef = routes;
+
+    await router.setLocation(history.location);
+    expect(router.activeRoute?.outlets.at(-1)?.Component).toBe(PageA);
+
+    await router.setLocation({ ...history.location, pathname: "/plain" } as any);
+    expect(router.activeRoute?.outlets.at(-1)?.Component).toBe(PageB);
   });
 });

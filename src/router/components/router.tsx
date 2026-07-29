@@ -34,7 +34,11 @@ export interface RouterProps {
 }
 
 export const Router = observer(({ store }: RouterProps) => {
-  const route = store.activeRoute;
+  // On a warm navigation `activeRoute` holds the previous page on screen
+  // until the pending one has loaded. On a cold load there is nothing to
+  // preserve, so the pending route renders instead and its outlets surface
+  // their [LOADING] components while they resolve.
+  const route = store.activeRoute ?? store.pendingRoute;
   if (!route) {
     return null;
   }

@@ -1,7 +1,7 @@
 import type { History } from "history";
 import type { RouterError } from "./errors";
 import type { Route } from "./route";
-import { CONTEXT, ERROR, GUARD, LAYOUT, LOAD, PAGE, REDIRECT, WRAPPER } from "./symbols";
+import { CONTEXT, ERROR, GUARD, LAYOUT, LOAD, LOADING, PAGE, REDIRECT, WRAPPER } from "./symbols";
 
 export type Component = React.FC<any>;
 export type LazyComponent = () => Promise<any>;
@@ -13,6 +13,16 @@ export type Guard = (route: Route) => Promise<void>;
 export interface ErrorComponentProps {
   route: Route;
   error: RouterError;
+}
+
+/**
+ * The props every `[LOADING]` component receives. Note the absence of
+ * `children`: outlets in a chain load in parallel, so a descendant can
+ * be ready while this slot is still loading — rendering it would paint
+ * a page with incomplete `route.data`.
+ */
+export interface LoadingComponentProps {
+  route: Route;
 }
 
 /** @internal a guard together with the route level that declared it */
@@ -35,29 +45,31 @@ export interface RouteConfig {
   [GUARD]?: Guard;
   [LOAD]?: Loader;
   [ERROR]?: Component;
+  [LOADING]?: Component;
 }
 
 /**
  * A route page definition.
  *
- * For eager (non-lazy) pages, pass a thunk that renders the component
- * inline rather than a direct reference, so React Refresh / Fast
- * Refresh works:
+ * For eager (non-lazy) pages, pass the component directly:
  *
  * ```tsx
  * import { DashboardPage } from './routes/dashboard';
  *
  * const routes = makeRoutes()({
- *   dashboard: { [PAGE]: () => <DashboardPage /> },
+ *   dashboard: { [PAGE]: DashboardPage },
  * });
  * ```
  *
- * Passing the component directly (`[PAGE]: DashboardPage`) captures
- * the reference at routes-config evaluation time — when the page
- * module HMRs, the captured reference is stale and the DOM won't
- * update until you navigate away and back. The thunk form keeps the
- * ES module import binding live, so each render resolves the current
- * page implementation.
+ * Holding the reference across an HMR update is fine: React Refresh
+ * resolves a component through its family map, so an element created
+ * from an older reference still renders the current implementation.
+ * What this depends on is `Outlet` keeping `component` as a plain
+ * field — a MobX-wrapped identity belongs to no family and would stop
+ * resolving. See the note on `Outlet.component`.
+ *
+ * A thunk (`[PAGE]: () => <DashboardPage />`) also works but drops the
+ * props the outlet passes, so the page will not receive `route`.
  *
  * Lazy pages use the `() => import('./Page')` form (detected by the
  * library) and follow the normal code-splitting flow.
@@ -101,6 +113,11 @@ export type MobxRouterRoutes = MobxRouter extends { routes: infer R } ? R : Rout
 
 export interface MobxRouterConfig {
   history?: History;
+  /**
+   * Wrap route swaps in `document.startViewTransition` where the browser
+   * supports it. Defaults to `true`; set `false` to opt out globally.
+   */
+  viewTransitions?: boolean;
 }
 
 export type RoutePath =

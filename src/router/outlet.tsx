@@ -10,13 +10,47 @@ export interface OutletConfig {
   component?: Component | LazyComponent;
   loader?: Loader;
   errorComponent?: Component;
+  loadingComponent?: Component;
 }
 
 export type RouteSegmentState = "preloading" | "loading" | "error" | "ready";
 
+export interface LoadOptions {
+  /**
+   * Hold the `[LOADING]` component on screen for
+   * `LOADING_MIN_DURATION_MS` after the data arrives, so a just-shown
+   * indicator can't vanish a frame later. Only worth paying for when the
+   * indicator is actually rendered — i.e. a cold load. During a warm
+   * navigation the previous page is still on screen and the pending
+   * route's outlets aren't rendered at all, so holding would delay
+   * content to hide an indicator nobody saw.
+   */
+  hold?: boolean;
+}
+
+/**
+ * How long an outlet stays `"preloading"` — rendering nothing — before
+ * it shows its `[LOADING]` component. Loads that finish inside this
+ * window never render an indicator at all.
+ */
+export const LOADING_DELAY_MS = 300;
+
+/**
+ * Once the `[LOADING]` component is on screen, how long it is held there
+ * even if the data has already arrived. Only applies to loads that
+ * already exceeded `LOADING_DELAY_MS`, and exists solely to keep a
+ * just-shown indicator from vanishing a frame later.
+ */
+export const LOADING_MIN_DURATION_MS = 300;
+
 export const DefaultOutlet: Component = ({ children }) => children;
 
-const LoadingPlaceholder: Component = () => <p>Loading...</p>;
+/**
+ * Rendered in a pending outlet's slot when no `[LOADING]` component is
+ * defined at or above that level. Deliberately minimal — define a
+ * root-level `[LOADING]` to replace it.
+ */
+export const DefaultLoadingPage: Component = () => <p>Loading...</p>;
 
 export class Outlet {
   state: RouteSegmentState = "preloading";
@@ -31,10 +65,17 @@ export class Outlet {
   // `layout` as a plain field under makeObservable.
   component: Component | undefined;
 
+  // The pending and failed slots render without `children` on purpose:
+  // outlets in a chain resolve in parallel, so a descendant can already
+  // be "ready" while this slot waits or fails. Forwarding children would
+  // paint that descendant with incomplete (or missing) `route.data`.
   get Component(): Component | undefined {
     switch (this.state) {
-      case "loading":
-        return LoadingPlaceholder;
+      case "loading": {
+        // render the nearest [LOADING] component in this outlet's slot
+        const LoadingComponent = this.config.loadingComponent ?? DefaultLoadingPage;
+        return ({ route }: Obj) => <LoadingComponent route={route} />;
+      }
       case "ready":
         return this.component ?? DefaultOutlet;
       case "error": {
@@ -42,7 +83,7 @@ export class Outlet {
         // leaving the rest of the page intact
         const ErrorComponent = this.config.errorComponent ?? DefaultErrorPage;
         const error = this.error ?? new RouterError("LOAD");
-        return (props: Obj) => <ErrorComponent {...props} error={error} />;
+        return ({ route }: Obj) => <ErrorComponent route={route} error={error} />;
       }
       default:
         return undefined;
@@ -63,7 +104,7 @@ export class Outlet {
     });
   }
 
-  async load(route: Route): Promise<void> {
+  async load(route: Route, options?: LoadOptions): Promise<void> {
     const promises: Promise<void>[] = [];
 
     if (isLazyComponent(this.config.component) && !this.component) {
@@ -86,18 +127,18 @@ export class Outlet {
       if (this.state === "preloading") {
         this.setState("loading");
       }
-    }, 300);
+    }, LOADING_DELAY_MS);
 
     this.promise = Promise.all(promises)
       .then(() => {
         clearTimeout(preloadingTimer);
-        if (this.state === "loading") {
-          // if we had to transition to regular loading because
-          // the loader was taking too long, force an additional
-          // timeout to prevent a loading flash
+        if (options?.hold && this.state === "loading") {
+          // the [LOADING] component is on screen and the loader was slow
+          // enough to have shown it — keep it there briefly so it doesn't
+          // flash out the moment the data lands
           setTimeout(() => {
             this.setState("ready");
-          }, 300);
+          }, LOADING_MIN_DURATION_MS);
         } else {
           this.setState("ready");
         }

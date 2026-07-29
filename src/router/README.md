@@ -38,13 +38,13 @@ The string key `"index"` maps to the parent path (e.g., `dashboard.index` render
 
 ### Route value types
 
-| Value                                         | Meaning                                    |
-| --------------------------------------------- | ------------------------------------------ |
-| `Component`                                   | Renders at that path                       |
-| `() => import('./Page')`                      | Lazy-loaded component (code split)         |
-| `{ [PAGE]: Component \| LazyComponent, ... }` | Page with metadata (guard, loader, layout) |
-| `{ [REDIRECT]: '/path' \| NavigateOptions }`  | Static redirect                            |
-| `{ key: ... }`                                | Nested route definition                    |
+| Value                                         | Meaning                                                    |
+| --------------------------------------------- | ---------------------------------------------------------- |
+| `Component`                                   | Renders at that path                                       |
+| `() => import('./Page')`                      | Lazy-loaded component (code split)                         |
+| `{ [PAGE]: Component \| LazyComponent, ... }` | Page with metadata (guard, loader, layout, loading, error) |
+| `{ [REDIRECT]: '/path' \| NavigateOptions }`  | Static redirect                                            |
+| `{ key: ... }`                                | Nested route definition                                    |
 
 ### Dynamic segments
 
@@ -92,22 +92,28 @@ const routes = makeRoutes()({
 
 The imported module must export `default` or a named export ending in `Page`. If neither is found, the router throws at load time.
 
-## Eager components — use a thunk
+## Eager components — pass the component directly
 
-For already-imported components, pass a thunk instead of a direct reference so React Refresh can swap the component without a full remount:
+For already-imported components, pass the component itself. React Refresh handles it: it swaps implementations through its family map, which resolves the _registered_ function even when something is holding an older reference to it.
 
 ```tsx
 import { DashboardPage } from "./DashboardPage";
 
 const routes = makeRoutes()({
-  dashboard: {
-    [PAGE]: () => <DashboardPage />, // ✓ thunk — HMR works
-    // [PAGE]: DashboardPage          // ✗ direct ref — stale after HMR
-  },
+  dashboard: { [PAGE]: DashboardPage }, // ✓
+  reports: ReportsPage, // ✓ also fine as a bare leaf
 });
 ```
 
-This does not apply to lazy components (they are detected and handled separately).
+Verified against Chrome with `@vitejs/plugin-react`: editing a page updates it in place with component state preserved, for direct references, bare leaf components, and `observer()`-wrapped versions of both.
+
+**Prefer this over a thunk.** `[PAGE]: () => <DashboardPage />` works too, but the arrow function swallows the props the outlet passes — the router renders `[PAGE]` with `route`, and the thunk drops it, so the page receives nothing. Use a direct reference and `route` arrives as a prop; use a thunk and you must read loader data via `useRouter().activeRoute?.data` or forward explicitly with `(props) => <DashboardPage {...props} />`.
+
+**The real constraint on hot updates is the module, not the route definition.** React Refresh can only self-accept a module whose exports are all components. A page module that also exports its loader, a constant, or a helper can't self-accept, so editing it invalidates whichever module imported it and Vite falls back to a full page reload. No route-definition form changes that — split non-component exports into their own module if you want hot updates.
+
+> **Note:** this holds for the standard Babel-based `@vitejs/plugin-react`. If you use a different refresh transform (SWC, or an oxc-based one), the component-detection heuristics differ and are worth re-checking.
+
+None of this applies to lazy components — they are detected and handled separately.
 
 ## `[PAGE]` — page definitions
 
@@ -121,7 +127,7 @@ const routes = makeRoutes()({
     [LAYOUT]: DashboardLayout,
     [GUARD]: requireAuth,
     [LOAD]: loadDashboardData,
-    [PAGE]: () => <DashboardPage />,
+    [PAGE]: DashboardPage,
   },
 });
 ```
@@ -157,7 +163,7 @@ A loader is `(route: Route) => Promise<unknown>`. Its resolved value is merged i
 
 ```tsx
 import { LOAD, PAGE } from "@mobx-toolbox/router";
-import type { Loader } from "@mobx-toolbox/router";
+import type { Loader, Route } from "@mobx-toolbox/router";
 
 const loadUser: Loader = async (route) => {
   return fetchUser(route.params.id);
@@ -167,20 +173,28 @@ const routes = makeRoutes()({
   users: {
     $id: {
       [LOAD]: loadUser,
-      [PAGE]: () => <UserDetailPage />,
+      [PAGE]: UserDetailPage,
     },
   },
 });
 
-// In UserDetailPage:
-function UserDetailPage() {
-  const router = useRouter();
-  const user = router.activeRoute?.data?.user;
+// In UserDetailPage — `route` arrives as a prop:
+function UserDetailPage({ route }: { route: Route }) {
+  const user = route.data.user;
   // ...
 }
 ```
 
-When multiple loaders exist in the outlet chain, their results are shallow-merged. Last writer wins on key conflicts. Loaders run in parallel (`Promise.all`).
+When multiple loaders exist in the outlet chain, their results are shallow-merged. Last writer wins on key conflicts. Loaders run in parallel (`Promise.all`) — and for a lazy page, the loader runs concurrently with the chunk import, so data fetching and code splitting overlap instead of queueing.
+
+Where `[LOAD]` sits decides what it blocks:
+
+- **Inside a `[PAGE]` object** — the loader shares the page's outlet, so only that page waits.
+- **On a nesting-level route object** (`dashboard: { [LOAD]: ..., index: ... }`) — the loader gets its own outlet, and everything below it in the chain waits on it.
+
+**Loaders do not re-run on search-param changes.** A navigation that changes only the query string (or history state) updates `router.location` and leaves the route — and therefore every loader and guard — alone. This is deliberate: loaders can't observe search params, so re-running them would be wasted work. Data that depends on `?page=2` or `?q=foo` belongs in a store computed off `router.query`, not in `[LOAD]`.
+
+See [`[LOADING]`](#loading--loading-states) for what the user sees while a loader runs.
 
 ## `[LAYOUT]` — page layout
 
@@ -194,7 +208,7 @@ const routes = makeRoutes()({
   settings: SettingsPage, // rendered inside AppShell
   login: {
     [LAYOUT]: BlankLayout, // overrides AppShell for /login
-    [PAGE]: () => <LoginPage />,
+    [PAGE]: LoginPage,
   },
 });
 
@@ -318,6 +332,26 @@ const AppError = ({ error }: ErrorComponentProps) =>
   error.type === "NOT_FOUND" ? <Navigate to="/" replace /> : <SomethingWentWrong error={error} />;
 ```
 
+### Errors thrown by a loader
+
+A rejected loader is contained: it never becomes a synthetic error route. `router.activeRoute.error` stays `undefined`, the failure lives on the outlet, and the nearest `[ERROR]` renders **in that outlet's slot** with `type: "LOAD"` and the thrown value on `cause`. Sibling outlets and the rest of the page are untouched.
+
+Two consequences worth knowing:
+
+- **Checking `route.error` is not enough to detect "this page failed."** It's set for match, guard and render failures, not loader failures. To catch everything, report from inside your `[ERROR]` component — it renders for both kinds.
+- **Loader failures are not logged.** Navigation-level failures go through `console.error`; loader failures only render. Add your own reporting in the `[ERROR]` component or wrap the loader body.
+
+Choose where to throw based on the UI you want:
+
+| Want                                                                     | Throw from |
+| ------------------------------------------------------------------------ | ---------- |
+| Error confined to one slot, rest of the page intact                      | `[LOAD]`   |
+| A full-page error route, with `route.error` set and depth-aware bubbling | `[GUARD]`  |
+
+So `throw new RouterError("NOT_FOUND")` from a loader gives you a 404 _in the slot_; move the existence check into a guard if you want the whole page replaced.
+
+**Prefer guards for redirects.** `throw redirect(...)` from a loader does navigate, but the outlet is marked `error` before the redirect resolves — with no error recorded, so a generic "A route loader or lazy component failed." message can flash before the new route lands. Guards have no such window.
+
 ### What is deliberately NOT caught
 
 A crash in the `[LAYOUT]` component itself — or in an `[ERROR]` component — propagates out of `<Router>`. These are developer bugs, not runtime states: in development you get the error overlay and a real stack trace instead of a masking error page. For last-resort production protection, wrap the router in your own boundary:
@@ -327,6 +361,140 @@ A crash in the `[LAYOUT]` component itself — or in an `[ERROR]` component — 
   <Router store={router} />
 </MyAppErrorBoundary>
 ```
+
+## `[LOADING]` — loading states
+
+Navigation does not blank the screen. When you navigate, the router matches, runs guards, and loads the new route **while the current page stays on screen**; `activeRoute` is only swapped once the new route is ready. The route being worked on is `router.pendingRoute`.
+
+| Phase                          | `activeRoute`  | `pendingRoute` | On screen                   |
+| ------------------------------ | -------------- | -------------- | --------------------------- |
+| `[GUARD]`s running             | previous route | —              | the previous page           |
+| `[LOAD]` / lazy import running | previous route | the new route  | the previous page           |
+| resolved                       | the new route  | —              | the new page                |
+| cold load (no previous page)   | `undefined`    | the new route  | the new route's `[LOADING]` |
+
+That splits loading UI into two cases, and they want different things:
+
+**Warm navigation — drive an indicator off `router.isLoading`.** The old page is intact, so the right UI is an unobtrusive progress cue, not a placeholder:
+
+```tsx
+import { observer } from "mobx-react-lite";
+
+const AppShell = observer(({ children }) => {
+  const router = useRouter();
+  return (
+    <div>
+      <Nav />
+      {router.isLoading && <TopProgressBar />}
+      <main data-busy={router.isLoading}>{children}</main>
+    </div>
+  );
+});
+```
+
+`isLoading` is debounced (see the timings below), so navigations that resolve quickly never flip it and the bar never flickers. `router.isNavigating` is the undebounced version — accurate, but it flips for every navigation however fast, so it will flicker if you render off it. Use it for logic, not pixels.
+
+**Cold load — `[LOADING]` renders.** On the first navigation there's no previous page to preserve, so the pending route renders and each pending outlet shows the nearest `[LOADING]` component. It inherits down the tree and can be overridden exactly like `[ERROR]`:
+
+```tsx
+import { LOADING, ERROR } from "@mobx-toolbox/router";
+
+const routes = makeRoutes()({
+  [LAYOUT]: AppShell,
+  [LOADING]: AppSkeleton, // shown at or below the root during a cold load
+  [ERROR]: AppError,
+
+  reports: {
+    [LOADING]: ReportsSkeleton, // overrides AppSkeleton for reports/*
+    [LOAD]: loadReportIndex,
+    $id: ReportPage,
+  },
+});
+
+function AppSkeleton({ route }: LoadingComponentProps) {
+  return <SkeletonGrid />;
+}
+```
+
+`[LOADING]` renders inside the `[LAYOUT]` and any wrappers ahead of it, so your app shell is present around the skeleton. With no `[LOADING]` anywhere, a minimal built-in `DefaultLoadingPage` (`<p>Loading...</p>`) renders — define a root-level `[LOADING]` to replace it.
+
+A `[LOADING]` component receives `{ route }` and **never `children`**. Outlets in a chain resolve in parallel, so a descendant can be ready while this slot is still waiting; rendering it would paint a page with incomplete `route.data`. `[ERROR]` components follow the same rule.
+
+### Timings
+
+| Constant                  | Default | Effect                                                                                          |
+| ------------------------- | ------- | ----------------------------------------------------------------------------------------------- |
+| `LOADING_DELAY_MS`        | 300ms   | How long an outlet waits before it counts as loading. Under this, no indicator appears at all.  |
+| `LOADING_MIN_DURATION_MS` | 300ms   | How long a shown `[LOADING]` is held after data arrives, so it can't flash. **Cold load only.** |
+
+The delay costs nothing during a warm navigation — the previous page fills the window — so a quick navigation shows no indicator and no layout shift. The minimum-duration hold applies only when a `[LOADING]` component is actually on screen; a warm navigation renders content the moment its data lands and is never held back.
+
+### Outlet states
+
+For finer-grained work, each outlet in the chain tracks its own state. `route.isLoading` and `route.isPending` are the aggregates the store's computeds are built from.
+
+| `state`        | What renders in that slot                          |
+| -------------- | -------------------------------------------------- |
+| `"preloading"` | nothing — the chain truncates here                 |
+| `"loading"`    | the nearest `[LOADING]` component                  |
+| `"ready"`      | the outlet's component                             |
+| `"error"`      | the nearest `[ERROR]` component, in this slot only |
+
+### Active links lag during navigation
+
+`router.location` updates as soon as a navigation starts, but `doesPathMatch` reads the _active_ route, which is still the previous one. So `aria-current` stays on the old link until the new route lands — correct behavior (the destination isn't showing yet), but if you want a pending affordance, read `router.pendingRoute?.path` alongside it.
+
+### View transitions
+
+Where the browser supports it, route swaps are wrapped in `document.startViewTransition`, so the default cross-fade works with no setup. Add `view-transition-name` to the elements you want paired and style the pseudo-elements as usual:
+
+```css
+main {
+  view-transition-name: page;
+}
+nav {
+  view-transition-name: nav;
+} /* named = excluded from the page animation */
+
+@keyframes slide-in {
+  from {
+    transform: translateX(40px);
+    opacity: 0;
+  }
+}
+::view-transition-new(page) {
+  animation: 300ms both slide-in;
+}
+```
+
+The transition wraps **only the swap**, never the guard and load phases. That distinction matters: a transition freezes the page on its old snapshot until the update callback settles, so wrapping the whole navigation would leave the UI unresponsive for the length of a fetch, with the progress bar unable to animate. Instead the previous page stays live and interactive while loading, and the transition covers the instant the new page replaces it.
+
+Disable globally with `new RouterStore({ viewTransitions: false })`. Skipped transitions — a second navigation interrupting one, a backgrounded tab, duplicate `view-transition-name`s — are handled internally; the DOM update always lands.
+
+Cold loads don't transition: there's no previous page to animate away from, and the visible change happens when outlets resolve rather than at the swap.
+
+### Loading data inside the page instead
+
+`[LOAD]` blocks the swap until data is in, which is what makes pages render complete. When you'd rather paint the shell immediately and fill regions in — per-section skeletons, independently refreshing panels — skip `[LOAD]` and drive it from an observable:
+
+```tsx
+import { lazyObservable, LazyObserver } from "@jayalfredprufrock/mobx-toolbox/lazy-observable";
+
+const UserDetailPage = observer(() => {
+  const { id } = useRouter().pathParams;
+  const user = useMemo(() => lazyObservable(() => api.getUser(id)), [id]);
+
+  return (
+    <UserLayout>
+      <LazyObserver observe={user} placeholder={<UserSkeleton />}>
+        {(user) => <UserProfile user={user} />}
+      </LazyObserver>
+    </UserLayout>
+  );
+});
+```
+
+`LazyObserver` re-throws load failures, so they hit the router's error boundary and render your nearest `[ERROR]` with `type: "RENDER"` — you keep `[ERROR]` either way. The trade-off is a serial waterfall on lazy routes: the chunk must download and mount before the fetch starts, where `[LOAD]` overlaps the two. Reach for it when you want progressive rendering, not as the default.
 
 ## Navigation
 
@@ -391,8 +559,11 @@ const router = new RouterStore(config?: MobxRouterConfig);
 router.initialize(routes);             // call once with route definitions
 
 // Observable state
-router.location                        // History Location
-router.activeRoute                     // Route | undefined
+router.location                        // History Location — updates as soon as navigation starts
+router.activeRoute                     // Route | undefined — the page currently rendered
+router.pendingRoute                    // Route | undefined — the route being guarded/loaded
+router.isNavigating                    // boolean — a navigation is in flight (undebounced)
+router.isLoading                       // boolean — it has been slow enough to show an indicator
 router.search                          // URLSearchParams (reactive)
 router.query                           // Record<string, string> — parsed search params
 router.pathParams                      // Record<string, string> — URL params
@@ -406,7 +577,7 @@ router.setQueryParam(key, value)       // update one param, replaces current ent
 router.removeQueryParam(key)           // remove one param, returns previous value
 ```
 
-`RouterStore` uses `createBrowserHistory()` by default. Pass `{ history }` in `MobxRouterConfig` for hash routing or testing.
+`RouterStore` uses `createBrowserHistory()` by default. Pass `{ history }` in `MobxRouterConfig` for hash routing or testing, and `{ viewTransitions: false }` to opt out of [view transitions](#view-transitions).
 
 ## `Route` object
 
@@ -418,7 +589,9 @@ route.params; // Record<string, string> — URL params, e.g. { id: "42" }
 route.context; // Record<string, any> — merged [CONTEXT] from ancestor routes
 route.data; // Record<string, any> — merged return values of all [LOAD] functions
 route.layout; // Component | undefined — resolved [LAYOUT]
-route.error; // RouterError | undefined — set on synthetic error routes
+route.error; // RouterError | undefined — set on synthetic error routes only
+route.isLoading; // boolean — an outlet has passed LOADING_DELAY_MS
+route.isPending; // boolean — an outlet is still resolving, debounce included
 route.outlets; // Outlet[] — internal; represents each rendered segment
 route.guards; // Guard[] — internal; the full resolved guard chain
 ```
@@ -441,6 +614,10 @@ Both forms are caught by the router after a guard throws; the router then calls 
 
 ```ts
 import { RouterError } from "@mobx-toolbox/router"; // class — thrown/wrapped on navigation failures
+import {
+  LOADING_DELAY_MS, // 300 — debounce before an outlet counts as loading
+  LOADING_MIN_DURATION_MS, // 300 — how long a shown [LOADING] is held (cold load only)
+} from "@mobx-toolbox/router";
 
 import type {
   Guard, // (route: Route) => Promise<void>
@@ -452,9 +629,11 @@ import type {
   StaticRoutePath, // paths without :params
   DynamicRoutePath, // paths with :params
   NavigateOptions, // { to, params?, replace?, search?, preserveSearch?, state? }
-  MobxRouterConfig, // { history? }
+  MobxRouterConfig, // { history?, viewTransitions? }
   RouterErrorType, // "NOT_FOUND" | "GUARD" | "LOAD" | "RENDER"
   ErrorComponentProps, // { route: Route; error: RouterError }
+  LoadingComponentProps, // { route: Route }
+  RouteSegmentState, // "preloading" | "loading" | "error" | "ready"
 } from "@mobx-toolbox/router";
 ```
 
@@ -464,11 +643,17 @@ import type {
 
 **`$` is for route keys only; `:` is for path strings.** Dynamic segments are declared as `$id` keys in the routes object, but every path string in the API (`navigate({ to })`, `<Link to>`, `doesPathMatch`, `resolvePath`, the `RoutePath` union) spells that segment `:id`. A `$id` spelling inside a path string is treated as a literal segment and will not match or resolve.
 
-**Symbol keys must be imported.** `PAGE`, `GUARD`, `LOAD`, `LAYOUT`, `WRAPPER`, `CONTEXT`, `REDIRECT`, `ERROR` are `unique symbol` values exported from `@mobx-toolbox/router`. They must be used as computed keys `[PAGE]: ...`. String keys like `"guard"` are treated as path segments, not metadata.
+**Symbol keys must be imported.** `PAGE`, `GUARD`, `LOAD`, `LAYOUT`, `WRAPPER`, `CONTEXT`, `REDIRECT`, `ERROR`, `LOADING` are `unique symbol` values exported from `@mobx-toolbox/router`. They must be used as computed keys `[PAGE]: ...`. String keys like `"guard"` are treated as path segments, not metadata.
 
-**Errors produce synthetic routes.** When matching, a guard, or the whole navigation fails, `router.activeRoute` is set to a synthetic route with `route.error: RouterError` set and an outlet chain ending in the nearest `[ERROR]` component (or `DefaultErrorPage`). Check `route.error` to distinguish an error route from a normal one. Layout and error-component render crashes are deliberately NOT caught by the router — wrap `<Router>` in an app-level ErrorBoundary for last-resort protection.
+**Errors produce synthetic routes — except loader errors.** When matching, a guard, or a render fails, `router.activeRoute` is set to a synthetic route with `route.error: RouterError` and an outlet chain ending in the nearest `[ERROR]` component (or `DefaultErrorPage`). A **rejected loader does not**: navigation succeeds, `route.error` stays `undefined`, and the error lives on the failing outlet, which renders `[ERROR]` in its own slot. So `route.error` alone will not tell you a loader failed. Layout and error-component render crashes are deliberately NOT caught by the router — wrap `<Router>` in an app-level ErrorBoundary for last-resort protection.
+
+**`[ERROR]` and `[LOADING]` components never receive `children`.** Both render mid-chain, and outlets resolve in parallel, so a descendant may already be ready; forwarding children would paint it without the data it expects. Only `route` (plus `error`) is passed.
+
+**The route swap is deferred.** `activeRoute` keeps rendering the previous page until the pending route's guards and loaders finish; the in-flight route is `router.pendingRoute`. So during a navigation `router.location` already points at the destination while `activeRoute`, `pathParams`, `activeSegments` and `doesPathMatch` still describe the page on screen. Staleness is compared by pathname, so a query-param change mid-navigation does not cancel the navigation in flight.
 
 **Lazy component detection is source-string based.** `isLazyComponent` checks `fn.toString().startsWith("() => import(")`. Minified, transpiled, or wrapped functions will fail this check and be treated as eager. Always write lazy routes as inline `() => import('./Module')` arrow functions — not `async () =>`, not assigned to an intermediate variable.
+
+**Pass eager page components directly, not as thunks.** `[PAGE]: DashboardPage` is correct and hot-reloads properly — React Refresh resolves stale references through its family map. A thunk (`[PAGE]: () => <DashboardPage />`) also renders, but silently drops the `route` prop the outlet passes, which is a common source of `route is undefined` crashes. This depends on `Outlet` holding `component` as a plain, non-MobX-observed field; there are tests pinning that invariant.
 
 **Module augmentation is required for typed paths.** Without augmenting `MobxRouter`, `RoutePath` is `string` and no path checking occurs. The augmentation must be in a file included in the TypeScript compilation.
 
@@ -480,6 +665,6 @@ import type {
 
 **`[LAYOUT]` is inherited and overridable; `[WRAPPER]` is not inherited.** A `[LAYOUT]` set at any ancestor level applies to all descendants unless a descendant sets its own. `[WRAPPER]` only wraps the route subtree at the level it is defined and does not propagate.
 
-**`router.activeRoute` is `undefined` until the first navigation resolves.** The `Router` component renders `null` while `activeRoute` is undefined. Guards and loaders run asynchronously before `activeRoute` is set.
+**`router.activeRoute` is `undefined` until the first navigation resolves.** During that cold load `<Router>` renders `pendingRoute` instead, so pending outlets show their `[LOADING]` components. It renders `null` only while both are undefined — before guards resolve on the very first navigation.
 
 **`Route` and `Outlet` are exported for type annotation.** When writing guard or loader functions that are defined outside the routes object, import `Route` for the parameter type. `Outlet` and `OutletConfig` are exported but are primarily internal — avoid constructing them directly.

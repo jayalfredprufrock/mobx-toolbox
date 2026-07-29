@@ -1,5 +1,6 @@
 import { createBrowserHistory, type History, type Location } from "history";
 import { action, computed, makeObservable, observable, runInAction } from "mobx";
+import { flushSync } from "react-dom";
 import { RouterError } from "./errors";
 import { makeErrorRoute, matchRoute } from "./make-routes";
 import { Redirect } from "./redirect";
@@ -15,11 +16,20 @@ export interface MobxRenderSegment {
 
 export class RouterStore {
   readonly history: History;
+  readonly viewTransitions: boolean;
 
   routesDef?: Routes;
 
   location!: Location;
   activeRoute: Route | undefined;
+
+  /**
+   * The route being matched, guarded and loaded. Set for the duration of
+   * a navigation and cleared when it lands. `activeRoute` keeps rendering
+   * the previous page while this is set, so navigation never blanks the
+   * screen — see {@link isNavigating}.
+   */
+  pendingRoute: Route | undefined;
 
   get search(): URLSearchParams {
     return new URLSearchParams(this.location?.search);
@@ -37,19 +47,44 @@ export class RouterStore {
     return this.activeRoute?.path.split("/") ?? [];
   }
 
+  /**
+   * `true` from the moment a navigation starts until it lands. Covers the
+   * guard phase too, so it's the honest answer to "is something in
+   * flight" — but it flips for every navigation, however fast, so it will
+   * flicker if you render an indicator straight off it. Use
+   * {@link isLoading} for that.
+   */
+  get isNavigating(): boolean {
+    return this.pendingRoute !== undefined;
+  }
+
+  /**
+   * `true` once a pending navigation has been slow enough to be worth
+   * telling the user about. Debounced by `LOADING_DELAY_MS`, so quick
+   * navigations never flip it — drive progress bars and dimmed states off
+   * this one.
+   */
+  get isLoading(): boolean {
+    return this.pendingRoute?.isLoading ?? this.activeRoute?.isLoading ?? false;
+  }
+
   constructor(config?: MobxRouterConfig) {
     makeObservable(this, {
       location: observable.ref,
       activeRoute: observable.ref,
+      pendingRoute: observable.ref,
 
       search: computed,
       pathParams: computed,
       activeSegments: computed,
+      isNavigating: computed,
+      isLoading: computed,
 
       setLocation: action,
     });
 
     this.history = config?.history ?? createBrowserHistory();
+    this.viewTransitions = config?.viewTransitions ?? true;
   }
 
   initialize(routesDef: Routes): void {
@@ -82,12 +117,9 @@ export class RouterStore {
       return;
     }
 
-    if (!document.startViewTransition) {
-      this._navigate(options);
-    } else {
-      const transition = document.startViewTransition(() => this._navigate(options));
-      transition.ready.catch((e) => console.log(e, typeof e));
-    }
+    // the view transition is started around the route swap in
+    // `applyRoute`, not here — see the note there
+    this._navigate(options);
   }
 
   _navigate<P extends RoutePath>(options: NavigateOptions<P>): void {
@@ -160,13 +192,19 @@ export class RouterStore {
     // which route matches, its guards, or its loaders (none of which can
     // observe search params) — update the observable location without
     // rebuilding the route, so query-param changes don't refetch loaders
-    // or replace activeRoute
-    if (this.activeRoute && this.location?.pathname === location.pathname) {
+    // or replace activeRoute. Also guards against restarting a match for
+    // a pathname that a still-pending navigation is already resolving.
+    if ((this.activeRoute || this.pendingRoute) && this.location?.pathname === location.pathname) {
       this.location = location;
       return;
     }
 
     this.location = location;
+
+    // a cold load has no previous page to preserve, so the pending route
+    // renders and its [LOADING] components are on screen — the only case
+    // where holding a just-shown indicator is worth delaying content for
+    const cold = !this.activeRoute;
 
     let matchedRoute: Route | undefined;
     try {
@@ -176,15 +214,26 @@ export class RouterStore {
 
       // navigating within a guard function
       // is essentially a redirect
-      if (this.location !== location) {
+      if (this.isStale(location)) {
         return;
       }
 
       runInAction(() => {
-        this.activeRoute = matchedRoute;
+        this.pendingRoute = matchedRoute;
       });
 
-      await this.activeRoute?.load();
+      await matchedRoute.load({ hold: cold });
+
+      // another navigation started while this one was loading — it owns
+      // the swap now, and its own pendingRoute assignment has replaced ours
+      if (this.isStale(location)) {
+        return;
+      }
+
+      await this.applyRoute(() => {
+        this.activeRoute = matchedRoute;
+        this.pendingRoute = undefined;
+      });
     } catch (e) {
       if (e instanceof Redirect) {
         this.navigate(e.options);
@@ -192,7 +241,7 @@ export class RouterStore {
       }
 
       // navigating within a guard before it threw — treat as a redirect
-      if (this.location !== location) {
+      if (this.isStale(location)) {
         return;
       }
 
@@ -203,10 +252,69 @@ export class RouterStore {
       console.error(error);
 
       const errorRoute = makeErrorRoute(error, location.pathname, matchedRoute);
-      runInAction(() => {
+      await this.applyRoute(() => {
         this.activeRoute = errorRoute;
+        this.pendingRoute = undefined;
       });
       await errorRoute.load();
     }
+  }
+
+  /**
+   * Whether another navigation has taken over since this one started.
+   * Compared by pathname rather than `Location` identity: a query-param or
+   * history-state change during a pending navigation replaces `location`
+   * without re-matching, and must not cancel the navigation in flight.
+   */
+  private isStale(location: Location): boolean {
+    return this.location?.pathname !== location.pathname;
+  }
+
+  /**
+   * Commits a route swap, wrapped in a view transition where supported.
+   *
+   * The transition wraps **only** the swap. Wrapping the navigation as a
+   * whole would freeze the page on its old snapshot for the entire guard
+   * and load phase — a fetch's worth of unresponsive UI, with the loading
+   * indicator unable to animate.
+   *
+   * `flushSync` removes a race rather than fixing an outright bug. The
+   * browser captures the new snapshot at the first rendering opportunity
+   * after the update callback settles; a bare MobX mutation schedules the
+   * re-render on React's scheduler, which in practice usually lands
+   * inside that window but is not guaranteed to (concurrent rendering may
+   * yield). Flushing synchronously inside the callback makes the captured
+   * frame deterministic.
+   *
+   * What the earlier implementation got wrong was placement, not
+   * flushing: it wrapped `history.push`, so the callback returned before
+   * guards had even run and both snapshots caught the same page. Verified
+   * against real Chrome — that version animated exactly one frame.
+   */
+  private async applyRoute(swap: () => void): Promise<void> {
+    const apply = () => runInAction(swap);
+    const startViewTransition =
+      typeof document !== "undefined" ? document.startViewTransition?.bind(document) : undefined;
+
+    // A cold load has no previous page to animate away from, and its
+    // visible change happens when outlets resolve rather than at the swap.
+    if (!this.viewTransitions || !startViewTransition || !this.activeRoute) {
+      apply();
+      return;
+    }
+
+    const transition = startViewTransition(() => {
+      flushSync(apply);
+    });
+
+    // `ready` rejects whenever the browser skips the animation — a second
+    // navigation interrupting this one, a backgrounded tab, duplicate
+    // view-transition-names. Routine, and the DOM update still happens.
+    transition.ready.catch(() => {});
+
+    // Awaited so the swap has landed before the navigation resolves.
+    // Deliberately not `finished`: that waits out the animation, which
+    // would make every navigation report as long as its transition.
+    await transition.updateCallbackDone.catch(() => {});
   }
 }

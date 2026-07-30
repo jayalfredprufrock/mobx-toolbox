@@ -8,7 +8,7 @@ import { afterEach, describe, expect, it } from "vite-plus/test";
 import { Router, routerContext } from "./components/router";
 import { makeRoutes } from "./make-routes";
 import { RouterStore } from "./router.store";
-import { LAYOUT, LOAD, LOADING, PAGE } from "./symbols";
+import { GUARD, LAYOUT, LOAD, LOADING, PAGE, SPLASH } from "./symbols";
 
 // the outlet state machine mutates from timer callbacks — enforceActions
 // catches any transition that escapes an action
@@ -226,6 +226,122 @@ describe("progress bar signals against a real render", () => {
     expect(container.textContent).toBe("[BAR]HOME");
 
     load.resolve({ a: 1 });
+    await wait(60);
+    expect(container.textContent).toBe("SLOW");
+  });
+});
+
+describe("[SPLASH]", () => {
+  const Splash = () => <div>SPLASH</div>;
+
+  it("covers the first navigation while a root guard runs", async () => {
+    const gate = deferred();
+    const routes = makeRoutes()({
+      [SPLASH]: Splash,
+      [LAYOUT]: ShellWithWarmBar,
+      [LOADING]: Skeleton,
+      [GUARD]: async () => void (await gate.promise),
+      secret: { [PAGE]: () => <SlowPage /> },
+    });
+
+    const history = createMemoryHistory({ initialEntries: ["/secret"] });
+    const store = new RouterStore({ history });
+    store.initialize(routes as any);
+
+    const { container, root } = mount();
+    await act(async () => {
+      root.render(<Router store={store} />);
+    });
+    await wait(400);
+
+    // no route has matched, so no layout and no [LOADING] — without [SPLASH]
+    // this window renders nothing at all
+    expect(container.textContent).toBe("SPLASH");
+    expect(store.activeRoute).toBeUndefined();
+    expect(store.pendingRoute).toBeUndefined();
+    expect(store.isNavigating).toBe(true);
+
+    gate.resolve();
+    await wait(60);
+    expect(container.textContent).toBe("SLOW");
+  });
+
+  it("renders nothing in that window when no [SPLASH] is defined", async () => {
+    const gate = deferred();
+    const routes = makeRoutes()({
+      [LAYOUT]: ShellWithWarmBar,
+      [GUARD]: async () => void (await gate.promise),
+      secret: { [PAGE]: () => <SlowPage /> },
+    });
+    const history = createMemoryHistory({ initialEntries: ["/secret"] });
+    const store = new RouterStore({ history });
+    store.initialize(routes as any);
+
+    const { container, root } = mount();
+    await act(async () => {
+      root.render(<Router store={store} />);
+    });
+    await wait(400);
+    expect(container.textContent).toBe("");
+
+    gate.resolve();
+    await wait(60);
+    expect(container.textContent).toBe("SLOW");
+  });
+
+  it("gives way to [LOADING] once a route has matched", async () => {
+    const load = deferred();
+    const routes = makeRoutes()({
+      [SPLASH]: Splash,
+      [LOADING]: Skeleton,
+      slow: { [LOAD]: () => load.promise, [PAGE]: () => <SlowPage /> },
+    });
+    const history = createMemoryHistory({ initialEntries: ["/slow"] });
+    const store = new RouterStore({ history });
+    store.initialize(routes as any);
+
+    const { container, root } = mount();
+    await act(async () => {
+      root.render(<Router store={store} />);
+    });
+
+    // no guards, so matching completes immediately and the skeleton — not
+    // the splash — owns the loading window
+    await wait(350);
+    expect(container.textContent).toBe("SKELETON");
+
+    load.resolve({ a: 1 });
+    await wait(400);
+    expect(container.textContent).toBe("SLOW");
+  });
+
+  it("is not shown on later navigations", async () => {
+    const gate = deferred();
+    const routes = makeRoutes()({
+      [SPLASH]: Splash,
+      index: () => <HomePage />,
+      secret: { [GUARD]: async () => void (await gate.promise), [PAGE]: () => <SlowPage /> },
+    });
+    const history = createMemoryHistory({ initialEntries: ["/"] });
+    const store = new RouterStore({ history });
+    store.initialize(routes as any);
+
+    const { container, root } = mount();
+    await act(async () => {
+      root.render(<Router store={store} />);
+    });
+    await wait(20);
+    expect(container.textContent).toBe("HOME");
+
+    await act(async () => {
+      store.navigate({ to: "/secret" } as any);
+    });
+    await wait(400);
+
+    // a page is already on screen, so the splash must not replace it
+    expect(container.textContent).toBe("HOME");
+
+    gate.resolve();
     await wait(60);
     expect(container.textContent).toBe("SLOW");
   });

@@ -1271,3 +1271,204 @@ describe("loading signals for indicator UI", () => {
     expect(router.activeRoute?.path).toBe("slow");
   });
 });
+
+describe("isSlowNavigation spans the guard phase", () => {
+  const deferred = () => {
+    let resolve!: (value?: unknown) => void;
+    const promise = new Promise((res) => {
+      resolve = res as any;
+    });
+    return { promise, resolve };
+  };
+
+  const warmRouter = async (routes: any) => {
+    const history = createMemoryHistory({ initialEntries: ["/"] });
+    const router = new RouterStore({ history });
+    router.initialize(routes);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(router.activeRoute?.path).toBe("");
+    return router;
+  };
+
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  test("a slow guard trips the signal even though no outlet is loading", async () => {
+    const gate = deferred();
+    const router = await warmRouter(
+      makeRoutes()({
+        index: PageA,
+        secret: { [GUARD]: async () => void (await gate.promise), [PAGE]: PageB },
+      }),
+    );
+
+    router.navigate({ to: "/secret" } as any);
+    await vi.advanceTimersByTimeAsync(100);
+    expect(router.isSlowNavigation).toBe(false);
+
+    // past the debounce while still inside the guard: no pendingRoute yet,
+    // so an outlet-derived signal could not see this
+    await vi.advanceTimersByTimeAsync(250);
+    expect(router.pendingRoute).toBeUndefined();
+    expect(router.isSlowNavigation).toBe(true);
+    expect(router.isLoading).toBe(true);
+    expect(router.activeRoute?.path).toBe("");
+
+    gate.resolve();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(router.activeRoute?.path).toBe("secret");
+    expect(router.isSlowNavigation).toBe(false);
+  });
+
+  test("a fast guard never trips it", async () => {
+    const router = await warmRouter(
+      makeRoutes()({
+        index: PageA,
+        secret: { [GUARD]: async () => {}, [PAGE]: PageB },
+      }),
+    );
+
+    router.navigate({ to: "/secret" } as any);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(router.activeRoute?.path).toBe("secret");
+    expect(router.isSlowNavigation).toBe(false);
+
+    // the timer must not fire after the navigation has landed
+    await vi.advanceTimersByTimeAsync(400);
+    expect(router.isSlowNavigation).toBe(false);
+  });
+
+  test("guard and load time accumulate: neither phase alone crosses the threshold", async () => {
+    const guardGate = deferred();
+    const loadGate = deferred();
+    const router = await warmRouter(
+      makeRoutes()({
+        index: PageA,
+        slow: {
+          [GUARD]: async () => void (await guardGate.promise),
+          [LOAD]: () => loadGate.promise,
+          [PAGE]: PageB,
+        },
+      }),
+    );
+
+    router.navigate({ to: "/slow" } as any);
+
+    // 200ms of guard — under the 300ms threshold on its own
+    await vi.advanceTimersByTimeAsync(200);
+    expect(router.isSlowNavigation).toBe(false);
+    guardGate.resolve();
+    await vi.advanceTimersByTimeAsync(0);
+
+    // 150ms of loading — also under the threshold on its own, and the
+    // outlet's own clock has only just started. The navigation-level clock
+    // is at 350ms, which is what the user has actually waited.
+    await vi.advanceTimersByTimeAsync(150);
+    expect(router.pendingRoute?.isLoading).toBe(false);
+    expect(router.isSlowNavigation).toBe(true);
+
+    loadGate.resolve({});
+    await vi.advanceTimersByTimeAsync(0);
+    expect(router.activeRoute?.path).toBe("slow");
+    expect(router.isSlowNavigation).toBe(false);
+  });
+
+  test("a superseding navigation does not blink an already-visible indicator", async () => {
+    const gate = deferred();
+    const router = await warmRouter(
+      makeRoutes()({
+        index: PageA,
+        first: { [GUARD]: async () => void (await gate.promise), [PAGE]: PageB },
+        second: { [LOAD]: () => new Promise(() => {}), [PAGE]: PageC },
+      }),
+    );
+
+    router.navigate({ to: "/first" } as any);
+    await vi.advanceTimersByTimeAsync(350);
+    expect(router.isSlowNavigation).toBe(true);
+
+    // redirecting attention to another slow route mid-flight: the bar stays
+    // up rather than dropping out and fading back in
+    router.navigate({ to: "/second" } as any);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(router.isSlowNavigation).toBe(true);
+
+    // the abandoned navigation finishing must not clear the live one's clock
+    gate.resolve();
+    await vi.advanceTimersByTimeAsync(50);
+    expect(router.isSlowNavigation).toBe(true);
+  });
+});
+
+describe("isNavigating spans the guard phase", () => {
+  const deferred = () => {
+    let resolve!: (value?: unknown) => void;
+    const promise = new Promise((res) => {
+      resolve = res as any;
+    });
+    return { promise, resolve };
+  };
+
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  test("true while a guard runs, before any pendingRoute exists", async () => {
+    const gate = deferred();
+    const history = createMemoryHistory({ initialEntries: ["/"] });
+    const router = new RouterStore({ history });
+    router.initialize(
+      makeRoutes()({
+        index: PageA,
+        secret: { [GUARD]: async () => void (await gate.promise), [PAGE]: PageB },
+      }) as any,
+    );
+    await vi.advanceTimersByTimeAsync(0);
+    expect(router.isNavigating).toBe(false);
+
+    router.navigate({ to: "/secret" } as any);
+    await vi.advanceTimersByTimeAsync(10);
+
+    // in flight, but no route is loading yet — the distinction the old
+    // pendingRoute-derived definition could not express
+    expect(router.isNavigating).toBe(true);
+    expect(router.pendingRoute).toBeUndefined();
+
+    gate.resolve();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(router.isNavigating).toBe(false);
+    expect(router.activeRoute?.path).toBe("secret");
+  });
+
+  test("false again after a guard failure lands an error route", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    const history = createMemoryHistory({ initialEntries: ["/"] });
+    const router = new RouterStore({ history });
+    router.initialize(
+      makeRoutes()({
+        index: PageA,
+        secret: {
+          [GUARD]: async () => {
+            throw new Error("denied");
+          },
+          [PAGE]: PageB,
+        },
+      }) as any,
+    );
+    await vi.advanceTimersByTimeAsync(0);
+
+    router.navigate({ to: "/secret" } as any);
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(router.activeRoute?.error?.type).toBe("GUARD");
+    expect(router.isNavigating).toBe(false);
+    vi.restoreAllMocks();
+  });
+});

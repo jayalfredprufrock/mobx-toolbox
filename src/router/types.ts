@@ -1,7 +1,18 @@
 import type { History } from "history";
 import type { RouterError } from "./errors";
 import type { Route } from "./route";
-import { CONTEXT, ERROR, GUARD, LAYOUT, LOAD, LOADING, PAGE, REDIRECT, WRAPPER } from "./symbols";
+import {
+  CONTEXT,
+  ERROR,
+  GUARD,
+  LAYOUT,
+  LOAD,
+  LOADING,
+  PAGE,
+  REDIRECT,
+  SPLASH,
+  WRAPPER,
+} from "./symbols";
 
 export type Component = React.FC<any>;
 export type LazyComponent = () => Promise<any>;
@@ -85,6 +96,17 @@ export interface Redirector {
 export type Leaf = Page | Redirector | Component | LazyComponent;
 
 export interface Routes extends RouteConfig {
+  /**
+   * Rendered while the very first navigation is still resolving — before
+   * any route has matched, so before `[LAYOUT]`, `[LOADING]` and the outlet
+   * chain exist. Covers app boot, most visibly when a root `[GUARD]` has to
+   * await an auth check.
+   *
+   * Read from the **root** of the route definition only; the type permits
+   * it on nested objects, where it is ignored. Receives no props — there is
+   * no route yet to describe.
+   */
+  [SPLASH]?: Component;
   [segment: string]: Leaf | Routes;
 }
 

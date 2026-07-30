@@ -425,23 +425,34 @@ Both are legitimate designs, and the choice is one computed either way:
 | Bar on warm navigations only; skeleton owns the cold load | `router.isSlowNavigation` |
 | Bar whenever anything is loading, skeleton included       | `router.isLoading`        |
 
-`isSlowNavigation` makes the two **mutually exclusive**. It is true only when a pending route has passed the debounce _and_ a page is already on screen, so the cold load — where `[LOADING]` renders instead — is excluded.
+`isSlowNavigation` makes the two **mutually exclusive**. It is true only when a navigation has passed the debounce _and_ a page is already on screen, so the cold load — where `[LOADING]` renders instead — is excluded.
+
+Both signals are debounced from the **start of the navigation**, not from the start of loading, so:
+
+- a slow `[GUARD]` trips them even though no outlet is loading yet;
+- guard and load time **accumulate** — a 200ms guard followed by a 150ms loader trips them at 350ms, even though neither phase alone reaches the threshold.
 
 `isLoading` makes the bar a superset: true whenever an indicator is warranted anywhere, which includes the whole cold-load skeleton phase. The `[LAYOUT]` renders during a cold load (from `pendingRoute`), so a bar inside it appears above the skeleton, and it stays continuously visible from the skeleton through to the finished page with no gap.
 
 Here is what each is true for:
 
-| Phase                         | `isNavigating` | `isLoading` | `isSlowNavigation` | `[LOADING]` on screen |
-| ----------------------------- | -------------- | ----------- | ------------------ | --------------------- |
-| cold load, inside debounce    | ✓              | —           | —                  | no                    |
-| cold load, skeleton up        | ✓              | ✓           | —                  | yes                   |
-| cold load, hold after data    | —              | ✓           | —                  | yes                   |
-| cold load, settled            | —              | —           | —                  | no                    |
-| warm nav, inside the debounce | ✓              | —           | —                  | no                    |
-| warm nav, slow load           | ✓              | ✓           | ✓                  | no                    |
-| warm nav, settled             | —              | —           | —                  | no                    |
+| Phase                         | `isNavigating` | `isLoading` | `isSlowNavigation` | `[LOADING]` on screen  |
+| ----------------------------- | -------------- | ----------- | ------------------ | ---------------------- |
+| cold load, inside debounce    | —              | —           | —                  | no                     |
+| cold load, slow guard         | —              | ✓           | —                  | no (blank — see below) |
+| cold load, skeleton up        | ✓              | ✓           | —                  | yes                    |
+| cold load, hold after data    | —              | ✓           | —                  | yes                    |
+| cold load, settled            | —              | —           | —                  | no                     |
+| warm nav, inside the debounce | —              | —           | —                  | no                     |
+| warm nav, slow guard          | —              | ✓           | ✓                  | no                     |
+| warm nav, slow load           | ✓              | ✓           | ✓                  | no                     |
+| warm nav, settled             | —              | —           | —                  | no                     |
 
-Note the third row: `isNavigating` has already gone false during the cold-load hold, because the route has landed and `pendingRoute` is cleared while the skeleton is still held on screen. So `isLoading && isNavigating` would blink the bar out just before the content appears — if you want the always-visible bar, use `isLoading` alone.
+All three signals span the guard phase. If you need the narrower "a route is currently loading" — true only once guards have resolved — check `router.pendingRoute` directly.
+
+Two traps in that table. `isNavigating` is false during the cold-load hold (the route has landed; the skeleton is still held) _and_ during the guard phase, so `isLoading && isNavigating` blinks the bar out in both. If you want the always-visible bar, use `isLoading` alone.
+
+**A cold load with a slow guard needs `[SPLASH]`.** `<Router>` renders `activeRoute ?? pendingRoute`, and during guards on the very first navigation both are undefined — no route means no layout, so there is nowhere to host a bar, and no outlets, so no `[LOADING]`. `[SPLASH]` fills exactly that window; see below.
 
 `router.isNavigating` is the undebounced "something is in flight" — accurate, but it flips for every navigation however fast, so a bar driven off it flickers. Use it for logic, not pixels.
 
@@ -483,12 +494,43 @@ function AppSkeleton({ route }: LoadingComponentProps) {
 
 A `[LOADING]` component receives `{ route }` and **never `children`**. Outlets in a chain resolve in parallel, so a descendant can be ready while this slot is still waiting; rendering it would paint a page with incomplete `route.data`. `[ERROR]` components follow the same rule.
 
+### `[SPLASH]` — the pre-match window
+
+`[LOADING]` needs a matched route: it lives on an outlet, inside the layout. On the very first navigation neither exists yet, so from the moment the app starts until the first route resolves, `<Router>` has nothing to render. That window is normally a microtask and invisible — but a root `[GUARD]` awaiting an auth check stretches it into a blank screen for as long as the check takes.
+
+`[SPLASH]` is read from the **root** of the route definition and rendered in exactly that window:
+
+```tsx
+import { SPLASH, GUARD, LAYOUT } from "@mobx-toolbox/router";
+
+const routes = makeRoutes()({
+  [SPLASH]: BootScreen, // until the first route resolves
+  [LAYOUT]: AppShell,
+  [LOADING]: AppSkeleton, // once a route has matched
+  [GUARD]: restoreSession, // the slow step that makes [SPLASH] visible
+
+  index: HomePage,
+});
+```
+
+The three hand off in sequence, and never overlap:
+
+| Window                                         | Renders                           |
+| ---------------------------------------------- | --------------------------------- |
+| app start → first route matched (incl. guards) | `[SPLASH]`                        |
+| route matched → its outlets resolved           | `[LOADING]`                       |
+| any later navigation                           | previous page + your progress bar |
+
+It receives no props — there is no route yet to describe — and needs no debounce: it is only reachable while nothing has matched, so an app whose first navigation resolves promptly never paints it. It is also never shown on later navigations, since by then a page is already on screen.
+
+The type allows `[SPLASH]` on nested route objects, where it is ignored. Only the root is read.
+
 ### Timings
 
-| Constant                  | Default | Effect                                                                                          |
-| ------------------------- | ------- | ----------------------------------------------------------------------------------------------- |
-| `LOADING_DELAY_MS`        | 300ms   | How long an outlet waits before it counts as loading. Under this, no indicator appears at all.  |
-| `LOADING_MIN_DURATION_MS` | 300ms   | How long a shown `[LOADING]` is held after data arrives, so it can't flash. **Cold load only.** |
+| Constant                  | Default | Effect                                                                                                                |
+| ------------------------- | ------- | --------------------------------------------------------------------------------------------------------------------- |
+| `LOADING_DELAY_MS`        | 300ms   | Debounce before an indicator appears. Applied both per-outlet and per-navigation (the latter starting before guards). |
+| `LOADING_MIN_DURATION_MS` | 300ms   | How long a shown `[LOADING]` is held after data arrives, so it can't flash. **Cold load only.**                       |
 
 The delay costs nothing during a warm navigation — the previous page fills the window — so a quick navigation shows no indicator and no layout shift. The minimum-duration hold applies only when a `[LOADING]` component is actually on screen; a warm navigation renders content the moment its data lands and is never held back.
 
@@ -625,9 +667,9 @@ router.initialize(routes);             // call once with route definitions
 router.location                        // History Location — updates as soon as navigation starts
 router.activeRoute                     // Route | undefined — the page currently rendered
 router.pendingRoute                    // Route | undefined — the route being guarded/loaded
-router.isNavigating                    // boolean — a navigation is in flight (undebounced)
+router.isNavigating                    // boolean — a navigation is in flight, guards included
 router.isLoading                       // boolean — any loading indicator is warranted
-router.isSlowNavigation                // boolean — slow nav with a page already on screen
+router.isSlowNavigation                // boolean — slow nav (guards included) with a page on screen
 router.search                          // URLSearchParams (reactive)
 router.query                           // Record<string, string> — parsed search params
 router.pathParams                      // Record<string, string> — URL params
@@ -679,7 +721,7 @@ Both forms are caught by the router after a guard throws; the router then calls 
 ```ts
 import { RouterError } from "@mobx-toolbox/router"; // class — thrown/wrapped on navigation failures
 import {
-  LOADING_DELAY_MS, // 300 — debounce before an outlet counts as loading
+  LOADING_DELAY_MS, // 300 — debounce before an indicator appears
   LOADING_MIN_DURATION_MS, // 300 — how long a shown [LOADING] is held (cold load only)
 } from "@mobx-toolbox/router";
 
@@ -707,7 +749,7 @@ import type {
 
 **`$` is for route keys only; `:` is for path strings.** Dynamic segments are declared as `$id` keys in the routes object, but every path string in the API (`navigate({ to })`, `<Link to>`, `doesPathMatch`, `resolvePath`, the `RoutePath` union) spells that segment `:id`. A `$id` spelling inside a path string is treated as a literal segment and will not match or resolve.
 
-**Symbol keys must be imported.** `PAGE`, `GUARD`, `LOAD`, `LAYOUT`, `WRAPPER`, `CONTEXT`, `REDIRECT`, `ERROR`, `LOADING` are `unique symbol` values exported from `@mobx-toolbox/router`. They must be used as computed keys `[PAGE]: ...`. String keys like `"guard"` are treated as path segments, not metadata.
+**Symbol keys must be imported.** `PAGE`, `GUARD`, `LOAD`, `LAYOUT`, `WRAPPER`, `CONTEXT`, `REDIRECT`, `ERROR`, `LOADING`, `SPLASH` are `unique symbol` values exported from `@mobx-toolbox/router`. They must be used as computed keys `[PAGE]: ...`. String keys like `"guard"` are treated as path segments, not metadata.
 
 **Errors produce synthetic routes — except loader errors.** When matching, a guard, or a render fails, `router.activeRoute` is set to a synthetic route with `route.error: RouterError` and an outlet chain ending in the nearest `[ERROR]` component (or `DefaultErrorPage`). A **rejected loader does not**: navigation succeeds, `route.error` stays `undefined`, and the error lives on the failing outlet, which renders `[ERROR]` in its own slot. So `route.error` alone will not tell you a loader failed. Layout and error-component render crashes are deliberately NOT caught by the router — wrap `<Router>` in an app-level ErrorBoundary for last-resort protection.
 
@@ -729,6 +771,6 @@ import type {
 
 **`[LAYOUT]` is inherited and overridable; `[WRAPPER]` is not inherited.** A `[LAYOUT]` set at any ancestor level applies to all descendants unless a descendant sets its own. `[WRAPPER]` only wraps the route subtree at the level it is defined and does not propagate.
 
-**`router.activeRoute` is `undefined` until the first navigation resolves.** During that cold load `<Router>` renders `pendingRoute` instead, so pending outlets show their `[LOADING]` components. It renders `null` only while both are undefined — before guards resolve on the very first navigation.
+**`router.activeRoute` is `undefined` until the first navigation resolves.** During that cold load `<Router>` renders `pendingRoute` instead, so pending outlets show their `[LOADING]` components. While both are undefined — before the first route matches, guards included — it renders the root `[SPLASH]`, or `null` if none is defined.
 
 **`Route` and `Outlet` are exported for type annotation.** When writing guard or loader functions that are defined outside the routes object, import `Route` for the parameter type. `Outlet` and `OutletConfig` are exported but are primarily internal — avoid constructing them directly.

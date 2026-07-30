@@ -2,6 +2,7 @@ import { observer } from "mobx-react-lite";
 import { createContext, useContext } from "react";
 import type { Route } from "../route";
 import type { RouterStore } from "../router.store";
+import { SPLASH } from "../symbols";
 import type { Component } from "../types";
 import { DefaultErrorPage, RouteErrorBoundary } from "./error";
 
@@ -40,7 +41,11 @@ export const Router = observer(({ store }: RouterProps) => {
   // their [LOADING] components while they resolve.
   const route = store.activeRoute ?? store.pendingRoute;
   if (!route) {
-    return null;
+    // Nothing has matched yet — the first navigation is still matching or
+    // running its guards. No route means no layout and no outlets, so
+    // [SPLASH] is the only thing that can be shown here.
+    const Splash = store.routesDef?.[SPLASH];
+    return Splash ? <Splash /> : null;
   }
 
   const Layout = route.layout ?? PassThrough;

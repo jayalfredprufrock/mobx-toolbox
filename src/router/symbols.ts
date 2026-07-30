@@ -6,4 +6,5 @@ export const GUARD: unique symbol = Symbol.for("MOBX_ROUTER_GUARD");
 export const PAGE: unique symbol = Symbol.for("MOBX_ROUTER_PAGE");
 export const ERROR: unique symbol = Symbol.for("MOBX_ROUTER_ERROR");
 export const LOADING: unique symbol = Symbol.for("MOBX_ROUTER_LOADING");
+export const SPLASH: unique symbol = Symbol.for("MOBX_ROUTER_SPLASH");
 export const REDIRECT: unique symbol = Symbol.for("MOBX_ROUTER_REDIRECT");

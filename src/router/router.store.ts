@@ -3,6 +3,7 @@ import { action, computed, makeObservable, observable, runInAction } from "mobx"
 import { flushSync } from "react-dom";
 import { RouterError } from "./errors";
 import { makeErrorRoute, matchRoute } from "./make-routes";
+import { LOADING_DELAY_MS } from "./outlet";
 import { Redirect } from "./redirect";
 import type { Route } from "./route";
 import type { Component, MobxRouterConfig, NavigateOptions, Obj, RoutePath, Routes } from "./types";
@@ -31,6 +32,15 @@ export class RouterStore {
    */
   pendingRoute: Route | undefined;
 
+  /**
+   * Navigation-scoped state, tracked from the first line of a navigation
+   * rather than derived from `pendingRoute`, so both span the guard phase.
+   * See `beginNavigation`.
+   */
+  private navigating = false;
+  private navigationSlow = false;
+  private slowTimer: ReturnType<typeof setTimeout> | undefined;
+
   get search(): URLSearchParams {
     return new URLSearchParams(this.location?.search);
   }
@@ -48,28 +58,34 @@ export class RouterStore {
   }
 
   /**
-   * `true` from the moment a navigation starts until it lands. Covers the
-   * guard phase too, so it's the honest answer to "is something in
-   * flight" — but it flips for every navigation, however fast, so it will
-   * flicker if you render an indicator straight off it. Use it for logic;
-   * see {@link isLoading} for what to render from.
+   * `true` from the first moment of a navigation until it lands, guard
+   * phase included — the honest answer to "is something in flight".
+   *
+   * Undebounced: it flips for every navigation however fast, so an
+   * indicator rendered straight off it will flicker. Use it for logic, and
+   * {@link isSlowNavigation} or {@link isLoading} for pixels. For the
+   * narrower question "is a route currently loading", check `pendingRoute`,
+   * which is only assigned once guards have resolved.
    */
   get isNavigating(): boolean {
-    return this.pendingRoute !== undefined;
+    return this.navigating;
   }
 
   /**
-   * `true` whenever a loading indicator is warranted *anywhere*: either a
-   * pending navigation has passed `LOADING_DELAY_MS`, or a cold load's
-   * `[LOADING]` component is on screen (including through the
-   * minimum-duration hold). Debounced, so quick navigations never flip it.
+   * `true` whenever a loading indicator is warranted *anywhere*: a
+   * navigation has been in flight longer than `LOADING_DELAY_MS` (guards
+   * included), or a cold load's `[LOADING]` component is on screen
+   * (including through the minimum-duration hold). Debounced, so quick
+   * navigations never flip it.
    *
    * Use this for a layout progress bar that should stay visible alongside
    * a cold load's `[LOADING]` skeleton. For a bar that yields to the
    * skeleton instead, use {@link isSlowNavigation}.
    */
   get isLoading(): boolean {
-    return this.pendingRoute?.isLoading ?? this.activeRoute?.isLoading ?? false;
+    // navigationSlow covers the whole in-flight window; activeRoute's own
+    // flag covers the cold-load hold, which outlives the navigation itself
+    return this.navigationSlow || !!this.pendingRoute?.isLoading || !!this.activeRoute?.isLoading;
   }
 
   /**
@@ -77,20 +93,26 @@ export class RouterStore {
    * *and* there is already a page on screen to show it over — the usual
    * signal for a layout-level progress bar.
    *
+   * Measured from the start of the navigation, so a slow `[GUARD]` counts
+   * toward it just as a slow `[LOAD]` does, and a navigation made slow by
+   * both phases together still trips it.
+   *
    * Excludes the cold load, where the pending route's `[LOADING]`
    * component is on screen instead, so a bar driven off this is mutually
    * exclusive with `[LOADING]`. Use {@link isLoading} if you want both at
    * once.
    */
   get isSlowNavigation(): boolean {
-    return !!this.pendingRoute?.isLoading && this.activeRoute !== undefined;
+    return this.navigationSlow && this.activeRoute !== undefined;
   }
 
   constructor(config?: MobxRouterConfig) {
-    makeObservable(this, {
+    makeObservable<RouterStore, "navigating" | "navigationSlow">(this, {
       location: observable.ref,
       activeRoute: observable.ref,
       pendingRoute: observable.ref,
+      navigating: observable,
+      navigationSlow: observable,
 
       search: computed,
       pathParams: computed,
@@ -225,6 +247,10 @@ export class RouterStore {
     // where holding a just-shown indicator is worth delaying content for
     const cold = !this.activeRoute;
 
+    // starts before guards, so both isNavigating and isSlowNavigation span
+    // the guard phase
+    const settle = this.beginNavigation();
+
     let matchedRoute: Route | undefined;
     try {
       matchedRoute = matchRoute(location.pathname, this.routesDef);
@@ -276,7 +302,54 @@ export class RouterStore {
         this.pendingRoute = undefined;
       });
       await errorRoute.load();
+    } finally {
+      // covers every exit: the swap, an error route, a stale bail, and the
+      // redirect path — where the follow-up navigation has already claimed
+      // the clock, so this call is a no-op
+      settle();
     }
+  }
+
+  /**
+   * Marks a navigation as in flight, starts its debounce clock, and returns
+   * the cleanup that ends both.
+   *
+   * Both are tracked here — before guards run — rather than derived from
+   * `pendingRoute`, which is only assigned once guards resolve. That is
+   * what lets `isNavigating` mean "in flight" and `isSlowNavigation`
+   * measure how long the user has actually been waiting. An outlet-level
+   * clock cannot do the latter: outlets only begin loading after guards, so
+   * a 250ms guard followed by a 250ms loader would show no indicator at all
+   * despite half a second of waiting.
+   */
+  private beginNavigation(): () => void {
+    // a newer navigation supersedes the previous clock, but deliberately
+    // does not reset `navigationSlow` — if an indicator is already on
+    // screen, a follow-up navigation should not blink it out and back in
+    clearTimeout(this.slowTimer);
+    runInAction(() => {
+      this.navigating = true;
+    });
+
+    const timer = setTimeout(() => {
+      if (this.slowTimer === timer) {
+        runInAction(() => {
+          this.navigationSlow = true;
+        });
+      }
+    }, LOADING_DELAY_MS);
+    this.slowTimer = timer;
+
+    return () => {
+      // a later navigation owns the clock now; leave its state alone
+      if (this.slowTimer !== timer) return;
+      clearTimeout(timer);
+      this.slowTimer = undefined;
+      runInAction(() => {
+        this.navigating = false;
+        this.navigationSlow = false;
+      });
+    };
   }
 
   /**

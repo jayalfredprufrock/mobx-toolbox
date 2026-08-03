@@ -25,6 +25,7 @@ Each module is its own entry point — import from `@jayalfredprufrock/mobx-tool
 | [`react-util`](#react-util)           | General-purpose React hooks: async state, debouncing, resize, mount lifecycle | `react`                                       |
 | [`router`](#router)                   | Client-side router with symbol-keyed guards, loaders and layouts              | `mobx`, `mobx-react-lite`, `react`, `history` |
 | [`table`](#table)                     | Headless, virtualized data table                                              | `mobx`, `mobx-react-lite`, `react`            |
+| [`uploader`](#uploader)               | Headless multipart upload engine with progress, retries and a form value      | `mobx`, `mobx-react-lite`, `react`            |
 | [`util`](#util)                       | Small MobX + React utilities — `mutable`, `useAutorun`                        | `mobx`, `react`                               |
 
 ### [`dialog`](src/dialog/README.md)
@@ -202,6 +203,45 @@ function UserTable({ users }) {
 ```
 
 → [Full docs](src/table/README.md)
+
+---
+
+### [`uploader`](src/uploader/README.md)
+
+Headless multipart upload engine. The model owns part slicing, concurrency, progress, retries, cancellation and the completed-upload form value; you own the selection UI. Drives equally well from a bare `<input>` or from Chakra/Ark's `FileUpload`.
+
+```tsx
+import { useUploader, Uploader } from "@jayalfredprufrock/mobx-toolbox/uploader";
+
+function DocumentUpload({ value, onChange }) {
+  const uploader = useUploader({
+    accept: ".pdf",
+    value,
+    onChange,
+    requestUpload: async (signal, file) => {
+      const res = await api.requestUpload({ fileName: file.name, size: file.size }, { signal });
+      // part sizes come from the server — never derived client-side
+      return { id: res.id, name: res.fileName, parts: res.parts };
+    },
+  });
+
+  return (
+    <Uploader.Root uploader={uploader}>
+      <ul>
+        <Uploader.Uploads>
+          {(upload) => (
+            <li>
+              {upload.name} — {upload.status} {upload.progress}%
+            </li>
+          )}
+        </Uploader.Uploads>
+      </ul>
+    </Uploader.Root>
+  );
+}
+```
+
+→ [Full docs](src/uploader/README.md)
 
 ---
 

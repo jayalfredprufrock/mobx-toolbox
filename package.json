@@ -15,6 +15,7 @@
   "files": [
     "dist"
   ],
+  "sideEffects": false,
   "exports": {
     "./dialog": "./dist/dialog.mjs",
     "./form": "./dist/form.mjs",
@@ -23,6 +24,7 @@
     "./react-util": "./dist/react-util.mjs",
     "./router": "./dist/router.mjs",
     "./table": "./dist/table.mjs",
+    "./uploader": "./dist/uploader.mjs",
     "./util": "./dist/util.mjs",
     "./package.json": "./package.json"
   },

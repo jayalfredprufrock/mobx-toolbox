@@ -23,6 +23,7 @@ export default defineConfig({
       model: "src/model/index.ts",
       router: "src/router/index.ts",
       table: "src/table/index.ts",
+      uploader: "src/uploader/index.ts",
       util: "src/util/index.ts",
       "react-util": "src/react-util/index.ts",
     },

@@ -13,7 +13,7 @@ import { toUploadError, UploadError } from "./errors";
 import { FileModel } from "./file.model";
 import type { PartModel } from "./part.model";
 import type { Upload, UploaderConfig, UploadValue, UploadValueInput } from "./uploader.types";
-import { isRetryableStatus, STALL_TIMEOUT_MS } from "./uploader.util";
+import { isRetryableStatus, isSameFile, STALL_TIMEOUT_MS } from "./uploader.util";
 
 /** Normalize a controlled-value entry: a bare id becomes `{ id, name: id }`. */
 const toUploadValue = (input: UploadValueInput): UploadValue =>
@@ -184,6 +184,7 @@ export class UploaderModel {
 
       addFile: action,
       addFiles: action.bound,
+      setFiles: action.bound,
       addCompletedUpload: action.bound,
       applyValue: action.bound,
       removeUpload: action.bound,
@@ -244,11 +245,22 @@ export class UploaderModel {
   }
 
   /**
-   * Add files picked by the user. Accepts a `FileList` (from an `<input>`), an array (from a design
-   * system's `onFileAccept`), or any iterable of `File`.
+   * **Add** files to whatever is already here. Accepts a `FileList` (from an `<input>`'s change event),
+   * an array, or any iterable of `File`.
    *
    * Each file goes through `config.validate` in order, after earlier files in the batch have been
    * added — so a count rule sees them.
+   *
+   * A file already in the list is skipped rather than uploaded twice, matched by {@link isSameFile}
+   * — so `setFiles` and `addFiles` agree about identity, and re-picking the same file can't produce
+   * two uploads of the same bytes, two server-side pending uploads and two entries in the form value.
+   * Skips are reported through `onError` as `UploadError("REJECTED")` rather than dropped silently.
+   *
+   * This is the *delta* API, for a selection layer that reports only what was newly picked — which is
+   * what an `<input type="file">` change event gives you (and what `<Uploader.Root>` uses). If your
+   * selection layer owns the list and hands back the whole thing on every change, use
+   * {@link UploaderModel.setFiles} instead: that also removes files the layer dropped, which this
+   * cannot see.
    */
   addFiles(files: FileList | Iterable<File>): void {
     const list = Array.from(files);
@@ -258,14 +270,77 @@ export class UploaderModel {
       // single-file mode replaces rather than accumulates: keep only the last pick and drop whatever
       // was there, of either kind. `clear` is what makes this uniform — the reference called a
       // `cancel()` that iterated only the in-flight files, so a rehydrated upload survived the
-      // replacement and a single-file uploader ended up holding two.
+      // replacement and a single-file uploader ended up holding two. No dedupe check is needed: there
+      // is never anything left to collide with.
       const last = list[list.length - 1];
       this.clear();
       if (last) this.addFile(last);
     } else {
       for (const file of list) {
+        if (this.files.some((upload) => isSameFile(upload.file, file))) {
+          this.reportError(
+            new UploadError("REJECTED", {
+              fileName: file.name,
+              message: `'${file.name}' has already been added.`,
+            }),
+          );
+          continue;
+        }
         this.addFile(file);
       }
+    }
+
+    this.pump();
+  }
+
+  /**
+   * **Reconcile** the picked files to exactly this set — additions and removals both.
+   *
+   * This is the API for a selection layer that owns the file list and reports the whole thing on every
+   * change rather than a delta. Chakra UI's and Ark UI's `FileUpload` work this way: `onFileAccept`
+   * fires from the machine's `acceptedFiles` binding, so it receives the complete accepted list — and
+   * it fires on deletions too, not just additions. Passing that to `addFiles` would duplicate every
+   * file already present.
+   *
+   * Files are matched to existing uploads by reference, then by name + size + type (see
+   * {@link isSameFile}) — the same identity `@zag-js/file-utils` uses, so both layers agree about what
+   * "the same file" is. Matched uploads keep their position and their in-flight state, so a
+   * reconciliation never restarts an upload that is already running. Uploads whose file is absent are
+   * removed, cancelling them server-side if they had started. New files are appended through
+   * `config.validate`.
+   *
+   * Rehydrated completed uploads are left alone: they have no `File`, they aren't part of the selection
+   * layer's list, and they are owned by the controlled `value`. So `setFiles([])` clears the picked
+   * files without discarding uploads that already exist server-side.
+   */
+  setFiles(files: FileList | Iterable<File>): void {
+    const incoming = Array.from(files);
+    // single-file mode keeps the last pick, matching addFiles
+    const wanted = this.config.multiple ? incoming : incoming.slice(-1);
+
+    const existing = this.files;
+    const matched = new Set<FileModel>();
+    const additions: File[] = [];
+
+    for (const file of wanted) {
+      // `matched` guards against one incoming file claiming two existing uploads; the selection layer
+      // normally dedupes, so this only matters for a hand-built list
+      const match = existing.find(
+        (upload) => !matched.has(upload) && isSameFile(upload.file, file),
+      );
+      if (match) {
+        matched.add(match);
+      } else {
+        additions.push(file);
+      }
+    }
+
+    for (const upload of existing) {
+      if (!matched.has(upload)) this.removeUpload(upload);
+    }
+
+    for (const file of additions) {
+      this.addFile(file);
     }
 
     this.pump();

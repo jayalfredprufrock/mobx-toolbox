@@ -28,6 +28,18 @@ let keyCounter = 0;
 export const nextUploadKey = (): string => `upload-${++keyCounter}`;
 
 /**
+ * Whether two `File`s should be treated as the same selection: reference identity first, then
+ * name + size + type.
+ *
+ * The structural fallback matters for interop — it is exactly the comparison
+ * `@zag-js/file-utils`' `isFileEqual` uses, so a design system's file list and the uploader's agree
+ * about what "the same file" means. Reference equality alone would churn whenever the selection layer
+ * hands back re-created `File` objects (Zag's `transformFiles` does this).
+ */
+export const isSameFile = (a: File, b: File): boolean =>
+  a === b || (a.name === b.name && a.size === b.size && a.type === b.type);
+
+/**
  * The filename's extension, lowercased, or `""` when there isn't one.
  *
  * Deliberately reports what the name says and normalizes nothing — the reference implementation

@@ -1001,6 +1001,161 @@ describe("collection", () => {
     expect(uploader.uploads).toHaveLength(0);
   });
 
+  test("addFiles skips a file already in the list and says why", () => {
+    const onError = vi.fn();
+    const { uploader, requested } = makeUploader({ multiple: true, onError });
+    const a = makeFile("a.bin", 10);
+
+    uploader.addFiles([a]);
+    uploader.addFiles([a]);
+    // a distinct File object with the same name/size/type counts as the same selection
+    uploader.addFiles([makeFile("a.bin", 10)]);
+
+    expect(uploader.uploads).toHaveLength(1);
+    expect(requested).toEqual(["a.bin"]);
+    expect(onError).toHaveBeenCalledTimes(2);
+    const error = onError.mock.calls[0]?.[0] as UploadError;
+    expect(error.type).toBe("REJECTED");
+    expect(error.message).toContain("already been added");
+  });
+
+  test("addFiles dedupes within a single batch", () => {
+    const { uploader } = makeUploader({ multiple: true });
+    const a = makeFile("a.bin", 10);
+
+    uploader.addFiles([a, a, makeFile("b.bin", 10)]);
+
+    expect(uploader.uploads.map((upload) => upload.name)).toEqual(["a.bin", "b.bin"]);
+  });
+
+  test("addFiles still allows genuinely different files", () => {
+    const { uploader } = makeUploader({ multiple: true });
+
+    // same name, different size — not the same selection
+    uploader.addFiles([makeFile("a.bin", 10)]);
+    uploader.addFiles([makeFile("a.bin", 20)]);
+
+    expect(uploader.uploads).toHaveLength(2);
+  });
+
+  test("single-file mode replaces rather than reporting a duplicate", () => {
+    const onError = vi.fn();
+    const { uploader } = makeUploader({ onError });
+    const a = makeFile("a.bin", 10);
+
+    uploader.addFiles([a]);
+    uploader.addFiles([a]);
+
+    // the first was cleared, so there is nothing to collide with
+    expect(uploader.uploads).toHaveLength(1);
+    expect(onError).not.toHaveBeenCalled();
+  });
+
+  test("setFiles reconciles instead of accumulating", () => {
+    const { uploader } = makeUploader({ multiple: true });
+    const a = makeFile("a.bin", 10);
+    const b = makeFile("b.bin", 10);
+
+    // this is the shape Chakra/Ark hand back: the whole accepted list on every change
+    uploader.setFiles([a]);
+    uploader.setFiles([a, b]);
+
+    expect(uploader.uploads.map((upload) => upload.name)).toEqual(["a.bin", "b.bin"]);
+  });
+
+  test("setFiles keeps a matched upload's identity and in-flight state", async () => {
+    const { uploader, calls } = makeUploader({ multiple: true, concurrency: 4 }, 10);
+    const a = makeFile("a.bin", 20);
+
+    uploader.setFiles([a]);
+    await flush();
+    const first = uploader.files[0] as FileModel;
+    expect(first.status).toBe("UPLOADING");
+    const callCount = calls.length;
+
+    uploader.setFiles([a, makeFile("b.bin", 10)]);
+    await flush();
+
+    // the running upload is untouched — same model, not restarted
+    expect(uploader.files[0]).toBe(first);
+    expect(first.key).toBe(uploader.files[0]?.key);
+    expect(calls.filter((call) => call.part.file === first)).toHaveLength(callCount);
+  });
+
+  test("setFiles matches structurally, as the design system does", () => {
+    const { uploader } = makeUploader({ multiple: true });
+
+    uploader.setFiles([makeFile("a.bin", 10)]);
+    const first = uploader.files[0];
+
+    // a distinct File object with the same name/size/type — what a transformFiles step produces
+    uploader.setFiles([makeFile("a.bin", 10)]);
+
+    expect(uploader.uploads).toHaveLength(1);
+    expect(uploader.files[0]).toBe(first);
+  });
+
+  test("setFiles removes dropped files and cancels started ones", async () => {
+    const cancelUpload = vi.fn();
+    const { uploader } = makeUploader({ multiple: true, cancelUpload, concurrency: 4 }, 10);
+    const a = makeFile("a.bin", 10);
+    const b = makeFile("b.bin", 10);
+
+    uploader.setFiles([a, b]);
+    await flush();
+    expect(uploader.uploads).toHaveLength(2);
+
+    // this is also what Chakra's ItemDeleteTrigger produces — a shorter list, not a delta
+    uploader.setFiles([b]);
+
+    expect(uploader.uploads.map((upload) => upload.name)).toEqual(["b.bin"]);
+    expect(cancelUpload).toHaveBeenCalledTimes(1);
+  });
+
+  test("setFiles leaves rehydrated completed uploads alone", async () => {
+    const { uploader } = makeUploader(
+      { multiple: true, value: [{ id: "old", name: "old.pdf" }] },
+      10,
+    );
+
+    uploader.setFiles([makeFile("new.bin", 10)]);
+    await flush();
+    expect(uploader.uploads).toHaveLength(2);
+
+    // clearing the picker must not discard something that already exists server-side
+    uploader.setFiles([]);
+
+    expect(uploader.uploads.map((upload) => upload.name)).toEqual(["old.pdf"]);
+    expect(uploader.ids).toEqual(["old"]);
+  });
+
+  test("setFiles applies validate to new files only", () => {
+    const onError = vi.fn();
+    const { uploader } = makeUploader({
+      multiple: true,
+      onError,
+      validate: (file) => (file.size > 100 ? "Too big." : undefined),
+    });
+    const ok = makeFile("ok.bin", 10);
+
+    uploader.setFiles([ok, makeFile("huge.bin", 500)]);
+    expect(uploader.uploads.map((upload) => upload.name)).toEqual(["ok.bin"]);
+    expect(onError).toHaveBeenCalledTimes(1);
+
+    // the retained file is not re-validated
+    uploader.setFiles([ok]);
+    expect(onError).toHaveBeenCalledTimes(1);
+    expect(uploader.uploads).toHaveLength(1);
+  });
+
+  test("setFiles keeps the last file in single mode", () => {
+    const { uploader } = makeUploader();
+
+    uploader.setFiles([makeFile("a.bin", 10), makeFile("b.bin", 10)]);
+
+    expect(uploader.uploads.map((upload) => upload.name)).toEqual(["b.bin"]);
+  });
+
   test("keys are unique across uploads and across uploaders", () => {
     const first = makeUploader({ multiple: true });
     const second = makeUploader({ multiple: true });

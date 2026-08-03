@@ -2,7 +2,7 @@
 
 A headless multipart upload engine for MobX + React. The model owns everything about _uploading_ — part slicing, concurrency, progress, retries, cancellation, and the completed-upload form value. You own everything about _selecting_: the file input, the drop zone, the list markup, and every pixel.
 
-- **Bring your own selection UI.** Two thin components are included for consumers with no design system, but the engine is driven by one call — `uploader.addFiles(files)` — so it drops straight into Chakra's `FileUpload`, Ark UI, or a bare `<input>`.
+- **Bring your own selection UI.** Two thin components are included for consumers with no design system, but the engine is driven by one call — `addFiles` for a delta, `setFiles` to reconcile a whole list — so it drops straight into Chakra's `FileUpload`, Ark UI, or a bare `<input>`.
 - **Server-supplied part sizes.** The client never derives a part boundary, because a backend that signs each part URL with an exact `Content-Length` rejects any other split.
 - **Bounded by one number.** `concurrency` caps parts in flight _and_ throttles how far ahead files are signed, so presigned URLs don't expire in a queue and a backend's pending-upload limit isn't tripped.
 
@@ -133,7 +133,7 @@ useUploader({
 
 `validate` runs once per file, in order, _after_ earlier files in the same batch have been added — so a count rule sees them. A rejected file **never enters `uploads`**, so it can't appear as a failed row; `onError` receives `UploadError("REJECTED")` with no `file` argument, because there is no model to hang it on.
 
-`accept`, `multiple` and `capture` are passed to the hidden input's attributes. Only `multiple` also affects the model: in single-file mode `addFiles` **replaces** what's there rather than accumulating. Enforce anything you need as a hard guarantee in `validate` — the input's `accept` is a dialog filter, not a contract.
+`accept`, `multiple` and `capture` are passed to the hidden input's attributes. Only `multiple` also affects the model: in single-file mode `addFiles` **replaces** what's there rather than accumulating, and both `addFiles` and `setFiles` keep only the last file of a batch. Enforce anything you need as a hard guarantee in `validate` — the input's `accept` is a dialog filter, not a contract.
 
 ## Part sizes
 
@@ -192,7 +192,8 @@ const uploader = useUploader({ requestUpload, completeUpload, value, onChange })
   maxFiles={5}
   maxFileSize={10_000_000}
   acceptedFiles={uploader.files.map((file) => file.file)}
-  onFileAccept={({ files }) => uploader.addFiles(files)}
+  // setFiles, NOT addFiles — see below
+  onFileAccept={({ files }) => uploader.setFiles(files)}
   onFileReject={({ files }) => toast(files)}
 >
   <FileUpload.HiddenInput />
@@ -205,7 +206,11 @@ const uploader = useUploader({ requestUpload, completeUpload, value, onChange })
 </FileUpload.Root>;
 ```
 
-Two notes. Controlling `acceptedFiles` from `uploader.files` keeps Zag's `maxFiles` accounting and its `Item` parts in sync with removals made through the model — `FileModel.file` is public for exactly this. And rehydrated `CompletedUploadModel`s have no `File`, so they can't go through Zag's `Item` parts; render those rows yourself.
+**Use `setFiles`, not `addFiles`.** `onFileAccept` fires from the machine's `acceptedFiles` binding, so it receives the **entire** accepted list, not the newly-picked delta — and it fires on deletions too. `addFiles` would re-add everything already present, so a second pick would duplicate the first file. `setFiles` reconciles: matched files keep their upload (and its in-flight progress), absent ones are removed and cancelled, new ones are added. Matching is by reference then by name + size + type, the same identity Zag's `isFileEqual` uses.
+
+Because `setFiles` handles removals, `FileUpload.ItemDeleteTrigger` works as-is — deleting shortens `acceptedFiles`, which fires `onFileAccept`, which drops the upload. Calling `upload.remove()` yourself works too, and controlling `acceptedFiles` from `uploader.files` is what keeps the two directions consistent (`FileModel.file` is public for exactly this).
+
+Rehydrated `CompletedUploadModel`s have no `File`, so they can't go through Zag's `Item` parts and aren't part of its list — render those rows with your own markup. `setFiles` never touches them, so `setFiles([])` clears the picked files without discarding uploads that already exist server-side.
 
 Because the two layers overlap, don't configure the same rule twice: if Zag is doing `accept` and `maxFileSize`, leave `accept` and `validate` off the uploader.
 
@@ -237,7 +242,14 @@ uploader.activate();
 | `errors`                                         | every error currently attached to an upload                     |
 | `activeParts` / `queuedParts` / `pendingUploads` | scheduler state                                                 |
 
-Actions: `addFiles`, `addCompletedUpload`, `applyValue`, `removeUpload`, `clear`, `retryAll`, `pump`, `activate`, `dispose`.
+Actions: `addFiles`, `setFiles`, `addCompletedUpload`, `applyValue`, `removeUpload`, `clear`, `retryAll`, `pump`, `activate`, `dispose`.
+
+| Adding files      |                                                                                                                                                                                                                                                                                                                                |
+| ----------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `addFiles(files)` | For a selection layer that reports only what was newly picked — an `<input>` change event, and what `<Uploader.Root>` uses. **Additive in `multiple` mode**, where a file already in the list is skipped. In single-file mode it **replaces**: whatever was there is removed first, so re-picking the same file re-uploads it. |
+| `setFiles(files)` | **Reconciling.** For a selection layer that owns the list and reports all of it on every change — Chakra/Ark's `onFileAccept`. Adds, removes and cancels to match; leaves rehydrated uploads alone.                                                                                                                            |
+
+Where they do compare, two `File`s are the same selection when they are the same object, or share a name, size and type — `isSameFile`, the comparison Zag uses. So in `multiple` mode re-picking a file can't produce two uploads of the same bytes, two server-side pending uploads and two entries in the form value; `addFiles` reports the skip through `onError` as `UploadError("REJECTED")` rather than dropping it silently. Files that differ in size or type are unaffected.
 
 ### Lifecycle
 

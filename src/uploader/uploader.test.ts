@@ -818,11 +818,6 @@ describe("controlled value", () => {
     expect(onChange).not.toHaveBeenCalled();
   });
 
-  test("a bare id is accepted and its name falls back to the id", () => {
-    const { uploader } = makeUploader({ value: ["only-an-id"] });
-    expect(uploader.uploads[0]?.name).toBe("only-an-id");
-  });
-
   test("the name is carried, never inferred from the id", () => {
     const { uploader } = makeUploader({
       value: [{ id: "3f2b9c14-0000-4000-8000-000000000000", name: "contract.pdf" }],
@@ -999,6 +994,89 @@ describe("collection", () => {
     uploader.clear();
 
     expect(uploader.uploads).toHaveLength(0);
+  });
+
+  test("maxFiles caps additions and reports the refusal", () => {
+    const onError = vi.fn();
+    const { uploader } = makeUploader({ multiple: true, maxFiles: 2, onError });
+
+    uploader.addFiles([makeFile("a.bin", 10), makeFile("b.bin", 10), makeFile("c.bin", 10)]);
+
+    expect(uploader.uploads.map((upload) => upload.name)).toEqual(["a.bin", "b.bin"]);
+    expect(uploader.full).toBe(true);
+    expect(uploader.remainingSlots).toBe(0);
+    const error = onError.mock.calls[0]?.[0] as UploadError;
+    expect(error.type).toBe("REJECTED");
+    expect(error.message).toContain("No more than 2");
+  });
+
+  test("maxFiles counts rehydrated uploads, which a design system's own cap cannot", () => {
+    const onError = vi.fn();
+    const { uploader, requested } = makeUploader({
+      multiple: true,
+      maxFiles: 1,
+      onError,
+      value: [{ id: "old", name: "old.pdf" }],
+    });
+
+    expect(uploader.full).toBe(true);
+
+    uploader.addFiles([makeFile("new.bin", 10)]);
+
+    // the whole point: one already-uploaded file fills a single-file field
+    expect(uploader.uploads.map((upload) => upload.name)).toEqual(["old.pdf"]);
+    expect(requested).toEqual([]);
+    expect(onError).toHaveBeenCalledTimes(1);
+  });
+
+  test("removing an upload frees a slot", async () => {
+    const { uploader } = makeUploader({ multiple: true, maxFiles: 1 }, 10);
+
+    uploader.addFiles([makeFile("a.bin", 10)]);
+    await flush();
+    expect(uploader.remainingSlots).toBe(0);
+
+    uploader.uploads[0]?.remove();
+    expect(uploader.remainingSlots).toBe(1);
+
+    uploader.addFiles([makeFile("b.bin", 10)]);
+    expect(uploader.uploads.map((upload) => upload.name)).toEqual(["b.bin"]);
+  });
+
+  test("maxFiles defaults from multiple", () => {
+    expect(makeUploader().uploader.maxFiles).toBe(1);
+    expect(makeUploader({ multiple: true }).uploader.maxFiles).toBe(Number.POSITIVE_INFINITY);
+    expect(makeUploader({ multiple: true }).uploader.remainingSlots).toBe(Number.POSITIVE_INFINITY);
+  });
+
+  test("the cap governs picking, not rehydration", () => {
+    // a controlled value is authoritative — truncating it would silently drop persisted uploads
+    const { uploader } = makeUploader({
+      multiple: true,
+      maxFiles: 1,
+      value: [
+        { id: "a", name: "a.pdf" },
+        { id: "b", name: "b.pdf" },
+      ],
+    });
+
+    expect(uploader.ids).toEqual(["a", "b"]);
+  });
+
+  test("setFiles respects the cap, counting removals first", async () => {
+    const { uploader } = makeUploader({ multiple: true, maxFiles: 2 }, 10);
+    const a = makeFile("a.bin", 10);
+    const b = makeFile("b.bin", 10);
+
+    uploader.setFiles([a, b]);
+    await flush();
+    expect(uploader.uploads).toHaveLength(2);
+
+    // a drops out in the same call that c arrives, so the slot it frees is available to c
+    const c = makeFile("c.bin", 10);
+    uploader.setFiles([b, c]);
+
+    expect(uploader.uploads.map((upload) => upload.name)).toEqual(["b.bin", "c.bin"]);
   });
 
   test("addFiles skips a file already in the list and says why", () => {

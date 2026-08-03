@@ -82,14 +82,19 @@ export interface UploadRequestResult {
   parts: UploadPart[];
 }
 
-/** A completed upload, as emitted to `onChange` and accepted by `value`. */
+/**
+ * A completed upload, as emitted to `onChange` and accepted by `value`.
+ *
+ * `name` is required rather than optional, and a bare id is deliberately **not** accepted. The name is
+ * not derivable from the id — an id may be a storage key that happens to end in a filename, or an
+ * opaque uuid that doesn't — so a library that guessed would render a uuid as a filename for half its
+ * consumers. Persist the name alongside the id in whatever holds your form value, or fetch it when the
+ * form loads.
+ */
 export interface UploadValue {
   id: string;
   name: string;
 }
-
-/** `value` also accepts a bare id, normalized to `{ id, name: id }`. */
-export type UploadValueInput = string | UploadValue;
 
 /** Everything in `uploads`: files this uploader is uploading, plus rehydrated completed uploads. */
 export type Upload = FileModel | CompletedUploadModel;
@@ -206,6 +211,26 @@ export interface UploaderConfig {
   capture?: boolean | "user" | "environment";
 
   /**
+   * How many uploads the field holds at once. Default: unlimited when `multiple` is set, `1` when it
+   * isn't. Picks past the cap are refused with `UploadError("REJECTED")` through `onError`, and
+   * `uploader.full` / `uploader.remainingSlots` let your UI gate on the same number.
+   *
+   * This lives here rather than in `validate` because it is the one limit that depends on the
+   * *collection* rather than on the file: only the uploader can see both the files it is uploading and
+   * the already-uploaded ones rehydrated from `value`. A design system's own file cap counts only local
+   * `File`s, so it will happily accept a second file when one already exists server-side — leave that
+   * setting open and let this one do the work.
+   *
+   * Limits that depend only on the file — type, size — belong to whatever does the selecting, since it
+   * can reject before the uploader ever sees them. Use `accept` / `validate`, or your design system's
+   * equivalents.
+   *
+   * The cap governs *picking*, not rehydration: `value` is authoritative, so a controlled value longer
+   * than `maxFiles` is applied in full rather than silently truncated.
+   */
+  maxFiles?: number;
+
+  /**
    * How many part uploads may be in flight at once, across all files. Default `4`.
    *
    * This also throttles signing: a file is only requested when the already-signed work can't keep
@@ -249,7 +274,7 @@ export interface UploaderConfig {
    * in flight are never touched. Passing the key at all (even as `undefined`) makes the uploader
    * controlled, so `undefined` and `[]` both mean "no uploads".
    */
-  value?: UploadValueInput[];
+  value?: UploadValue[];
 
   /**
    * Fires when the set of completed uploads changes. Compared structurally, so a fresh array of

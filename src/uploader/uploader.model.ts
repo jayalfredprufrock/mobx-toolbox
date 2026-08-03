@@ -12,12 +12,8 @@ import { CompletedUploadModel } from "./completed-upload.model";
 import { toUploadError, UploadError } from "./errors";
 import { FileModel } from "./file.model";
 import type { PartModel } from "./part.model";
-import type { Upload, UploaderConfig, UploadValue, UploadValueInput } from "./uploader.types";
+import type { Upload, UploaderConfig, UploadValue } from "./uploader.types";
 import { isRetryableStatus, isSameFile, STALL_TIMEOUT_MS } from "./uploader.util";
-
-/** Normalize a controlled-value entry: a bare id becomes `{ id, name: id }`. */
-const toUploadValue = (input: UploadValueInput): UploadValue =>
-  typeof input === "string" ? { id: input, name: input } : input;
 
 /**
  * Owns the list of uploads and the scheduling of all network work.
@@ -52,6 +48,14 @@ export class UploaderModel {
 
   get maxPendingUploads(): number {
     return this.config.maxPendingUploads ?? Number.POSITIVE_INFINITY;
+  }
+
+  /**
+   * How many uploads the field holds at once, counting rehydrated ones. Defaults from `multiple`:
+   * unlimited when it is set, `1` when it isn't.
+   */
+  get maxFiles(): number {
+    return this.config.maxFiles ?? (this.config.multiple ? Number.POSITIVE_INFINITY : 1);
   }
 
   get maxPartAttempts(): number {
@@ -109,6 +113,19 @@ export class UploaderModel {
         file.status !== "COMPLETED" &&
         (file.uploadId !== undefined || file.status === "REQUESTING"),
     );
+  }
+
+  /**
+   * Whether the field is at `maxFiles`. Gate your browse control on this rather than keeping your own
+   * count — it is the same number the model refuses additions with, and it counts both kinds of upload.
+   */
+  get full(): boolean {
+    return this.uploads.length >= this.maxFiles;
+  }
+
+  /** How many more uploads will be accepted. `Infinity` when unlimited. */
+  get remainingSlots(): number {
+    return Math.max(0, this.maxFiles - this.uploads.length);
   }
 
   /** Whether any upload is still working. Use this instead of peeking at part counts. */
@@ -174,6 +191,8 @@ export class UploaderModel {
       queuedParts: computed,
       requestingFiles: computed,
       pendingUploads: computed,
+      full: computed,
+      remainingSlots: computed,
       uploading: computed,
       failed: computed,
       invalid: computed,
@@ -347,8 +366,8 @@ export class UploaderModel {
   }
 
   /** Add a rehydrated upload that already exists server-side. */
-  addCompletedUpload(value: UploadValueInput): CompletedUploadModel {
-    const upload = new CompletedUploadModel(this, toUploadValue(value));
+  addCompletedUpload(value: UploadValue): CompletedUploadModel {
+    const upload = new CompletedUploadModel(this, value);
     this.uploads.push(upload);
     return upload;
   }
@@ -364,13 +383,8 @@ export class UploaderModel {
    * Being a single action means the diff cannot emit a half-applied list — the reference's bare
    * `addCompletedUpload` loop ended a MobX batch per push, so `onChange` could fire mid-reconciliation.
    */
-  applyValue(value: UploadValueInput[]): void {
-    const byId = new Map(
-      value.map((entry) => {
-        const normalized = toUploadValue(entry);
-        return [normalized.id, normalized.name] as const;
-      }),
-    );
+  applyValue(value: UploadValue[]): void {
+    const byId = new Map(value.map((entry) => [entry.id, entry.name] as const));
 
     // completed uploads the parent dropped are removed; anything still working is left alone.
     // `slice()` because removeUpload splices the array we are iterating.
@@ -478,6 +492,22 @@ export class UploaderModel {
   }
 
   private addFile(file: File): void {
+    // The cap is checked before `validate` because it is structural rather than a policy about this
+    // particular file: once the field is full the file is refused whatever else is true of it.
+    if (this.full) {
+      this.reportError(
+        new UploadError("REJECTED", {
+          fileName: file.name,
+          message:
+            this.maxFiles === 1
+              ? `Only one file can be uploaded.`
+              : `No more than ${this.maxFiles} files can be uploaded.`,
+        }),
+        undefined,
+      );
+      return;
+    }
+
     const rejection = this.config.validate?.(file, this);
     if (rejection) {
       // a refused file never enters `uploads`, so it can't show up as a failed row. onError is the

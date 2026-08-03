@@ -115,21 +115,54 @@ Reconciliation rules:
 
 `onChange` requires `activate()`, which `useUploader` handles. Initial `value` is applied before the reaction is armed, so mounting with a rehydrated value doesn't immediately dirty your form.
 
-## Validation
+### Editing a record that already has a file
 
-One hook, so the messages and the rules are yours:
+This is the case most file-picker components have no answer for. Chakra's `FileUpload`, Ark's, and react-dropzone all model a `File[]` selection, and a file uploaded last week is not a `File` — so the usual workaround is to render the existing file in your own markup _outside_ the picker and manage the field by hand.
+
+This library models it instead, because it owns the form value: `value` is the set of completed uploads, and that set includes ones from previous sessions. Rehydrated entries become `CompletedUploadModel`s and sit in `uploads` alongside in-flight ones behind the same `UploadLike` shape, so you render one list and call one `remove()`.
+
+**You must supply the name.** `value` takes `{ id, name }` and a bare id is not accepted, because the name is not derivable from the id — an id may be a storage key ending in a filename, or an opaque uuid. Two honest options:
+
+- **Persist the filename next to the id** in whatever holds the field. One extra column, and it's the option with no round-trip.
+- **Fetch it when the form loads** — you likely already have a `getUpload`-style endpoint — and pass `value` once it arrives. `applyValue` is idempotent, so a late-arriving value just reconciles.
+
+If your id genuinely is a storage key, deriving the name is a one-liner _in your code_, where the knowledge that ids look like that belongs:
+
+```tsx
+value={key ? [{ id: key, name: key.replace(/^.*[\\/]/, "") }] : undefined}
+```
+
+Removing a rehydrated upload fires `onRemove(value)`, not `cancelUpload` — there is nothing in flight to abort. That is the hook for deleting the durable object, if that's your semantics; if the field should merely stop referencing it, ignore `onRemove` and let `onChange` do the work.
+
+## Limits and validation
+
+`maxFiles` is config; everything else is a hook.
 
 ```ts
 useUploader({
   accept: ".pdf",
-  validate: (file, uploader) => {
-    if (uploader.uploads.length >= maxFiles) return `You may only upload ${maxFiles} file(s).`;
+  maxFiles: 5,
+  validate: (file) => {
     if (file.size > maxSize) return `Files cannot be larger than ${formatBytes(maxSize)}.`;
   },
   onError: (error, file) => toast(error.message),
   requestUpload,
 });
 ```
+
+The split isn't arbitrary: **the library owns limits that depend on the collection, and whatever does the selecting owns limits that depend on a single file.**
+
+`maxFiles` needs the collection, and only the uploader has it — it is the one thing that sees both the files it is uploading and the already-uploaded ones rehydrated from `value`. Every other picker counts local `File`s only, so it will accept a second file when one already exists server-side. `maxFiles` defaults to unlimited with `multiple`, `1` without, and `uploader.full` / `uploader.remainingSlots` expose the same number so your browse control can gate on it instead of keeping a second count:
+
+```tsx
+{
+  !uploader.full && <MyBrowseButton />;
+}
+```
+
+Type and size need only the file, so they can be rejected before the uploader ever sees it — leave them to `accept`, `validate`, or your design system's equivalents.
+
+Picks past the cap are refused with `UploadError("REJECTED")` through `onError`. The cap governs picking, not rehydration: a controlled `value` is authoritative, so one longer than `maxFiles` is applied in full rather than silently dropping persisted uploads.
 
 `validate` runs once per file, in order, _after_ earlier files in the same batch have been added — so a count rule sees them. A rejected file **never enters `uploads`**, so it can't appear as a failed row; `onError` receives `UploadError("REJECTED")` with no `file` argument, because there is no model to hang it on.
 
@@ -185,12 +218,14 @@ All failures are `UploadError` with a discriminating `type` (`REJECTED`, `REQUES
 `@zag-js/file-upload` — under Chakra v3's `FileUpload` and Ark's — already owns the input, drop zone, trigger, `accept`/`maxFiles`/`maxFileSize`/`validate`, rejection reporting, the item list, and `createFileUrl`. Let it. Skip `Uploader.Root`/`Uploader.Uploads` entirely and wire the engine to `onFileAccept`:
 
 ```tsx
-const uploader = useUploader({ requestUpload, completeUpload, value, onChange });
+const uploader = useUploader({ maxFiles: 5, requestUpload, completeUpload, value, onChange });
 
 <FileUpload.Root
   accept={["application/pdf"]}
-  maxFiles={5}
   maxFileSize={10_000_000}
+  // NOT Zag's maxFiles — it counts only local Files, so it can't see rehydrated uploads.
+  // Pass maxFiles to useUploader instead; it counts both kinds.
+  maxFiles={Number.POSITIVE_INFINITY}
   acceptedFiles={uploader.files.map((file) => file.file)}
   // setFiles, NOT addFiles — see below
   onFileAccept={({ files }) => uploader.setFiles(files)}
@@ -210,9 +245,13 @@ const uploader = useUploader({ requestUpload, completeUpload, value, onChange })
 
 Because `setFiles` handles removals, `FileUpload.ItemDeleteTrigger` works as-is — deleting shortens `acceptedFiles`, which fires `onFileAccept`, which drops the upload. Calling `upload.remove()` yourself works too, and controlling `acceptedFiles` from `uploader.files` is what keeps the two directions consistent (`FileModel.file` is public for exactly this).
 
+**Don't set Zag's `maxFiles` — set the uploader's.** `acceptedFiles` holds only local `File`s, so a rehydrated upload is invisible to it: with Zag's `maxFiles={1}` and one already-uploaded file it counts zero and accepts a second pick. Leave it open and pass `maxFiles` to `useUploader`, which counts both kinds, then gate your own controls on `uploader.full`.
+
+`ClearTrigger` has the same blind spot: it empties Zag's list, which reconciles to `setFiles([])` and clears the _picked_ files only. Use `uploader.clear()` when you mean "empty the field".
+
 Rehydrated `CompletedUploadModel`s have no `File`, so they can't go through Zag's `Item` parts and aren't part of its list — render those rows with your own markup. `setFiles` never touches them, so `setFiles([])` clears the picked files without discarding uploads that already exist server-side.
 
-Because the two layers overlap, don't configure the same rule twice: if Zag is doing `accept` and `maxFileSize`, leave `accept` and `validate` off the uploader.
+Because the two layers overlap, don't configure the same rule twice. The division follows the same rule as everywhere else: collection-level limits (`maxFiles`) go to the uploader, file-level ones (`accept`, `maxFileSize`) stay on Zag — so leave `accept` and `validate` off the uploader.
 
 ## Testing
 
@@ -232,15 +271,16 @@ uploader.activate();
 
 ### `UploaderModel`
 
-| Member                                           |                                                                 |
-| ------------------------------------------------ | --------------------------------------------------------------- |
-| `uploads`                                        | every upload, in display order                                  |
-| `files`                                          | just the `FileModel`s                                           |
-| `values` / `ids`                                 | the completed set as `{ id, name }[]` / `string[]`              |
-| `progress`                                       | 0–100, byte-weighted across non-failed files                    |
-| `uploading` / `failed` / `invalid`               | anything working / anything failed / anything not yet completed |
-| `errors`                                         | every error currently attached to an upload                     |
-| `activeParts` / `queuedParts` / `pendingUploads` | scheduler state                                                 |
+| Member                                           |                                                                   |
+| ------------------------------------------------ | ----------------------------------------------------------------- |
+| `uploads`                                        | every upload, in display order                                    |
+| `files`                                          | just the `FileModel`s                                             |
+| `values` / `ids`                                 | the completed set as `{ id, name }[]` / `string[]`                |
+| `progress`                                       | 0–100, byte-weighted across non-failed files                      |
+| `uploading` / `failed` / `invalid`               | anything working / anything failed / anything not yet completed   |
+| `full` / `remainingSlots`                        | whether `maxFiles` is reached, and how many more will be accepted |
+| `errors`                                         | every error currently attached to an upload                       |
+| `activeParts` / `queuedParts` / `pendingUploads` | scheduler state                                                   |
 
 Actions: `addFiles`, `setFiles`, `addCompletedUpload`, `applyValue`, `removeUpload`, `clear`, `retryAll`, `pump`, `activate`, `dispose`.
 

@@ -17,12 +17,24 @@ export class FormFieldModel<T extends T.TSchema = T.TSchema> {
   value: T.Static<T> | undefined;
   touched = false;
 
+  /**
+   * An error set by hand rather than derived from the schema — typically a server response, or a rule
+   * the schema can't express, applied from inside `handleSubmit`. Use `setError`.
+   *
+   * Distinct from `errorMessage`, which is what to *display*: this one when set, the schema's otherwise.
+   */
+  error: string | undefined = undefined;
+
   get valid(): boolean {
+    if (this.error) return false;
     if (this.value === undefined && T.IsOptional(this.schema)) return true;
     return this.validator.Check(this.value);
   }
 
   get errorMessage(): string {
+    // Shown regardless of `touched`: it was set deliberately, usually in response to a submit the
+    // user just made, and a field like a file picker may never be "touched" at all.
+    if (this.error) return this.error;
     if (this.valid || !this.touched) return "";
     // TODO: revisit this, now that .Errors returns success/fail
     const [_, errors] = this.validator.Errors(this.value);
@@ -65,9 +77,17 @@ export class FormFieldModel<T extends T.TSchema = T.TSchema> {
   }
 
   setValue(value?: T.Static<T>) {
+    // An edit invalidates a message that described the previous value — otherwise "that username is
+    // taken" survives the user typing a different one, and the field stays stuck invalid.
+    this.error = undefined;
     // TODO: does this still make sense? If value is invalid,
     // then type will be wrong...revisit this
     this.value = this.convertValue(value);
+  }
+
+  /** Set (or with `undefined`, clear) a manual error. Cleared automatically by an edit, a reset, or the next submit. */
+  setError(error: string | undefined) {
+    this.error = error;
   }
 
   private convertValue(value: unknown): T.Static<T> | undefined {
@@ -86,6 +106,7 @@ export class FormFieldModel<T extends T.TSchema = T.TSchema> {
 
   reset() {
     this.setTouched(false);
+    this.setError(undefined);
     this.setValue(this.config.initialValue);
   }
 

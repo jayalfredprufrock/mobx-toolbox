@@ -42,19 +42,22 @@ const form = new FormModel(schema, {
   handleSubmit: async (data) => {
     /* ... */
   },
+  handleError: (error, form) => {
+    /* optional — see Handling submit errors */
+  },
   initialValues: { email: "user@example.com" },
 });
 ```
 
 ### Properties
 
-| Property      | Type            | Description                              |
-| ------------- | --------------- | ---------------------------------------- |
-| `fields`      | `FormFields<T>` | Map of field name → `FormFieldModel`     |
-| `valid`       | `boolean`       | `true` when all fields pass validation   |
-| `submitting`  | `boolean`       | `true` while `handleSubmit` is in-flight |
-| `submitted`   | `boolean`       | `true` after the first successful submit |
-| `submitError` | `any`           | Last error thrown by `handleSubmit`      |
+| Property      | Type            | Description                                                 |
+| ------------- | --------------- | ----------------------------------------------------------- |
+| `fields`      | `FormFields<T>` | Map of field name → `FormFieldModel`                        |
+| `valid`       | `boolean`       | `true` when all fields pass validation                      |
+| `submitting`  | `boolean`       | `true` while `handleSubmit` is in-flight                    |
+| `submitted`   | `boolean`       | `true` after the first successful submit                    |
+| `submitError` | `unknown`       | Last error thrown by `handleSubmit` (narrow before reading) |
 
 ### Methods
 
@@ -70,12 +73,50 @@ form.setSubmitError(e); // set or clear (pass undefined) the submit error
 
 `form.props().onSubmit`:
 
-1. Calls `form.validate()` — if invalid, stops here
-2. Sets `submitting = true`
-3. Calls `handleSubmit(form.toJSON())`
-4. On success: sets `submitted = true`
-5. On error: stores the error in `submitError`
-6. Finally: sets `submitting = false`
+1. Ignores the event entirely if a submit is already in flight
+2. Clears `submitError` and `submitted`
+3. Calls `form.validate()` — if invalid, stops here
+4. Sets `submitting = true`
+5. Calls `handleSubmit(form.toJSON())`
+6. On success: sets `submitted = true`
+7. On error: stores the error in `submitError`, then calls `handleError` if given, otherwise `console.error`s it
+8. Finally: sets `submitting = false`
+
+### Handling submit errors
+
+`handleSubmit` rejecting is the normal way to report failure. The form stores the error and then hands
+it to `handleError`:
+
+```ts
+const form = useForm(UserSchema, {
+  handleSubmit: async (data) => {
+    const res = await api.save(data);
+    if (res.error) throw res.error;
+  },
+  handleError: (error, form) => {
+    if ((error as ApiError).code === "NAME_TAKEN") {
+      // put it where the user is looking, and don't also show a form-level banner
+      form.fields.name.setError("That name is taken.");
+      form.setSubmitError(undefined);
+      return;
+    }
+    toast.error("Something went wrong. Please try again.");
+    reportToSentry(error);
+  },
+});
+```
+
+Two things to know:
+
+**Suppressing `submitError`.** It is stored _before_ `handleError` runs, so clearing it with
+`form.setSubmitError(undefined)` inside the handler is how you take over presentation completely —
+useful when the message belongs on a field, or when you only want a toast. Per-error, so you can
+suppress the banner for expected failures and keep it for unexpected ones.
+
+**Providing `handleError` replaces the default log.** With no handler the form `console.error`s, because
+its own `catch` has already consumed the rejection — without that, a network failure or a plain bug in
+`handleSubmit` produces no console output, no unhandled rejection, and no visible change beyond the
+spinner stopping. If you take the hook, reporting unexpected failures becomes your job.
 
 ## `FormFieldModel`
 
@@ -83,19 +124,21 @@ Each field in `form.fields` is a `FormFieldModel` with its own reactive state.
 
 ### Properties
 
-| Property       | Type                     | Description                                          |
-| -------------- | ------------------------ | ---------------------------------------------------- |
-| `name`         | `string`                 | Field key from the schema                            |
-| `value`        | `Static<T> \| undefined` | Current value (TypeBox-coerced)                      |
-| `touched`      | `boolean`                | Set to `true` on blur or explicit `setTouched(true)` |
-| `valid`        | `boolean`                | Passes TypeBox schema check                          |
-| `errorMessage` | `string`                 | Non-empty only when `touched && !valid`              |
+| Property       | Type                     | Description                                                        |
+| -------------- | ------------------------ | ------------------------------------------------------------------ | ----------------------------------------------- |
+| `name`         | `string`                 | Field key from the schema                                          |
+| `value`        | `Static<T> \| undefined` | Current value (TypeBox-coerced)                                    |
+| `touched`      | `boolean`                | Set to `true` on blur or explicit `setTouched(true)`               |
+| `valid`        | `boolean`                | Passes TypeBox schema check                                        |
+| `error`        | `string                  | undefined`                                                         | Manually-set error (see below); blocks validity |
+| `errorMessage` | `string`                 | `error` when set, else the schema message when `touched && !valid` |
 
 ### Methods
 
 ```ts
 field.setValue(value?)   // update value (runs through TypeBox Value.Convert)
 field.setTouched(bool)   // manually mark as touched/untouched
+field.setError(msg?)     // set or clear a manual error
 field.reset()            // restore initial value, clear touched
 field.props()            // { name, value, onChange, onBlur } — spread onto any input
 field.toJSON()           // current plain value
@@ -109,6 +152,7 @@ TypeBox's `Value.Convert` runs on every `setValue` call. This means `"42"` conve
 
 | Condition                                            | Message                           |
 | ---------------------------------------------------- | --------------------------------- |
+| `error` is set (via `setError`)                      | That message, even if untouched   |
 | `!touched`                                           | `""` (no message shown)           |
 | Required field is blank (`""`) or `undefined`        | `"This field is required."`       |
 | Schema has `errorMessage: string`                    | That string                       |
@@ -117,6 +161,49 @@ TypeBox's `Value.Convert` runs on every `setValue` call. This means `"42"` conve
 | Anything else                                        | TypeBox's default error message   |
 
 To require a non-empty string, use `T.String({ minLength: 1 })`. Plain `T.String()` accepts `""` as valid.
+
+### Setting errors by hand
+
+Not every rule fits a schema. `field.setError(message)` marks a field invalid with a message of your
+own — for a server response, a cross-field rule, or a companion model that isn't finished working:
+
+```ts
+const uploader = useUploader({ requestUpload });
+
+const form = useForm(DocumentSchema, {
+  handleSubmit: async (data) => {
+    // uploader.invalid is true while anything is pending, uploading or failed
+    if (uploader.invalid) {
+      form.fields.document.setError("Wait for the upload to finish.");
+      throw new Error("not ready");
+    }
+
+    const res = await api.save(data);
+    if (res.error === "NAME_TAKEN") {
+      form.fields.name.setError("That name is taken.");
+      throw new Error(res.error);
+    }
+  },
+});
+```
+
+Manual errors display immediately, without the field being `touched` — a file or picker field may never
+be touched, and you set the message deliberately. They take precedence over the schema's message, and
+they make the field (and the form) invalid.
+
+They clear on their own at the three moments where they stop describing reality:
+
+| Cleared by                         | Why                                                                                                                                             |
+| ---------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------- |
+| `field.setValue(...)`              | The message described the previous value                                                                                                        |
+| `form.validate()`, so every submit | Each attempt is judged fresh — otherwise an unedited field keeps the form invalid and the next submit silently does nothing instead of retrying |
+| `field.reset()` / `form.reset()`   | Obvious                                                                                                                                         |
+
+**You have to throw.** `handleSubmit` resolving is what sets `submitted = true`, so setting an error and
+returning normally reports success. Throwing routes into `submitError` as usual — which is why the
+examples above throw something cheap after setting the field error. If you don't want a form-level
+banner alongside the field message, check `submitError` before rendering one, or clear it with
+`form.setSubmitError(undefined)`.
 
 ## Discriminated unions
 
@@ -191,7 +278,7 @@ const form = useFormContext();
 
 ```ts
 import type {
-  FormConfig, // { handleSubmit, initialValues? }
+  FormConfig, // { handleSubmit, handleError?, initialValues? }
   FormFields, // { [fieldName]: FormFieldModel }
 } from "@jayalfredprufrock/mobx-toolbox/form";
 ```

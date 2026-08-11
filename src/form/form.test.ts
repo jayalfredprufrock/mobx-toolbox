@@ -3,6 +3,7 @@ import * as T from "typebox";
 import { autorun } from "mobx";
 import { FormFieldModel } from "./form-field.model";
 import { FormModel } from "./form.model";
+import type { FormConfig } from "./form.types";
 
 // ---------------------------------------------------------------------------
 // FormFieldModel
@@ -450,5 +451,295 @@ describe("FormModel (discriminated union)", () => {
     expect(form.validate()).toBe(false);
     form.rawFields.routing.setValue("9999");
     expect(form.validate()).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// manual field errors
+// ---------------------------------------------------------------------------
+
+describe("manual field errors", () => {
+  const makeForm = (initialValues?: Partial<T.Static<typeof UserSchema>>) =>
+    new FormModel(UserSchema, {
+      handleSubmit: vi.fn().mockResolvedValue(undefined),
+      initialValues,
+    });
+
+  test("setError displays and invalidates the field", () => {
+    const form = makeForm({ name: "Ada", age: 36 });
+    expect(form.valid).toBe(true);
+
+    form.fields.name.setError("That name is taken.");
+
+    expect(form.fields.name.errorMessage).toBe("That name is taken.");
+    expect(form.fields.name.valid).toBe(false);
+    expect(form.valid).toBe(false);
+  });
+
+  test("it shows without the field being touched", () => {
+    // a file or picker field may never be "touched", and the caller set this deliberately
+    const field = new FormFieldModel({ name: "doc", schema: T.String() });
+    field.setError("Wait for the upload to finish.");
+    expect(field.touched).toBe(false);
+    expect(field.errorMessage).toBe("Wait for the upload to finish.");
+  });
+
+  test("it takes precedence over the schema message", () => {
+    const field = new FormFieldModel({ name: "name", schema: T.String({ minLength: 1 }) });
+    field.setTouched(true);
+    expect(field.errorMessage).toBe("This field is required.");
+
+    field.setError("Server says no.");
+    expect(field.errorMessage).toBe("Server says no.");
+  });
+
+  test("editing the value clears it", () => {
+    const form = makeForm({ name: "Ada", age: 36 });
+    form.fields.name.setError("That name is taken.");
+
+    form.fields.name.setValue("Grace");
+
+    expect(form.fields.name.error).toBeUndefined();
+    expect(form.fields.name.errorMessage).toBe("");
+    expect(form.valid).toBe(true);
+  });
+
+  test("setError(undefined) clears it", () => {
+    const form = makeForm({ name: "Ada", age: 36 });
+    form.fields.name.setError("nope");
+    form.fields.name.setError(undefined);
+    expect(form.valid).toBe(true);
+  });
+
+  test("reset clears it", () => {
+    const form = makeForm({ name: "Ada", age: 36 });
+    form.fields.name.setError("nope");
+    form.reset();
+    expect(form.fields.name.error).toBeUndefined();
+  });
+
+  test("validate() clears it so a resubmit actually retries", () => {
+    const form = makeForm({ name: "Ada", age: 36 });
+    form.fields.name.setError("That name is taken.");
+    expect(form.valid).toBe(false);
+
+    // without clearing, an unedited field would keep the form invalid forever and the next
+    // submit would silently do nothing
+    expect(form.validate()).toBe(true);
+    expect(form.fields.name.error).toBeUndefined();
+  });
+
+  test("it is observable", () => {
+    const field = new FormFieldModel({ name: "name", schema: T.String() });
+    const seen: string[] = [];
+    const dispose = autorun(() => seen.push(field.errorMessage));
+
+    field.setError("nope");
+    field.setValue("Ada");
+
+    expect(seen).toEqual(["", "nope", ""]);
+    dispose();
+  });
+});
+
+describe("manual field errors (discriminated union)", () => {
+  const makePaymentForm = (initialValues?: Partial<T.Static<typeof PaymentSchema>>) =>
+    new FormModel(PaymentSchema, {
+      handleSubmit: vi.fn().mockResolvedValue(undefined),
+      initialValues,
+    });
+
+  test("an error on an active field blocks a union form", () => {
+    const form = makePaymentForm({ method: "card", holder: "Ada", cardNumber: "1234" });
+    expect(form.valid).toBe(true);
+
+    form.rawFields.cardNumber.setError("That card was declined.");
+
+    expect(form.valid).toBe(false);
+  });
+
+  test("an error on an inactive variant's field does not", () => {
+    const form = makePaymentForm({ method: "card", holder: "Ada", cardNumber: "1234" });
+
+    // `routing` belongs to the bank variant; toJSON has already dropped it
+    form.rawFields.routing.setError("stale");
+
+    expect(form.valid).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// submit error handling
+// ---------------------------------------------------------------------------
+
+describe("submit error handling", () => {
+  const flush = () => new Promise<void>((resolve) => setTimeout(resolve, 0));
+
+  const makeForm = (config: Partial<FormConfig<typeof UserSchema>> = {}) =>
+    new FormModel(UserSchema, {
+      handleSubmit: vi.fn().mockResolvedValue(undefined),
+      initialValues: { name: "Ada", age: 36 },
+      ...config,
+    } as FormConfig<typeof UserSchema>);
+
+  const submit = async (form: FormModel<typeof UserSchema>) => {
+    form.props().onSubmit({ preventDefault: () => {} });
+    await flush();
+  };
+
+  test("a thrown error is stored on submitError", async () => {
+    const boom = new Error("boom");
+    const form = makeForm({ handleSubmit: vi.fn().mockRejectedValue(boom) });
+
+    await submit(form);
+
+    expect(form.submitError).toBe(boom);
+    expect(form.submitted).toBe(false);
+    expect(form.submitting).toBe(false);
+  });
+
+  test("without handleError it logs, so a throw is never silent", async () => {
+    const logged = vi.spyOn(console, "error").mockImplementation(() => {});
+    const boom = new Error("boom");
+    const form = makeForm({ handleSubmit: vi.fn().mockRejectedValue(boom) });
+
+    await submit(form);
+
+    expect(logged).toHaveBeenCalledWith(boom);
+    logged.mockRestore();
+  });
+
+  test("handleError receives the error and the form, and replaces the log", async () => {
+    const logged = vi.spyOn(console, "error").mockImplementation(() => {});
+    const boom = new Error("boom");
+    const handleError = vi.fn();
+    const form = makeForm({ handleSubmit: vi.fn().mockRejectedValue(boom), handleError });
+
+    await submit(form);
+
+    expect(handleError).toHaveBeenCalledTimes(1);
+    expect(handleError.mock.calls[0]?.[0]).toBe(boom);
+    expect(handleError.mock.calls[0]?.[1]).toBe(form);
+    expect(logged).not.toHaveBeenCalled();
+    logged.mockRestore();
+  });
+
+  test("submitError is set before handleError, so a handler can clear it", async () => {
+    const seen: unknown[] = [];
+    const form = makeForm({
+      handleSubmit: vi.fn().mockRejectedValue(new Error("boom")),
+      handleError: (error, f) => {
+        seen.push(error);
+        // the suppression path: own the presentation entirely
+        f.setSubmitError(undefined);
+      },
+    });
+
+    await submit(form);
+
+    expect(seen).toHaveLength(1);
+    expect(form.submitError).toBeUndefined();
+  });
+
+  test("handleError can map an API failure onto a field", async () => {
+    const form = makeForm({
+      handleSubmit: vi.fn().mockRejectedValue({ code: "NAME_TAKEN" }),
+      handleError: (error, f) => {
+        if ((error as { code?: string }).code === "NAME_TAKEN") {
+          f.fields.name.setError("That name is taken.");
+          f.setSubmitError(undefined);
+        }
+      },
+    });
+
+    await submit(form);
+
+    expect(form.fields.name.errorMessage).toBe("That name is taken.");
+    expect(form.valid).toBe(false);
+    expect(form.submitError).toBeUndefined();
+  });
+
+  test("handleError is not called when handleSubmit succeeds", async () => {
+    const handleError = vi.fn();
+    const form = makeForm({ handleError });
+
+    await submit(form);
+
+    expect(handleError).not.toHaveBeenCalled();
+    expect(form.submitted).toBe(true);
+  });
+
+  test("handleError is not called for a validation failure", async () => {
+    const handleError = vi.fn();
+    const handleSubmit = vi.fn().mockResolvedValue(undefined);
+    const form = makeForm({ handleError, handleSubmit, initialValues: { name: "" } });
+
+    await submit(form);
+
+    expect(handleSubmit).not.toHaveBeenCalled();
+    expect(handleError).not.toHaveBeenCalled();
+  });
+});
+
+describe("submit lifecycle fixes", () => {
+  const flush = () => new Promise<void>((resolve) => setTimeout(resolve, 0));
+
+  test("a second submit while one is in flight is ignored", async () => {
+    let release: (() => void) | undefined;
+    const handleSubmit = vi.fn(
+      () =>
+        new Promise<void>((resolve) => {
+          release = resolve;
+        }),
+    );
+    const form = new FormModel(UserSchema, {
+      handleSubmit,
+      initialValues: { name: "Ada", age: 36 },
+    });
+
+    form.props().onSubmit({ preventDefault: () => {} });
+    form.props().onSubmit({ preventDefault: () => {} });
+
+    // a double-click used to call handleSubmit twice
+    expect(handleSubmit).toHaveBeenCalledTimes(1);
+
+    release?.();
+    await flush();
+    expect(form.submitting).toBe(false);
+  });
+
+  test("submitted is cleared by reset", async () => {
+    const form = new FormModel(UserSchema, {
+      handleSubmit: vi.fn().mockResolvedValue(undefined),
+      initialValues: { name: "Ada", age: 36 },
+    });
+
+    form.props().onSubmit({ preventDefault: () => {} });
+    await flush();
+    expect(form.submitted).toBe(true);
+
+    // otherwise a "save another" flow reports success against an empty form forever
+    form.reset();
+    expect(form.submitted).toBe(false);
+  });
+
+  test("submitted is cleared when a retry starts", async () => {
+    let attempt = 0;
+    const form = new FormModel(UserSchema, {
+      handleSubmit: vi.fn(() => {
+        attempt++;
+        return attempt === 1 ? Promise.resolve() : Promise.reject(new Error("boom"));
+      }),
+      initialValues: { name: "Ada", age: 36 },
+      handleError: () => {},
+    });
+
+    form.props().onSubmit({ preventDefault: () => {} });
+    await flush();
+    expect(form.submitted).toBe(true);
+
+    form.props().onSubmit({ preventDefault: () => {} });
+    await flush();
+    expect(form.submitted).toBe(false);
   });
 });

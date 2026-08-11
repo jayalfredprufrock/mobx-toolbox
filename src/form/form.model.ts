@@ -37,8 +37,10 @@ function resolveProperties(schema: FormSchema): Record<string, TSchema> {
 // to pass data to props...
 
 // TODO:
-// handleSubmit should catch a special MobxFormError
-// that can set field-level errors from an API response
+// `field.setError` covers applying API errors to fields, but the caller has to throw afterwards to
+// stop `submitted` being set. A dedicated error thrown from handleSubmit — carrying a
+// { field: message } map and recognised in the catch — would collapse that into one step and keep it
+// out of `submitError`.
 
 export class FormModel<T extends FormSchema = TObject> {
   /** Shared fields only (for unions); every field for a plain object schema. */
@@ -53,8 +55,11 @@ export class FormModel<T extends FormSchema = TObject> {
   submitting = false;
   submitted = false;
 
-  // TODO: what should this type be? should it be generic?
-  submitError: any;
+  /**
+   * Whatever `handleSubmit` last threw. `unknown` rather than `any`: it may be an `Error`, an API
+   * error object, or a string, and narrowing at the render site is the only safe way to read it.
+   */
+  submitError: unknown;
 
   constructor(schema: T, config: FormConfig<T>) {
     this.schema = schema;
@@ -92,7 +97,14 @@ export class FormModel<T extends FormSchema = TObject> {
     // A union form can't be validated field-by-field — fields belonging to the
     // inactive variant would fail — so validate the assembled object instead.
     if (IsUnion(this.schema)) {
-      return this.validator.Check(this.toJSON());
+      const data = this.toJSON() as Record<string, unknown>;
+      // Manual errors still have to block, but only for fields the active variant actually has:
+      // `toJSON` has already dropped the others, so a stale error on an inactive field can't wedge
+      // a submit that doesn't include it.
+      const blocked = Object.values<FormFieldModel<TSchema>>(this.fields).some(
+        (field) => field.error && field.name in data,
+      );
+      return !blocked && this.validator.Check(data);
     }
     return Object.values(this.fields).every((field) => field.valid);
   }
@@ -102,7 +114,16 @@ export class FormModel<T extends FormSchema = TObject> {
       onSubmit: (e: React.FormEvent<HTMLFormElement>) => {
         e.preventDefault();
 
+        // A second submit while one is in flight would call handleSubmit twice — a double-click on
+        // the button is enough, since nothing here was checking.
+        if (this.submitting) {
+          return;
+        }
+
         this.setSubmitError(undefined);
+        // `submitted` reports the outcome of the *last* attempt, so a retry must not still claim
+        // success while it is in flight.
+        this.setSubmitted(false);
 
         if (!this.validate()) {
           return;
@@ -115,8 +136,20 @@ export class FormModel<T extends FormSchema = TObject> {
             this.setSubmitted(true);
             return resp;
           })
-          .catch((e) => {
+          .catch((e: unknown) => {
+            // Stored *before* handleError runs, so a handler that wants to own presentation
+            // entirely can clear it with `form.setSubmitError(undefined)`.
             this.setSubmitError(e);
+
+            if (this.config.handleError) {
+              this.config.handleError(e, this);
+              return;
+            }
+
+            // Nothing is configured to surface this and the catch has already consumed the
+            // rejection, so without a log a throw inside handleSubmit — a network failure, or a
+            // plain bug — is invisible in development and in production alike.
+            console.error(e);
           })
           .finally(() => {
             this.setSubmitting(false);
@@ -125,7 +158,7 @@ export class FormModel<T extends FormSchema = TObject> {
     };
   }
 
-  setSubmitError(error: any): void {
+  setSubmitError(error: unknown): void {
     this.submitError = error;
   }
 
@@ -139,14 +172,21 @@ export class FormModel<T extends FormSchema = TObject> {
 
   reset(): void {
     this.setSubmitError(undefined);
+    // Without this, one successful submit left `submitted` true forever — a "save another" flow
+    // would keep reporting success against an empty form.
+    this.setSubmitted(false);
     for (const field of Object.values(this.fields)) {
       field.reset();
     }
   }
 
   validate(): boolean {
-    for (const field of Object.values(this.fields)) {
+    for (const field of Object.values<FormFieldModel<TSchema>>(this.fields)) {
       field.setTouched(true);
+      // Each attempt is judged fresh. Without this a manual error would make the form permanently
+      // invalid until the user happened to edit that field, so clicking submit again would silently
+      // do nothing rather than retrying.
+      field.setError(undefined);
     }
     return this.valid;
   }

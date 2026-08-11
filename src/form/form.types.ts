@@ -1,10 +1,23 @@
 import type { Static, TLiteral, TObject, TSchema, TUnion } from "typebox";
 import type { FormFieldModel } from "./form-field.model";
+import type { FormModel } from "./form.model";
 
 export type FormSchema = TObject | TUnion;
 
 export interface FormConfig<T extends FormSchema = TObject> {
   handleSubmit: (data: Static<T>) => Promise<unknown>;
+  /**
+   * Called when `handleSubmit` throws — for a toast, a report to your error tracker, or mapping an API
+   * error onto fields with `form.fields.x.setError(...)`.
+   *
+   * `submitError` is already set by the time this runs, so a handler that wants to own presentation
+   * entirely can clear it with `form.setSubmitError(undefined)` and render nothing from the form.
+   *
+   * Providing this **replaces the default `console.error`**. Without it, the rejection is consumed by
+   * the form's own `catch` and a thrown error would otherwise be completely invisible — so if you take
+   * over, logging unexpected failures becomes yours too.
+   */
+  handleError?: (error: unknown, form: FormModel<T>) => void;
   // Any field on any variant may be seeded — the merged field map holds them all.
   initialValues?: FormInitialValues<T>;
 }

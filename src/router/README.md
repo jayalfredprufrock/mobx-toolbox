@@ -36,6 +36,8 @@ const routes = makeRoutes()({
 
 The string key `"index"` maps to the parent path (e.g., `dashboard.index` renders at `/dashboard`). A nested object without an `index` key has no component at its own path.
 
+An index key contributes no segment of its own, so paths never carry a trailing slash: `dashboard.index` is `/dashboard`, exactly like the leaf `about` is `/about`. The one path with no segments at all is the root, `/`. That uniformity is what lets paths be compared and prefix-matched without normalizing first — `doesPathMatch("/dashboard", true)` matches the index route, and `navigate({ to: "/dashboard" })` from `/dashboard` is correctly a no-op.
+
 ### Route value types
 
 | Value                                         | Meaning                                                    |
@@ -237,6 +239,46 @@ const routes = makeRoutes()({
 ```
 
 `[LAYOUT]` replaces the top-level page wrapper and inherits down the tree. `[WRAPPER]` wraps only the subtree where it appears and does not affect the layout.
+
+## `level` — where a component sits in the tree
+
+Every component the router renders in an outlet — `[WRAPPER]`, `[PAGE]`, `[LOADING]`, `[ERROR]` — receives a `level` prop alongside `route`, describing its own place in the matched chain:
+
+```ts
+interface RouteLevel {
+  index: number; // 0-based position in the matched chain
+  segment: string; // this level's route key: ":orgId", "surveys", "index", "" at the root
+  pattern?: RoutePath; // this level's own path, e.g. "/org/:orgId/surveys"
+}
+```
+
+This is what lets route-level metadata — breadcrumbs, sub-navigation, per-level analytics — live in the wrapper instead of in the route file, without hardcoding a path the route tree already knows:
+
+```tsx
+const OrgScope = observer(({ route, level, children }: WrapperComponentProps) => (
+  <CrumbScope crumb={{ to: level.pattern, label: route.data.organization?.name }}>
+    {children}
+  </CrumbScope>
+));
+```
+
+`level.pattern` is typed `RoutePath`, so it goes straight into `to=` or `router.navigate()` with no cast — and reorganizing the route tree updates it instead of silently pointing somewhere wrong.
+
+**`pattern` is `undefined` when the level addresses no page of its own.** A nesting level with no `index` child isn't navigable, and deriving a path for it would produce one that 404s. The optionality is the check — if `pattern` is there, it's a real destination:
+
+```tsx
+const Crumb = ({ level, children }: WrapperComponentProps) =>
+  level.pattern ? <Link to={level.pattern}>{children}</Link> : <span>{children}</span>;
+```
+
+Resolve a pattern that may reach past the params you have with [`tryResolvePath`](#resolvepath--tryresolvepath).
+
+Two things to know about the mapping between levels and components:
+
+- **A page's level is its own, not its parent's.** `responses: ResponsesPage` gets `/…/:surveyId/responses`, while the `[WRAPPER]` above it gets `/…/:surveyId`. An `index` page shares its parent's pattern, because that is the path it renders at.
+- **Levels and outlets do not line up one-to-one.** A level declaring both `[WRAPPER]` and `[LOAD]` produces two outlets that share one level; a level with neither produces none. So `level.index` counts levels, not rendered slots — don't use it to index into `route.outlets`.
+
+On a synthetic error route (see [`[ERROR]`](#error--error-handling)) the surviving wrappers keep their levels, and the `[ERROR]` component receives the level that failed. It is the one place `level` may be absent — hence `ErrorComponentProps.level?` — when nothing matched at all.
 
 ## `[REDIRECT]` — static redirect
 
@@ -492,7 +534,7 @@ function AppSkeleton({ route }: LoadingComponentProps) {
 
 `[LOADING]` renders inside the `[LAYOUT]` and any wrappers ahead of it, so your app shell is present around the skeleton. With no `[LOADING]` anywhere, a minimal built-in `DefaultLoadingPage` (`<p>Loading...</p>`) renders — define a root-level `[LOADING]` to replace it.
 
-A `[LOADING]` component receives `{ route }` and **never `children`**. Outlets in a chain resolve in parallel, so a descendant can be ready while this slot is still waiting; rendering it would paint a page with incomplete `route.data`. `[ERROR]` components follow the same rule.
+A `[LOADING]` component receives `{ route, level }` and **never `children`**. Outlets in a chain resolve in parallel, so a descendant can be ready while this slot is still waiting; rendering it would paint a page with incomplete `route.data`. `[ERROR]` components follow the same rule. The `level` is the slot's own — see [`level`](#level--where-a-component-sits-in-the-tree) — so a skeleton can shape itself to the section it stands in.
 
 ### `[SPLASH]` — the pre-match window
 
@@ -648,7 +690,7 @@ export const ButtonLink = makeLinkComponent('button');
 `makeLinkComponent` automatically:
 
 - Sets `href` on the rendered element
-- Calls `event.preventDefault()` and delegates to `router.navigate()`
+- Calls `event.preventDefault()` and delegates to `router.navigate()` — on an unmodified primary click
 - Sets `aria-current="page"` when the route is active (uses `doesPathMatch`)
 
 You can wrap an existing component (e.g., a UI library button) and pass default props:
@@ -656,6 +698,26 @@ You can wrap an existing component (e.g., a UI library button) and pass default 
 ```tsx
 export const NavLink = makeLinkComponent(MyButton, { variant: "ghost" });
 ```
+
+### What the browser still handles
+
+Cmd/ctrl-click, shift-click, alt-click and middle-click are **left alone**: the `href` is already correct, so the browser opens the new tab or window itself. Cancelling those was the only thing stopping it.
+
+This defers to the browser only when there is an `href` to follow. A link rendered with `role="link"` has none, so a modifier-click there navigates in place rather than doing nothing at all. If you build a link on a non-anchor element (`makeLinkComponent("button")`), the browser has nothing to open — prefer an anchor for anything a user might want to open in a new tab.
+
+Middle-click reaches the handler only where the element emits `click` for it; `onAuxClick` is deliberately left untouched.
+
+### `onClick` and `disabled`
+
+A caller's `onClick` runs **before** the navigation and can cancel it with `preventDefault()` — the "confirm before leaving" case. It cancels the `href` along with it. An `onClick` passed as a base prop is used the same way; a per-call `onClick` replaces it, as with any other prop.
+
+```tsx
+<Link to="/settings" onClick={(e) => !confirm("Discard draft?") && e.preventDefault()}>
+  Settings
+</Link>
+```
+
+A `disabled` link is inert: no navigation, no `href`, and no `onClick` — modifiers included.
 
 ## `RouterStore` API
 
@@ -690,7 +752,7 @@ router.removeQueryParam(key)           // remove one param, returns previous val
 The `Route` instance passed to guards and loaders; also `router.activeRoute`:
 
 ```ts
-route.path; // "dashboard/settings" — matched segments joined by "/"
+route.path; // "dashboard/settings" — matched segments joined by "/" ("" at the root)
 route.params; // Record<string, string> — URL params, e.g. { id: "42" }
 route.context; // Record<string, any> — merged [CONTEXT] from ancestor routes
 route.data; // Record<string, any> — merged return values of all [LOAD] functions
@@ -700,6 +762,23 @@ route.isLoading; // boolean — an outlet has passed LOADING_DELAY_MS
 route.isPending; // boolean — an outlet is still resolving, debounce included
 route.outlets; // Outlet[] — internal; represents each rendered segment
 route.guards; // Guard[] — internal; the full resolved guard chain
+```
+
+## `resolvePath` / `tryResolvePath`
+
+```ts
+import { resolvePath, tryResolvePath } from "@mobx-toolbox/router";
+
+resolvePath("/users/:id", { id: "42" }); // "/users/42"
+resolvePath("/users/:id"); // throws — a path you built and can't fill is a bug
+tryResolvePath("/users/:id"); // undefined
+```
+
+`navigate()` and `<Link>` use the throwing form, which is the right default for a path you constructed. Use `tryResolvePath` for one you didn't — resolving a `level.pattern` against params that may not reach that deep, which is the "link it if we can address it, otherwise render plain text" case:
+
+```tsx
+const to = level.pattern && tryResolvePath(level.pattern, route.params);
+return to ? <a href={to}>{label}</a> : <span>{label}</span>;
 ```
 
 ## `redirect` / `Redirect`
@@ -737,8 +816,11 @@ import type {
   NavigateOptions, // { to, params?, replace?, search?, preserveSearch?, state? }
   MobxRouterConfig, // { history?, viewTransitions? }
   RouterErrorType, // "NOT_FOUND" | "GUARD" | "LOAD" | "RENDER"
-  ErrorComponentProps, // { route: Route; error: RouterError }
-  LoadingComponentProps, // { route: Route }
+  RouteLevel, // { index, segment, pattern? } — where a component sits
+  WrapperComponentProps, // { route: Route; level: RouteLevel; children? }
+  PageComponentProps, // { route: Route; level: RouteLevel }
+  ErrorComponentProps, // { route: Route; error: RouterError; level?: RouteLevel }
+  LoadingComponentProps, // { route: Route; level: RouteLevel }
   RouteSegmentState, // "preloading" | "loading" | "error" | "ready"
 } from "@mobx-toolbox/router";
 ```
@@ -753,7 +835,9 @@ import type {
 
 **Errors produce synthetic routes — except loader errors.** When matching, a guard, or a render fails, `router.activeRoute` is set to a synthetic route with `route.error: RouterError` and an outlet chain ending in the nearest `[ERROR]` component (or `DefaultErrorPage`). A **rejected loader does not**: navigation succeeds, `route.error` stays `undefined`, and the error lives on the failing outlet, which renders `[ERROR]` in its own slot. So `route.error` alone will not tell you a loader failed. Layout and error-component render crashes are deliberately NOT caught by the router — wrap `<Router>` in an app-level ErrorBoundary for last-resort protection.
 
-**`[ERROR]` and `[LOADING]` components never receive `children`.** Both render mid-chain, and outlets resolve in parallel, so a descendant may already be ready; forwarding children would paint it without the data it expects. Only `route` (plus `error`) is passed.
+**`[ERROR]` and `[LOADING]` components never receive `children`.** Both render mid-chain, and outlets resolve in parallel, so a descendant may already be ready; forwarding children would paint it without the data it expects. Only `route` and `level` (plus `error`) are passed.
+
+**Every outlet-rendered component receives `level`.** `[WRAPPER]`, `[PAGE]`, `[LOADING]` and `[ERROR]` each get their own `RouteLevel` — `{ index, segment, pattern? }` — so route-level metadata belongs in the component rather than being hardcoded against a duplicated path string. `level.pattern` is `undefined` for a nesting level with no `index` child, which is precisely the level that has no page to navigate to. Levels are not one-to-one with outlets: one level declaring both `[WRAPPER]` and `[LOAD]` produces two outlets sharing a level, so never index `route.outlets` by `level.index`. `Route.levels` remains internal and is not the same list.
 
 **The route swap is deferred.** `activeRoute` keeps rendering the previous page until the pending route's guards and loaders finish; the in-flight route is `router.pendingRoute`. So during a navigation `router.location` already points at the destination while `activeRoute`, `pathParams`, `activeSegments` and `doesPathMatch` still describe the page on screen. Staleness is compared by pathname, so a query-param change mid-navigation does not cancel the navigation in flight.
 
@@ -763,7 +847,9 @@ import type {
 
 **Module augmentation is required for typed paths.** Without augmenting `MobxRouter`, `RoutePath` is `string` and no path checking occurs. The augmentation must be in a file included in the TypeScript compilation.
 
-**`"index"` is the root key for a path level.** To render at `/dashboard`, the route tree needs either `dashboard: Component` (leaf) or `dashboard: { index: Component, ... }` (nested). A nested object without `index` produces a `NOT_FOUND` error route when navigating to the parent path.
+**`"index"` is the root key for a path level.** To render at `/dashboard`, the route tree needs either `dashboard: Component` (leaf) or `dashboard: { index: Component, ... }` (nested). A nested object without `index` produces a `NOT_FOUND` error route when navigating to the parent path — including when that level has a dynamic child, which does not match the parent's own path.
+
+**Index paths carry no trailing slash.** `dashboard: { index: Page }` is `/dashboard`, not `/dashboard/`; the root is `/`. `route.path` matches (`"dashboard"`, `""` at the root), so paths compare and prefix-match without normalizing. A URL typed with a trailing slash still matches — the store redirects it to the canonical form.
 
 **Guard execution order.** Guards are collected from outermost to innermost route level and run in that order. A thrown `Redirect` stops the chain immediately. Navigating inside a guard via `router.navigate()` also terminates the remaining chain because the router checks `this.location !== location` after each guard.
 
@@ -774,3 +860,5 @@ import type {
 **`router.activeRoute` is `undefined` until the first navigation resolves.** During that cold load `<Router>` renders `pendingRoute` instead, so pending outlets show their `[LOADING]` components. While both are undefined — before the first route matches, guards included — it renders the root `[SPLASH]`, or `null` if none is defined.
 
 **`Route` and `Outlet` are exported for type annotation.** When writing guard or loader functions that are defined outside the routes object, import `Route` for the parameter type. `Outlet` and `OutletConfig` are exported but are primarily internal — avoid constructing them directly.
+
+**Links leave modifier clicks to the browser.** `makeLinkComponent` only calls `preventDefault()` for an unmodified primary click, so cmd/ctrl/shift/alt- and middle-clicks follow the `href` and open a tab or window as the user expects. It defers only when an `href` exists — with `role="link"` (or a non-anchor element) there is nothing to follow, so those clicks navigate in place. A caller's `onClick` is chained, not replaced, and runs first: `preventDefault()` there cancels both the navigation and the `href`.

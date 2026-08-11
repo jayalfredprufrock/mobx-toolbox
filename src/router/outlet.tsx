@@ -3,7 +3,7 @@ import { DefaultErrorPage } from "./components/error";
 import { RouterError } from "./errors";
 import { Redirect } from "./redirect";
 import type { Route } from "./route";
-import type { Component, LazyComponent, Loader, Obj } from "./types";
+import type { Component, LazyComponent, Loader, Obj, RouteLevel } from "./types";
 import { isLazyComponent } from "./util";
 
 export interface OutletConfig {
@@ -11,6 +11,12 @@ export interface OutletConfig {
   loader?: Loader;
   errorComponent?: Component;
   loadingComponent?: Component;
+  /**
+   * The matched level this outlet renders at. Passed to whatever component
+   * fills the slot — the outlet's own, or the `[LOADING]` / `[ERROR]` that
+   * stands in for it — alongside `route`.
+   */
+  level?: RouteLevel;
 }
 
 export type RouteSegmentState = "preloading" | "loading" | "error" | "ready";
@@ -65,6 +71,10 @@ export class Outlet {
   // `layout` as a plain field under makeObservable.
   component: Component | undefined;
 
+  // Plain field for the same reason as `component`: it is read during
+  // render and never changes for the life of the outlet.
+  readonly level: RouteLevel | undefined;
+
   // The pending and failed slots render without `children` on purpose:
   // outlets in a chain resolve in parallel, so a descendant can already
   // be "ready" while this slot waits or fails. Forwarding children would
@@ -74,7 +84,7 @@ export class Outlet {
       case "loading": {
         // render the nearest [LOADING] component in this outlet's slot
         const LoadingComponent = this.config.loadingComponent ?? DefaultLoadingPage;
-        return ({ route }: Obj) => <LoadingComponent route={route} />;
+        return ({ route, level }: Obj) => <LoadingComponent route={route} level={level} />;
       }
       case "ready":
         return this.component ?? DefaultOutlet;
@@ -83,7 +93,9 @@ export class Outlet {
         // leaving the rest of the page intact
         const ErrorComponent = this.config.errorComponent ?? DefaultErrorPage;
         const error = this.error ?? new RouterError("LOAD");
-        return ({ route }: Obj) => <ErrorComponent route={route} error={error} />;
+        return ({ route, level }: Obj) => (
+          <ErrorComponent route={route} level={level} error={error} />
+        );
       }
       default:
         return undefined;
@@ -94,13 +106,15 @@ export class Outlet {
     if (!isLazyComponent(config.component)) {
       this.component = config.component;
     }
+    this.level = config.level;
 
-    makeAutoObservable<Outlet, "component" | "config">(this, {
+    makeAutoObservable<Outlet, "component" | "config" | "level">(this, {
       promise: observable.ref,
       data: observable.ref,
       error: observable.ref,
       component: false,
       config: false,
+      level: false,
     });
   }
 

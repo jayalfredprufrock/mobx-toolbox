@@ -60,6 +60,9 @@ export class TableModel {
 
   private stateReactionDisposer: IReactionDisposer | undefined;
 
+  // Only set for the getter form of `config.rows`; see activate().
+  private rowsReactionDisposer: IReactionDisposer | undefined;
+
   get rowHeight(): number {
     return this.config?.rowHeight ?? 40;
   }
@@ -394,7 +397,7 @@ export class TableModel {
       setFilter: action.bound,
       syncColumns: action,
       moveColumn: action.bound,
-      setRows: action,
+      setRows: action.bound,
       appendRows: action.bound,
       setScroll: action.bound,
       scrollToRow: action.bound,
@@ -416,7 +419,8 @@ export class TableModel {
     if (config?.filter) {
       this.setFilter(config.filter);
     }
-    if (config?.rows) {
+    // the getter form is applied by its reaction in activate(), below
+    if (Array.isArray(config?.rows)) {
       this.setRows(config.rows);
     }
     // registered after initial config so construction itself never fires; structural equality
@@ -425,12 +429,24 @@ export class TableModel {
   }
 
   /**
-   * (Re)start the `onStateChange` reaction. Pairs with `dispose` — `useTable` calls both across
+   * (Re)start the model's reactions. Pairs with `dispose` — `useTable` calls both across
    * effect cycles, so a StrictMode dev remount (mount → cleanup → mount against the same model)
-   * re-arms the reaction instead of leaving the surviving model deaf. No-op when already active
-   * or when the config has no `onStateChange`.
+   * re-arms them instead of leaving the surviving model deaf. No-op for a reaction already
+   * running, or one the config gives nothing to do.
    */
   activate(): void {
+    // A getter `rows` is tracked here rather than read once in the constructor: the model follows
+    // whatever observables the getter touches. Ordered before the state reaction so the columns
+    // this first materializes are part of that reaction's baseline rather than a change to report.
+    const rows = this.config?.rows;
+    if (typeof rows === "function" && !this.rowsReactionDisposer) {
+      this.rowsReactionDisposer = reaction(
+        () => rows(),
+        (next) => this.setRows(next),
+        { fireImmediately: true },
+      );
+    }
+
     const onStateChange = this.config?.onStateChange;
     if (onStateChange && !this.stateReactionDisposer) {
       this.stateReactionDisposer = reaction(() => this.getState(), onStateChange, {
@@ -439,10 +455,12 @@ export class TableModel {
     }
   }
 
-  /** Drop the `onStateChange` reaction. Pairs with `activate`. */
+  /** Drop the model's reactions. Pairs with `activate`. */
   dispose(): void {
     this.stateReactionDisposer?.();
     this.stateReactionDisposer = undefined;
+    this.rowsReactionDisposer?.();
+    this.rowsReactionDisposer = undefined;
   }
 
   rowId(row: RowData): RowId | undefined {
@@ -499,8 +517,12 @@ export class TableModel {
   }
 
   /** Replace the dataset. Row-keyed state (selection, expansion) is reset — ids from the old world
-   * (indices by default) must not silently attach to new rows. Use `appendRows` to add without resetting. */
+   * (indices by default) must not silently attach to new rows. Use `appendRows` to add without
+   * resetting. Re-passing the array already in place is a no-op: same array, same dataset, so the
+   * reset would be gratuitous. (`rows` is an `observable.ref`, so mutating one in place is
+   * invisible either way — hand over a new array to change the data.) */
   setRows(rows: RowData[]): void {
+    if (rows === this.rows) return;
     this.rows = rows;
     this.syncColumns();
     this.selectedIds.clear();

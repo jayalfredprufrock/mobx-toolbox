@@ -2,13 +2,14 @@ import { describe, expect, test, vi, beforeEach, afterEach } from "vite-plus/tes
 import { createMemoryHistory } from "history";
 import { DefaultErrorPage, RouteErrorBoundary } from "./components/error";
 import { RouterError } from "./errors";
-import { makeRoutes, matchRoute } from "./make-routes";
+import { makeErrorRoute, makeRoutes, matchRoute } from "./make-routes";
 import { DefaultLoadingPage, Outlet } from "./outlet";
 import { redirect, Redirect } from "./redirect";
 import type { Route } from "./route";
 import { RouterStore } from "./router.store";
 import { ERROR, GUARD, LAYOUT, LOAD, LOADING, PAGE, REDIRECT, WRAPPER } from "./symbols";
-import type { ExtractPaths, Guard } from "./types";
+import type { ExtractPaths, Guard, NormalizeRootPath, RouteLevel } from "./types";
+import { resolvePath, tryResolvePath } from "./util";
 
 const PageA = () => null;
 const PageB = () => null;
@@ -49,8 +50,18 @@ describe("matchRoute", () => {
 
   test("matches nested index path", () => {
     const route = matchRoute("/users", routes);
-    // nested index lands at "users/" — empty string segment for the index key
-    expect(route.path).toBe("users/");
+    // an index key addresses its parent's path and contributes no segment
+    expect(route.path).toBe("users");
+  });
+
+  test("matches a nested index path written with a trailing slash", () => {
+    expect(matchRoute("/users/", routes).path).toBe("users");
+  });
+
+  test("typed index paths carry no trailing slash; the root normalizes to '/'", () => {
+    const indexPath = "/users" satisfies ExtractPaths<typeof routes>;
+    const rootPath = "/" satisfies NormalizeRootPath<ExtractPaths<typeof routes>>;
+    expect([indexPath, rootPath]).toEqual(["/users", "/"]);
   });
 
   test("matches dynamic segment and captures param", () => {
@@ -244,6 +255,20 @@ describe("RouterStore", () => {
       expect(router.doesPathMatch("/users/:id")).toBe(true);
     });
 
+    test("matches an index route exactly", async () => {
+      const { router } = await makeRouter("/users");
+      // the index path is "/users", so exact matching lines up with it —
+      // with a trailing slash it never could, the empty segment made the
+      // pattern one segment longer than the route
+      expect(router.doesPathMatch("/users")).toBe(true);
+      expect(router.doesPathMatch("/users", true)).toBe(true);
+    });
+
+    test("matches the root index exactly", async () => {
+      const { router } = await makeRouter("/");
+      expect(router.doesPathMatch("/", true)).toBe(true);
+    });
+
     test("does not treat $param as a wildcard in path strings", async () => {
       const { router } = await makeRouter("/users/42");
       expect(router.doesPathMatch("/users/$id")).toBe(false);
@@ -324,6 +349,18 @@ describe("RouterStore", () => {
       const { router, history } = await makeRouter("/about");
       router.navigate({ to: "/about", state: { fromMenu: true } });
       expect(history.index).toBe(1);
+    });
+
+    test("an index path resolves to the URL it matches, and re-navigating is a no-op", async () => {
+      const { router, history } = await makeRouter("/users");
+      expect(history.location.pathname).toBe("/users");
+
+      // with a trailing-slash index path this pushed "/users/" and relied on
+      // setLocation replacing it back, so the no-op check never fired
+      const before = router.activeRoute;
+      router.navigate({ to: "/users" });
+      expect(history.index).toBe(0);
+      expect(router.activeRoute).toBe(before);
     });
   });
 
@@ -1470,5 +1507,139 @@ describe("isNavigating spans the guard phase", () => {
     expect(router.activeRoute?.error?.type).toBe("GUARD");
     expect(router.isNavigating).toBe(false);
     vi.restoreAllMocks();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Route levels
+// ---------------------------------------------------------------------------
+
+describe("route levels", () => {
+  const RootScope = ({ children }: any) => children;
+  const OrgsScope = ({ children }: any) => children;
+  const OrgScope = ({ children }: any) => children;
+  const SurveysScope = ({ children }: any) => children;
+
+  const routes = makeRoutes()({
+    [WRAPPER]: RootScope,
+    index: PageA,
+    org: {
+      // no index — /org addresses no page of its own
+      [WRAPPER]: OrgsScope,
+      $orgId: {
+        [WRAPPER]: OrgScope,
+        index: PageB,
+        surveys: {
+          [WRAPPER]: SurveysScope,
+          index: PageC,
+          $surveyId: {
+            index: PageA,
+            responses: PageB,
+          },
+        },
+      },
+    },
+  });
+
+  const levelsOf = (path: string): (RouteLevel | undefined)[] =>
+    matchRoute(path, routes).outlets.map((o) => o.level);
+
+  test("each wrapper and page gets the level it renders at", () => {
+    expect(levelsOf("/org/7/surveys")).toEqual([
+      { index: 0, segment: "", pattern: "/" },
+      // a nesting level with no index child is not navigable
+      { index: 1, segment: "org", pattern: undefined },
+      { index: 2, segment: ":orgId", pattern: "/org/:orgId" },
+      { index: 3, segment: "surveys", pattern: "/org/:orgId/surveys" },
+      // the index page addresses its parent's path
+      { index: 4, segment: "index", pattern: "/org/:orgId/surveys" },
+    ]);
+  });
+
+  test("a leaf page's level names the leaf, not its parent", () => {
+    expect(levelsOf("/org/7/surveys/3/responses").at(-1)).toEqual({
+      index: 5,
+      segment: "responses",
+      pattern: "/org/:orgId/surveys/:surveyId/responses",
+    });
+  });
+
+  test("every pattern resolves back to the URL that produced it", () => {
+    const route = matchRoute("/org/7/surveys/3/responses", routes);
+    const resolved = route.outlets
+      .map((o) => o.level?.pattern)
+      .filter((p) => p !== undefined)
+      .map((p) => resolvePath(p, route.params));
+
+    // each level addresses a prefix of the URL — so a wrapper can hand its
+    // own pattern straight to `to=` without knowing where it sits. Only
+    // levels that render something appear here: $surveyId declares no
+    // [WRAPPER], so nothing carries its level.
+    expect(resolved).toEqual(["/", "/org/7", "/org/7/surveys", "/org/7/surveys/3/responses"]);
+  });
+
+  test("a quoted :param key normalizes to the same pattern as $param", () => {
+    const r = makeRoutes()({
+      posts: {
+        ":slug": { [WRAPPER]: RootScope, index: PageA },
+      },
+    });
+    expect(matchRoute("/posts/hello", r).outlets[0]?.level).toEqual({
+      index: 2,
+      segment: ":slug",
+      pattern: "/posts/:slug",
+    });
+  });
+
+  test("a dynamic segment does not match the parent's own path", () => {
+    // "/org" has no index, and matching $orgId here would capture an empty
+    // param — the same level whose `pattern` is undefined for that reason
+    expect(() => matchRoute("/org", routes)).toThrow(RouterError);
+  });
+
+  test("[LOAD] and [WRAPPER] at one level share that level", () => {
+    const r = makeRoutes()({
+      admin: {
+        [WRAPPER]: RootScope,
+        [LOAD]: async () => ({}),
+        index: PageA,
+      },
+    });
+    const [wrapper, loader] = matchRoute("/admin", r).outlets;
+    expect(wrapper?.level).toEqual({ index: 1, segment: "admin", pattern: "/admin" });
+    expect(loader?.level).toBe(wrapper?.level);
+  });
+
+  test("a synthetic error route keeps the levels of the prefix that matched", () => {
+    try {
+      matchRoute("/org/7/nope", routes);
+      expect.unreachable();
+    } catch (e) {
+      const route = makeErrorRoute(e as RouterError, "/org/7/nope");
+      // the wrappers up to the failure, then the error outlet at that level
+      expect(route.outlets.map((o) => o.level?.pattern)).toEqual([
+        "/",
+        undefined,
+        "/org/:orgId",
+        "/org/:orgId",
+      ]);
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// resolvePath / tryResolvePath
+// ---------------------------------------------------------------------------
+
+describe("tryResolvePath", () => {
+  test("substitutes params like resolvePath", () => {
+    expect(tryResolvePath("/users/:id", { id: "42" })).toBe("/users/42");
+    expect(tryResolvePath("/about")).toBe("/about");
+  });
+
+  test("returns undefined instead of throwing on a missing param", () => {
+    expect(tryResolvePath("/users/:id")).toBeUndefined();
+    expect(tryResolvePath("/teams/:teamId/users/:userId", { teamId: "7" })).toBeUndefined();
+    expect(() => resolvePath("/users/:id")).toThrow("Parameter ':id' not specified");
   });
 });

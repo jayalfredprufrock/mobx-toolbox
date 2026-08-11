@@ -1,4 +1,4 @@
-import { autorun } from "mobx";
+import { autorun, observable, runInAction } from "mobx";
 import { describe, expect, test, vi } from "vite-plus/test";
 import { SELECTION_COLUMN_KEY } from "./column.model";
 import { TableModel } from "./table.model";
@@ -879,5 +879,71 @@ describe("table state", () => {
 
     expect(onStateChange).toHaveBeenCalledTimes(1);
     table.dispose();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// the dataset
+// ---------------------------------------------------------------------------
+
+describe("setRows", () => {
+  test("replacing the dataset resets row-keyed state", () => {
+    const rows = makeRows(3);
+    const table = makeTable(rows);
+    table.toggleRow(rows[0]!);
+    table.toggleRowExpanded(rows[1]!);
+
+    table.setRows(makeRows(3));
+    expect(table.selectedRows).toEqual([]);
+    expect(table.expandedIds.size).toBe(0);
+  });
+
+  test("re-passing the array already in place changes nothing", () => {
+    const rows = makeRows(3);
+    const table = makeTable(rows);
+    table.toggleRow(rows[0]!);
+
+    // same array, same dataset — the reset would be gratuitous, and this is
+    // what lets useTable and the rows reaction re-apply without consequence
+    table.setRows(rows);
+    expect(table.selectedRows.map((r) => r.n)).toEqual([0]);
+  });
+});
+
+describe("rows as a getter", () => {
+  test("tracks the observables the getter reads", () => {
+    const source = observable.box(makeRows(2));
+    const table = new TableModel({ rows: () => source.get() });
+    expect(table.rows).toHaveLength(2);
+
+    runInAction(() => source.set(makeRows(5)));
+    expect(table.rows).toHaveLength(5);
+  });
+
+  test("stops tracking once disposed, and picks up again on activate", () => {
+    const source = observable.box(makeRows(2));
+    const table = new TableModel({ rows: () => source.get() });
+
+    table.dispose();
+    runInAction(() => source.set(makeRows(5)));
+    expect(table.rows).toHaveLength(2);
+
+    table.activate();
+    expect(table.rows).toHaveLength(5);
+  });
+
+  test("a row-keyed reset only happens when the dataset actually changes", () => {
+    const source = observable.box(makeRows(3));
+    const table = new TableModel({ rows: () => source.get() });
+    table.toggleRow(table.rows[0]!);
+
+    // re-activating (a StrictMode remount does this) re-reads the getter,
+    // which hands back the same array
+    table.dispose();
+    table.activate();
+    expect(table.selectedRows).toHaveLength(1);
+
+    runInAction(() => source.set(makeRows(3)));
+    expect(table.selectedRows).toHaveLength(0);
   });
 });

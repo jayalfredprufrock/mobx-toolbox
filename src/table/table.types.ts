@@ -18,7 +18,27 @@ export type ColumnsDef<T> = (ColumnDef<T> | ((firstRow: T) => ColumnDef<T> | Col
 export type RowId = string | number;
 
 export interface TableConfig<T> {
-  rows?: T[];
+  /**
+   * The dataset, in either of two shapes — and they differ in *who decides
+   * the rows changed*, which is what decides when row-keyed state resets
+   * (see `setRows`).
+   *
+   * **An array** — React decides. `useTable` re-applies it whenever it is a
+   * different array than the one last applied, so callers must keep it
+   * referentially stable (a MobX `computed`, or `useMemo`). Rebuilding it
+   * inline on every render (`rows={data.filter(isActive)}`) reads as a new
+   * dataset every time and clears selection with it. Passing a `TableModel`
+   * a config directly (no hook) applies the array once, at construction.
+   *
+   * **A getter** — MobX decides. `() => store.filteredRows` is tracked in a
+   * reaction, so it re-applies when the observables it *read* change, on
+   * MobX's cadence rather than React's. Two caveats, both silent if missed:
+   * the getter must read observables (a getter over React props or state is
+   * never re-run, and the table keeps the first dataset forever), and it is
+   * captured once — so close over observables, not over render-scoped
+   * values, which would go stale.
+   */
+  rows?: T[] | (() => T[]);
   /** Fixed pixel height of every row (the virtualization contract). Default 40. */
   rowHeight?: number;
   columns?: ColumnsDef<T>;

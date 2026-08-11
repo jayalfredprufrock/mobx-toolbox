@@ -35,6 +35,32 @@ function UserTable({ users }) {
 
 `<Table.Root>` must be sized by its parent — it fills 100% of it and measures itself. Children render only once a non-zero size is measured.
 
+## The dataset
+
+The config is read once, at construction — **except `rows`**, which `useTable` keeps in sync. It has to: a route's params can change without remounting the page (React reconciles the same component type at the same tree position), so a table that ignored later `rows` would keep rendering the previous org's data.
+
+`rows` takes either of two shapes, and they differ in **who decides the dataset changed** — which is what decides when row-keyed state (selection, expansion) resets, since that is `setRows`'s documented job.
+
+```tsx
+// React decides — re-applied when the array identity changes
+const rows = useMemo(() => users.filter(isActive), [users]);
+useTable({ rows });
+
+// MobX decides — re-applied when the observables the getter read change
+useTable({ rows: () => store.filteredRows });
+```
+
+| Shape       | Re-applied when                    | Gets it wrong by                                                                                                                                            |
+| ----------- | ---------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `T[]`       | it's a different array than before | rebuilding the array inline each render — every parent render reads as a new dataset and clears selection with it                                           |
+| `() => T[]` | the observables it _read_ change   | reading something MobX isn't tracking — props, React state, a plain field — in which case it is never re-run and the table silently keeps the first dataset |
+
+Two more things worth knowing about the getter form: it is captured once, so close over observables rather than render-scoped values, which would go stale; and it must be the _source_ of the rows, not a transform of a prop.
+
+Re-passing the array already in place is a no-op — same array, same dataset — so a re-render never costs you a selection. `rows` is an `observable.ref` either way, so mutating an array in place is invisible to the model; hand over a new one.
+
+Everything else (`columns`, `getRowId`, `onStateChange`, `filter`) is captured at construction. Change those through the model — `setFilter`, `applyState` — rather than by re-rendering.
+
 ## Columns
 
 `columns` accepts four shapes, mixed freely:
@@ -256,4 +282,4 @@ Mutations all go through actions: `setRows`, `appendRows`, `setFilter`, `setSort
 
 `ColumnModel`: `key`, `title`, `width`, `pinned`, `hidden`, `sortDirection`, `sortIndex`, `sortable`, `resizable`, `getValue(row)`, `setPinned`, `setHidden`, `setManualWidth`, `sortBy`, `clearSort`.
 
-When you build the model yourself rather than via `useTable`, call `dispose()` to drop the `onStateChange` reaction, and `activate()` to re-arm it.
+When you build the model yourself rather than via `useTable`, call `dispose()` to drop the model's reactions — `onStateChange`, and the one tracking a getter `rows` — and `activate()` to re-arm them. A `TableModel` built directly with an **array** `rows` applies it once, at construction: identity-based syncing is `useTable`'s job, so update it with `setRows`. The getter form needs no such help; it tracks its source wherever the model lives.

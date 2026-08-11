@@ -20,10 +20,61 @@ export type Obj<T = any> = Record<string, T>;
 export type Loader = (route: Route) => Promise<any>;
 export type Guard = (route: Route) => Promise<void>;
 
+/**
+ * Where a component sits in the matched route tree. Every component the
+ * router renders in an outlet — `[WRAPPER]`, `[PAGE]`, `[LOADING]`,
+ * `[ERROR]` — receives its own level alongside `route`, so route-level
+ * metadata (breadcrumbs, sub-navigation, per-level analytics) can live in
+ * the component rather than being hardcoded against a path the route tree
+ * already knows.
+ */
+export interface RouteLevel {
+  /** 0-based index of this level in the matched chain. */
+  index: number;
+  /**
+   * The route-definition key for this level, with a dynamic segment
+   * normalized to its path spelling (`$orgId` and `":orgId"` both read as
+   * `:orgId`). `"index"` for an index page, `""` for the root level.
+   */
+  segment: string;
+  /**
+   * This level's own route pattern, e.g. `/org/:orgId/surveys` — ready to
+   * hand to `to=` or `router.navigate()` once its params are filled in.
+   *
+   * `undefined` when the level does not address a page of its own: a
+   * nesting level with no `index` key is not navigable, and deriving a
+   * pattern for it would produce a path that 404s.
+   */
+  pattern?: RoutePath;
+}
+
+/**
+ * The props every `[WRAPPER]` component receives. Unlike `[LOADING]` and
+ * `[ERROR]`, a wrapper does receive `children` — it wraps the rest of the
+ * chain below it.
+ */
+export interface WrapperComponentProps {
+  route: Route;
+  level: RouteLevel;
+  children?: React.ReactNode;
+}
+
+/** The props every `[PAGE]` component receives. */
+export interface PageComponentProps {
+  route: Route;
+  level: RouteLevel;
+}
+
 /** The props every `[ERROR]` component receives. */
 export interface ErrorComponentProps {
   route: Route;
   error: RouterError;
+  /**
+   * Absent only on a synthetic error route that never matched a level —
+   * a `NOT_FOUND` on the very first segment, say. Present for in-slot
+   * loader errors and anywhere a prefix of the tree did match.
+   */
+  level?: RouteLevel;
 }
 
 /**
@@ -34,6 +85,7 @@ export interface ErrorComponentProps {
  */
 export interface LoadingComponentProps {
   route: Route;
+  level: RouteLevel;
 }
 
 /** @internal a guard together with the route level that declared it */
@@ -44,6 +96,7 @@ export interface GuardEntry {
 
 /** @internal per-level snapshot used to build synthetic error routes */
 export interface MatchLevel {
+  level: RouteLevel;
   wrapper?: Component;
   layout?: Component;
   errorComponent?: Component;
@@ -143,7 +196,9 @@ export interface MobxRouterConfig {
 }
 
 export type RoutePath =
-  ExtractPaths<MobxRouterRoutes> extends undefined ? string : ExtractPaths<MobxRouterRoutes>;
+  ExtractPaths<MobxRouterRoutes> extends undefined
+    ? string
+    : NormalizeRootPath<ExtractPaths<MobxRouterRoutes>>;
 
 export type DynamicRoutePath = Extract<RoutePath, `${string}:${string}`>;
 export type StaticRoutePath = Exclude<RoutePath, `${string}:${string}`>;
@@ -165,12 +220,18 @@ export type ExtractParams<P> = P extends `${infer S1}/${infer Rest}`
   ? ExtractParam<S1, ExtractParams<Rest>>
   : ExtractParam<P, {}>;
 
+// An `index` key addresses its parent's path, so it contributes no segment of
+// its own: `{ account: { index: Page } }` is `/account`, not `/account/`. At
+// the root that leaves the empty string, which `NormalizeRootPath` turns back
+// into `/` — the one path with no segments at all.
 export type ExtractPaths<R> = {
   [S in keyof R]: S extends string
     ? S extends "index"
-      ? "/"
+      ? ""
       : R[S] extends Leaf
         ? `/${SegmentName<S> extends string ? SegmentName<S> : ""}`
         : JoinSegments<SegmentName<S>, ExtractPaths<R[S]>>
     : never;
 }[keyof R];
+
+export type NormalizeRootPath<P> = P extends "" ? "/" : P;

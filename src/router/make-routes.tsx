@@ -4,7 +4,15 @@ import { Outlet } from "./outlet";
 import { Redirect } from "./redirect";
 import { Route } from "./route";
 import { CONTEXT, ERROR, GUARD, LAYOUT, LOAD, LOADING, PAGE, REDIRECT, WRAPPER } from "./symbols";
-import type { Component, GuardEntry, MatchLevel, Obj, Routes } from "./types";
+import type {
+  Component,
+  GuardEntry,
+  MatchLevel,
+  Obj,
+  RouteLevel,
+  RoutePath,
+  Routes,
+} from "./types";
 import { isComponent, isLazyComponent, isLeaf, isPage, isRedirect } from "./util";
 
 const pathToSegments = (path: string): string[] => {
@@ -13,6 +21,7 @@ const pathToSegments = (path: string): string[] => {
 
 export interface MatchState {
   segments: string[];
+  patternSegments: string[];
   context: Obj;
   params: Obj;
   outlets: (Outlet | undefined)[];
@@ -22,6 +31,17 @@ export interface MatchState {
   errorComponent?: Component;
   loadingComponent?: Component;
 }
+
+/**
+ * A level's pattern is the definition keys that led to it, dynamic segments
+ * in their `:param` path spelling. No segments at all is the root, `/`.
+ */
+const toPattern = (patternSegments: string[]): RoutePath =>
+  `/${patternSegments.join("/")}` as RoutePath;
+
+/** `$orgId` and `":orgId"` are the same segment; paths spell it `:orgId`. */
+const toPatternSegment = (defKey: string): string =>
+  defKey.startsWith("$") ? `:${defKey.slice(1)}` : defKey;
 
 export const makeRoute = (matchState: MatchState): Route => {
   const outlets = matchState.outlets.filter((o) => o !== undefined);
@@ -44,16 +64,22 @@ export const makeErrorRoute = (
 ): Route => {
   const levels = error.state?.levels ?? source?.levels ?? [];
   const depth = Math.min(error.depth ?? levels.length - 1, levels.length - 1);
-  const level = depth >= 0 ? levels[depth] : undefined;
+  const matched = depth >= 0 ? levels[depth] : undefined;
 
-  const ErrorComponent = level?.errorComponent ?? DefaultErrorPage;
+  const ErrorComponent = matched?.errorComponent ?? DefaultErrorPage;
   const outlets = levels
     .slice(0, depth + 1)
-    .flatMap((l) => (l.wrapper ? [new Outlet({ component: l.wrapper })] : []));
-  // `route` only — `[ERROR]` components never receive children, on the
-  // synthetic-route path or the in-slot one
+    .flatMap((l) => (l.wrapper ? [new Outlet({ component: l.wrapper, level: l.level })] : []));
+  // no children — `[ERROR]` components never receive them, on the
+  // synthetic-route path or the in-slot one. `level` is whatever level
+  // failed; absent when nothing matched at all.
   outlets.push(
-    new Outlet({ component: ({ route }: Obj) => <ErrorComponent route={route} error={error} /> }),
+    new Outlet({
+      component: ({ route, level }: Obj) => (
+        <ErrorComponent route={route} level={level} error={error} />
+      ),
+      level: matched?.level,
+    }),
   );
 
   return new Route({
@@ -63,7 +89,7 @@ export const makeErrorRoute = (
     levels: [],
     params: error.state?.params ?? source?.params ?? {},
     context: error.state?.context ?? source?.context ?? {},
-    layout: level?.layout,
+    layout: matched?.layout,
     error,
   });
 };
@@ -82,8 +108,20 @@ export const matchRoute = (path: string, routeDef: Routes, matchState?: MatchSta
   const errorComponent = routeDef[ERROR] ?? matchState?.errorComponent;
   const loadingComponent = routeDef[LOADING] ?? matchState?.loadingComponent;
 
+  const patternSegments = matchState?.patternSegments ?? [];
+
+  // This level's own address. Only navigable when it has an `index` child —
+  // a nesting level without one has no page of its own, and handing out a
+  // pattern for it would produce a path that 404s on navigation.
+  const level: RouteLevel = {
+    index: depth,
+    segment: patternSegments.at(-1) ?? "",
+    pattern: routeDef.index === undefined ? undefined : toPattern(patternSegments),
+  };
+
   const state: MatchState = {
     segments: [],
+    patternSegments: [],
     params: {},
     ...matchState,
     layout,
@@ -97,25 +135,33 @@ export const matchRoute = (path: string, routeDef: Routes, matchState?: MatchSta
     outlets: [
       ...(matchState?.outlets ?? []),
       routeDef[WRAPPER]
-        ? new Outlet({ component: routeDef[WRAPPER], errorComponent, loadingComponent })
+        ? new Outlet({ component: routeDef[WRAPPER], errorComponent, loadingComponent, level })
         : undefined,
       routeDef[LOAD]
-        ? new Outlet({ loader: routeDef[LOAD], errorComponent, loadingComponent })
+        ? new Outlet({ loader: routeDef[LOAD], errorComponent, loadingComponent, level })
         : undefined,
     ],
-    levels: [...(matchState?.levels ?? []), { wrapper: routeDef[WRAPPER], layout, errorComponent }],
+    levels: [
+      ...(matchState?.levels ?? []),
+      { level, wrapper: routeDef[WRAPPER], layout, errorComponent },
+    ],
   };
 
   const [segment, ...remainingSegments] = pathToSegments(path);
   const remainingPath = remainingSegments.join("/");
 
-  let defAtSegment = routeDef[segment || "index"];
+  // an empty segment addresses this level itself, which is what `index`
+  // names — so it consumes no segment of the path or the pattern
+  const isIndex = !segment;
+  let defKey = isIndex ? "index" : segment;
+  let defAtSegment = routeDef[defKey];
 
-  if (!defAtSegment) {
+  if (!defAtSegment && !isIndex) {
     const matchedSegment = Object.keys(routeDef).find(
-      (segment) => segment.startsWith("$") || segment.startsWith(":"),
+      (key) => key.startsWith("$") || key.startsWith(":"),
     );
     if (matchedSegment) {
+      defKey = matchedSegment;
       defAtSegment = routeDef[matchedSegment];
       state.params[matchedSegment.slice(1)] = segment;
     }
@@ -125,7 +171,18 @@ export const matchRoute = (path: string, routeDef: Routes, matchState?: MatchSta
     throw notFound(state, [...state.segments, segment ?? "", ...remainingSegments]);
   }
 
-  state.segments.push(segment ?? "index");
+  if (!isIndex) {
+    state.segments.push(segment);
+    state.patternSegments.push(toPatternSegment(defKey));
+  }
+
+  // the level a leaf or [PAGE] renders at — one below the nesting level
+  // that contains it, and always navigable: it *is* a page
+  const leafLevel: RouteLevel = {
+    index: state.levels.length,
+    segment: isIndex ? "index" : toPatternSegment(defKey),
+    pattern: toPattern(state.patternSegments),
+  };
 
   if (isLeaf(defAtSegment)) {
     if (remainingPath) {
@@ -141,7 +198,9 @@ export const matchRoute = (path: string, routeDef: Routes, matchState?: MatchSta
     }
 
     if (isComponent(defAtSegment) || isLazyComponent(defAtSegment)) {
-      state.outlets.push(new Outlet({ component: defAtSegment, errorComponent, loadingComponent }));
+      state.outlets.push(
+        new Outlet({ component: defAtSegment, errorComponent, loadingComponent, level: leafLevel }),
+      );
       return makeRoute(state);
     }
   }
@@ -162,13 +221,20 @@ export const matchRoute = (path: string, routeDef: Routes, matchState?: MatchSta
         loader: defAtSegment[LOAD],
         errorComponent: state.errorComponent,
         loadingComponent: state.loadingComponent,
+        level: leafLevel,
       }),
     );
-    state.levels[state.levels.length - 1] = {
-      ...state.levels[state.levels.length - 1],
-      layout: state.layout,
-      errorComponent: state.errorComponent,
-    };
+    // a [PAGE] refines the level it sits in rather than adding one of its
+    // own — that is what makes a page's [ERROR] catch its own [GUARD],
+    // which resolves through `levels[depth]`
+    const pageLevel = state.levels[state.levels.length - 1];
+    if (pageLevel) {
+      state.levels[state.levels.length - 1] = {
+        ...pageLevel,
+        layout: state.layout,
+        errorComponent: state.errorComponent,
+      };
+    }
 
     return makeRoute(state);
   }

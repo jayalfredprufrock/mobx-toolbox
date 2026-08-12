@@ -1,6 +1,6 @@
 import type { MatchState } from "./make-routes";
 
-export type RouterErrorType = "NOT_FOUND" | "GUARD" | "LOAD" | "RENDER";
+export type RouterErrorType = "NOT_FOUND" | "GUARD" | "LOAD" | "RENDER" | "REDIRECT";
 
 export interface RouterErrorOptions {
   message?: string;
@@ -18,6 +18,10 @@ const defaultMessage = (type: RouterErrorType, path?: string): string => {
       return "A route loader or lazy component failed.";
     case "RENDER":
       return "A route component failed to render.";
+    case "REDIRECT":
+      return path
+        ? `The redirect for '${path}' could not be resolved.`
+        : "A redirect could not be resolved.";
   }
 };
 
@@ -47,3 +51,23 @@ export class RouterError extends Error {
     this.path = options?.path;
   }
 }
+
+/**
+ * @internal Builds the `REDIRECT` error for a redirect that could not be
+ * carried out — a `[REDIRECT]` function that threw, or navigation options
+ * naming a path whose `:params` can't be filled.
+ *
+ * `from` carries whatever the `Redirect` knew about where it came from, so
+ * the error route keeps the matched prefix's layout and wrappers and bubbles
+ * to the same `[ERROR]` a failure at that level would have.
+ */
+export const redirectFailed = (
+  cause: unknown,
+  path: string | undefined,
+  from?: { state?: MatchState; depth?: number },
+): RouterError => {
+  const error = new RouterError("REDIRECT", { cause, path });
+  error.state = from?.state;
+  error.depth = from?.depth;
+  return error;
+};

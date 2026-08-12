@@ -76,7 +76,12 @@ export class Route {
       try {
         await guard(this);
       } catch (e) {
-        if (e instanceof Redirect) throw e;
+        // depth rides along so a redirect that later fails to resolve
+        // bubbles to the same [ERROR] this guard's own failure would have
+        if (e instanceof Redirect) {
+          e.depth ??= depth;
+          throw e;
+        }
         const error = e instanceof RouterError ? e : new RouterError("GUARD", { cause: e });
         error.depth ??= depth;
         throw error;

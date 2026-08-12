@@ -7,8 +7,8 @@ import { DefaultLoadingPage, Outlet } from "./outlet";
 import { redirect, Redirect } from "./redirect";
 import type { Route } from "./route";
 import { RouterStore } from "./router.store";
-import { ERROR, GUARD, LAYOUT, LOAD, LOADING, PAGE, REDIRECT, WRAPPER } from "./symbols";
-import type { ExtractPaths, Guard, NormalizeRootPath, RouteLevel } from "./types";
+import { CONTEXT, ERROR, GUARD, LAYOUT, LOAD, LOADING, PAGE, REDIRECT, WRAPPER } from "./symbols";
+import type { ExtractPaths, Guard, NavigateOptions, NormalizeRootPath, RouteLevel } from "./types";
 import { resolvePath, tryResolvePath } from "./util";
 
 const PageA = () => null;
@@ -119,6 +119,90 @@ describe("matchRoute", () => {
     expect(() => matchRoute("/old", r)).toThrow(Redirect);
   });
 
+  test("[REDIRECT] accepts full navigation options", () => {
+    const r = makeRoutes()({
+      old: { [REDIRECT]: { to: "/about", replace: true } },
+      about: PageA,
+    });
+    try {
+      matchRoute("/old", r);
+      expect.unreachable();
+    } catch (e) {
+      expect((e as Redirect).options).toEqual({ to: "/about", replace: true });
+    }
+  });
+
+  test("[REDIRECT] as a function receives the route it matched", () => {
+    const r = makeRoutes()({
+      org: {
+        $orgId: {
+          index: {
+            [REDIRECT]: (route) => ({
+              to: "/org/:orgId/home",
+              params: { orgId: route.params.orgId },
+            }),
+          },
+          home: PageA,
+        },
+      },
+    });
+
+    try {
+      matchRoute("/org/7", r);
+      expect.unreachable();
+    } catch (e) {
+      expect(e).toBeInstanceOf(Redirect);
+      expect((e as Redirect).options).toEqual({
+        to: "/org/:orgId/home",
+        params: { orgId: "7" },
+      });
+    }
+  });
+
+  test("[REDIRECT] as a function sees context and path, but no data", () => {
+    const seen: any[] = [];
+    const r = makeRoutes()({
+      [CONTEXT]: { tier: "root" },
+      org: {
+        [CONTEXT]: { tier: "org" },
+        old: {
+          [REDIRECT]: (route) => {
+            seen.push({ path: route.path, context: route.context, data: route.data });
+            return { to: "/about" };
+          },
+        },
+      },
+      about: PageA,
+    });
+
+    expect(() => matchRoute("/org/old", r)).toThrow(Redirect);
+    expect(seen).toEqual([{ path: "org/old", context: { tier: "org" }, data: {} }]);
+  });
+
+  test("a throwing [REDIRECT] function becomes a RouterError, not a raw throw", () => {
+    const cause = new Error("no org in scope");
+    const r = makeRoutes()({
+      org: {
+        old: {
+          [REDIRECT]: () => {
+            throw cause;
+          },
+        },
+      },
+    });
+
+    try {
+      matchRoute("/org/old", r);
+      expect.unreachable();
+    } catch (e) {
+      expect(e).toBeInstanceOf(RouterError);
+      const error = e as RouterError;
+      expect(error.type).toBe("REDIRECT");
+      expect(error.cause).toBe(cause);
+      expect(error.path).toBe("/org/old");
+    }
+  });
+
   test("merges context from parent to child", () => {
     const r = makeRoutes()({
       admin: {
@@ -157,6 +241,36 @@ describe("Redirect", () => {
     const r = new Redirect({ to: "/home", replace: true });
     expect(r.options.to).toBe("/home");
     expect(r.options.replace).toBe(true);
+  });
+
+  test("[REDIRECT] options distribute over paths, so a dynamic `to` still requires params", () => {
+    // the mechanism `RedirectOptions` relies on: mapped over the RoutePath
+    // union rather than `NavigateOptions<RoutePath>`, which collapses
+    // `HasParam` to `boolean` and drops the requirement
+    type Paths = "/about" | "/users/:id";
+    type Options = { [P in Paths]: NavigateOptions<P> }[Paths];
+
+    const staticPath = { to: "/about" } satisfies Options;
+    const dynamicPath = { to: "/users/:id", params: { id: "7" } } satisfies Options;
+    // @ts-expect-error — "/users/:id" cannot be redirected to without params
+    const unresolvable = { to: "/users/:id" } satisfies Options;
+
+    expect([staticPath, dynamicPath, unresolvable]).toHaveLength(3);
+  });
+
+  test("a [REDIRECT] function's parameter is contextually typed as Route", () => {
+    const r = makeRoutes()({
+      org: {
+        old: {
+          // `Leaf` also admits a bare Component, whose props are `any` — if
+          // the arrow were typed against that instead of `Redirector`, this
+          // would silently pass and the form would lose all inference
+          // @ts-expect-error — `nope` is not on Route
+          [REDIRECT]: (route) => ({ to: `/org/${route.nope}` }),
+        },
+      },
+    });
+    expect(r).toBeDefined();
   });
 });
 
@@ -557,6 +671,99 @@ describe("error handling", () => {
 
       expect(router.activeRoute?.error?.type).toBe("NOT_FOUND");
       expect(router.activeRoute?.error?.cause).toBeUndefined();
+    });
+  });
+
+  describe("failed redirects", () => {
+    test("a [REDIRECT] whose :params can't be filled renders [ERROR] instead of escaping", async () => {
+      const routes = makeRoutes()({
+        [LAYOUT]: AppShell,
+        [ERROR]: RootErrorPage,
+        old: { [REDIRECT]: { to: "/users/:id" } },
+        users: { $id: PageA },
+      });
+      const { router, history } = await makeRouter(routes, "/old");
+
+      const route = router.activeRoute;
+      expect(route?.error?.type).toBe("REDIRECT");
+      expect(route?.error?.cause).toBeInstanceOf(Error);
+      expect((route?.error?.cause as Error | undefined)?.message).toContain(
+        "Parameter ':id' not specified",
+      );
+      expect(route?.layout).toBe(AppShell);
+      expect(renderOutlet(route?.outlets.at(-1), route).type).toBe(RootErrorPage);
+      // the URL stays put, like every other navigation failure
+      expect(history.location.pathname).toBe("/old");
+    });
+
+    test("a throwing [REDIRECT] function keeps the matched prefix's layout and nearest [ERROR]", async () => {
+      const cause = new Error("no org in scope");
+      const routes = makeRoutes()({
+        [LAYOUT]: AppShell,
+        [ERROR]: RootErrorPage,
+        admin: {
+          [LAYOUT]: AdminLayout,
+          [WRAPPER]: AdminWrapper,
+          [ERROR]: AdminErrorPage,
+          old: {
+            [REDIRECT]: () => {
+              throw cause;
+            },
+          },
+        },
+      });
+      const { router } = await makeRouter(routes, "/admin/old");
+
+      const route = router.activeRoute;
+      expect(route?.error?.type).toBe("REDIRECT");
+      expect(route?.error?.cause).toBe(cause);
+      expect(route?.layout).toBe(AdminLayout);
+      expect(route?.outlets[0]?.Component).toBe(AdminWrapper);
+      expect(renderOutlet(route?.outlets.at(-1), route).type).toBe(AdminErrorPage);
+    });
+
+    test("a guard's unresolvable redirect bubbles to that guard's level, not the deepest one", async () => {
+      const routes = makeRoutes()({
+        [LAYOUT]: AppShell,
+        [ERROR]: RootErrorPage,
+        [GUARD]: async () => {
+          // @ts-expect-error — redirect enforces params; this is the runtime failure
+          throw redirect({ to: "/users/:id" });
+        },
+        admin: { [LAYOUT]: AdminLayout, [ERROR]: AdminErrorPage, users: PageA },
+        users: { $id: PageA },
+      });
+      const { router, history } = await makeRouter(routes, "/admin/users");
+
+      const route = router.activeRoute;
+      expect(route?.error?.type).toBe("REDIRECT");
+      expect(route?.layout).toBe(AppShell);
+      expect(renderOutlet(route?.outlets.at(-1), route).type).toBe(RootErrorPage);
+      expect(history.location.pathname).toBe("/admin/users");
+    });
+
+    test("a successful [REDIRECT] still navigates", async () => {
+      const routes = makeRoutes()({
+        [ERROR]: RootErrorPage,
+        org: {
+          $orgId: {
+            index: {
+              [REDIRECT]: (route) => ({
+                to: "/org/:orgId/home",
+                params: { orgId: route.params.orgId },
+              }),
+            },
+            home: PageA,
+          },
+        },
+      });
+      const history = createMemoryHistory({ initialEntries: ["/org/7"] });
+      const router = new RouterStore({ history });
+      router.initialize(routes);
+
+      await vi.waitFor(() => expect(router.activeRoute?.path).toBe("org/7/home"));
+      expect(history.location.pathname).toBe("/org/7/home");
+      expect(router.activeRoute?.error).toBeUndefined();
     });
   });
 

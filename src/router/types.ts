@@ -142,8 +142,35 @@ export interface Page extends Omit<RouteConfig, typeof WRAPPER> {
   [PAGE]: Component | LazyComponent;
 }
 
+/**
+ * Navigation options for a `[REDIRECT]`, as a union over every known path.
+ *
+ * Distributing is what keeps `params` required on a dynamic `to`: over a
+ * union of paths `HasParam` collapses to `boolean`, and a bare
+ * `NavigateOptions<RoutePath>` would quietly drop the requirement.
+ */
+export type RedirectOptions = { [P in RoutePath]: NavigateOptions<P> }[RoutePath];
+
+/**
+ * What `[REDIRECT]` accepts.
+ *
+ * The function form receives the route the redirect matched, so a redirect
+ * to a dynamic path can read `route.params` rather than borrowing a
+ * `[GUARD]` to do the same job. It runs during matching — before guards and
+ * loaders — so `route.data` is empty; `params`, `context` and `path` are
+ * what it has to work with. Throwing from it fails the navigation as a
+ * `RouterError` of type `"REDIRECT"`.
+ *
+ * The bare-string form is a static path: a path with an unfilled `:param`
+ * cannot be resolved, so it takes the options or function form instead.
+ */
+export type RedirectTarget =
+  | StaticRoutePath
+  | RedirectOptions
+  | ((route: Route) => RedirectOptions);
+
 export interface Redirector {
-  [REDIRECT]: string | NavigateOptions;
+  [REDIRECT]: RedirectTarget;
 }
 
 export type Leaf = Page | Redirector | Component | LazyComponent;

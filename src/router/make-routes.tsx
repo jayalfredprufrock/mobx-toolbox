@@ -1,5 +1,5 @@
 import { DefaultErrorPage } from "./components/error";
-import { RouterError } from "./errors";
+import { redirectFailed, RouterError } from "./errors";
 import { Outlet } from "./outlet";
 import { Redirect } from "./redirect";
 import { Route } from "./route";
@@ -9,6 +9,8 @@ import type {
   GuardEntry,
   MatchLevel,
   Obj,
+  RedirectOptions,
+  RedirectTarget,
   RouteLevel,
   RoutePath,
   Routes,
@@ -92,6 +94,33 @@ export const makeErrorRoute = (
     layout: matched?.layout,
     error,
   });
+};
+
+/**
+ * Resolves a `[REDIRECT]` to the navigation it names.
+ *
+ * The function form is called with the route the redirect matched — the
+ * whole point being that a redirect to a dynamic path can read
+ * `route.params` itself. A throw from it fails the navigation as a redirect
+ * rather than as a generic render error, and carries the matched prefix
+ * along so the nearest `[ERROR]` renders inside its layout and wrappers.
+ */
+const makeRedirect = (target: RedirectTarget, state: MatchState): Redirect => {
+  let options: RedirectOptions;
+
+  if (typeof target === "function") {
+    try {
+      options = target(makeRoute(state));
+    } catch (cause) {
+      throw redirectFailed(cause, `/${state.segments.join("/")}`, { state });
+    }
+  } else {
+    options = typeof target === "string" ? ({ to: target } as RedirectOptions) : target;
+  }
+
+  const redirect = new Redirect(options as any);
+  redirect.state = state;
+  return redirect;
 };
 
 const notFound = (state: MatchState, attemptedSegments: string[]): RouterError => {
@@ -190,11 +219,7 @@ export const matchRoute = (path: string, routeDef: Routes, matchState?: MatchSta
     }
 
     if (isRedirect(defAtSegment)) {
-      const redirect =
-        typeof defAtSegment[REDIRECT] === "string"
-          ? { to: defAtSegment[REDIRECT] }
-          : defAtSegment[REDIRECT];
-      throw new Redirect(redirect as any);
+      throw makeRedirect(defAtSegment[REDIRECT], state);
     }
 
     if (isComponent(defAtSegment) || isLazyComponent(defAtSegment)) {

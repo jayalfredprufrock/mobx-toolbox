@@ -1,7 +1,7 @@
 import { createBrowserHistory, type History, type Location } from "history";
 import { action, computed, makeObservable, observable, runInAction } from "mobx";
 import { flushSync } from "react-dom";
-import { RouterError } from "./errors";
+import { redirectFailed, RouterError } from "./errors";
 import { makeErrorRoute, matchRoute } from "./make-routes";
 import { LOADING_DELAY_MS } from "./outlet";
 import { Redirect } from "./redirect";
@@ -280,9 +280,20 @@ export class RouterStore {
         this.pendingRoute = undefined;
       });
     } catch (e) {
-      if (e instanceof Redirect) {
-        this.navigate(e.options);
-        return;
+      let thrown: unknown = e;
+
+      if (thrown instanceof Redirect) {
+        try {
+          this.navigate(thrown.options);
+          return;
+        } catch (cause) {
+          // a redirect that can't be carried out — most often a `to` whose
+          // `:params` weren't filled — is a routing failure like any other.
+          // Falling through renders it via [ERROR] instead of escaping as an
+          // unhandled rejection out of the history listener, where nothing
+          // would catch it and the screen would keep the previous page.
+          thrown = redirectFailed(cause, location.pathname, thrown);
+        }
       }
 
       // navigating within a guard before it threw — treat as a redirect
@@ -291,9 +302,9 @@ export class RouterStore {
       }
 
       const error =
-        e instanceof RouterError
-          ? e
-          : new RouterError("RENDER", { cause: e, path: location.pathname });
+        thrown instanceof RouterError
+          ? thrown
+          : new RouterError("RENDER", { cause: thrown, path: location.pathname });
       console.error(error);
 
       const errorRoute = makeErrorRoute(error, location.pathname, matchedRoute);

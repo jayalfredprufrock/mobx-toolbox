@@ -40,13 +40,13 @@ An index key contributes no segment of its own, so paths never carry a trailing 
 
 ### Route value types
 
-| Value                                         | Meaning                                                    |
-| --------------------------------------------- | ---------------------------------------------------------- |
-| `Component`                                   | Renders at that path                                       |
-| `() => import('./Page')`                      | Lazy-loaded component (code split)                         |
-| `{ [PAGE]: Component \| LazyComponent, ... }` | Page with metadata (guard, loader, layout, loading, error) |
-| `{ [REDIRECT]: '/path' \| NavigateOptions }`  | Static redirect                                            |
-| `{ key: ... }`                                | Nested route definition                                    |
+| Value                                                   | Meaning                                                    |
+| ------------------------------------------------------- | ---------------------------------------------------------- |
+| `Component`                                             | Renders at that path                                       |
+| `() => import('./Page')`                                | Lazy-loaded component (code split)                         |
+| `{ [PAGE]: Component \| LazyComponent, ... }`           | Page with metadata (guard, loader, layout, loading, error) |
+| `{ [REDIRECT]: path \| options \| (route) => options }` | Redirect, static or derived from the matched route         |
+| `{ key: ... }`                                          | Nested route definition                                    |
 
 ### Dynamic segments
 
@@ -280,7 +280,7 @@ Two things to know about the mapping between levels and components:
 
 On a synthetic error route (see [`[ERROR]`](#error--error-handling)) the surviving wrappers keep their levels, and the `[ERROR]` component receives the level that failed. It is the one place `level` may be absent — hence `ErrorComponentProps.level?` — when nothing matched at all.
 
-## `[REDIRECT]` — static redirect
+## `[REDIRECT]` — redirects
 
 ```tsx
 import { REDIRECT } from '@mobx-toolbox/router';
@@ -292,6 +292,36 @@ const routes = makeRoutes()({
 ```
 
 Pass a `NavigateOptions` object instead of a string to include search params, replace mode, or state.
+
+### Redirecting to a dynamic path
+
+The bare-string form takes a **static** path — a path with an unfilled `:param` has nothing to resolve it against, so the type rejects it. When the target depends on the URL that matched, pass a function of the matched route:
+
+```tsx
+const routes = makeRoutes()({
+  org: {
+    $orgId: {
+      // "/org/7" → "/org/7/overview"
+      index: {
+        [REDIRECT]: (route) => ({
+          to: "/org/:orgId/overview",
+          params: { orgId: route.params.orgId },
+        }),
+      },
+      overview: OverviewPage,
+      settings: SettingsPage,
+    },
+  },
+});
+```
+
+`route` is the route the redirect itself matched. It runs during matching — before guards and loaders — so `route.data` is empty; `params`, `context` and `path` are what it has to work with. Anything needing loaded data or an async check is a `[GUARD]`, not a redirect.
+
+A `[GUARD]` that does nothing but `throw redirect(...)` is the older spelling of this and still works, but the function form says what it means and keeps the route table readable.
+
+### When a redirect fails
+
+A redirect that can't be carried out — a function that throws, or a `to` whose `:params` don't resolve — is a navigation failure like any other: it renders the nearest `[ERROR]` with `type: "REDIRECT"` and the underlying error on `cause`, keeping the matched prefix's `[LAYOUT]` and `[WRAPPER]`s and leaving the URL where it was. It does not escape as an unhandled rejection.
 
 ## `[CONTEXT]` — static route data
 
@@ -347,12 +377,13 @@ function AppError({ error, route }: ErrorComponentProps) {
 
 Every `[ERROR]` component receives `{ route, error }` where `error` is a `RouterError`. The `type` field discriminates the failure source; when the router wraps an application-level error (thrown by a guard or loader), the original is preserved on the standard `error.cause`.
 
-| `type`        | Fires when                                                     | `cause`          |
-| ------------- | -------------------------------------------------------------- | ---------------- |
-| `"NOT_FOUND"` | No route matches the URL                                       | —                |
-| `"GUARD"`     | A guard throws anything other than `Redirect` or `RouterError` | The thrown value |
-| `"LOAD"`      | A loader or lazy component import fails                        | The thrown value |
-| `"RENDER"`    | A page or `[WRAPPER]` component crashes during render          | The thrown value |
+| `type`        | Fires when                                                                                           | `cause`          |
+| ------------- | ---------------------------------------------------------------------------------------------------- | ---------------- |
+| `"NOT_FOUND"` | No route matches the URL                                                                             | —                |
+| `"GUARD"`     | A guard throws anything other than `Redirect` or `RouterError`                                       | The thrown value |
+| `"LOAD"`      | A loader or lazy component import fails                                                              | The thrown value |
+| `"RENDER"`    | A page or `[WRAPPER]` component crashes during render                                                | The thrown value |
+| `"REDIRECT"`  | A redirect can't be carried out — a `[REDIRECT]` function throws, or a `to` has unresolved `:params` | The thrown value |
 
 Guards and loaders may also throw `RouterError` directly and it passes through unwrapped — `throw new RouterError("NOT_FOUND")` from a loader is the idiom for "entity doesn't exist, show a 404 in this slot".
 
@@ -362,6 +393,7 @@ Guards and loaders may also throw `RouterError` directly and it passes through u
 - **Guard failure** — bubbling is depth-aware: the error resolves from the level whose guard threw, so a root guard failing on `/admin/users` renders the root `[ERROR]`, not admin's. Ancestor guards run before child guards, and the URL stays put.
 - **Loader failure** — the error renders **in that outlet's slot only**; the rest of the page (and any sibling loaders' content) stays intact.
 - **Render crash** — an internal error boundary inside the layout catches page/wrapper crashes and renders the nearest `[ERROR]` with `type: "RENDER"`. The layout survives, so navigation remains usable.
+- **Failed redirect** — bubbling is depth-aware like a guard failure: a `[REDIRECT]` resolves from its own level, and a redirect thrown by a guard resolves from that guard's. The URL stays put.
 
 Error routes never run ancestor `[LOAD]` loaders — wrappers render without `route.data` on an error route.
 

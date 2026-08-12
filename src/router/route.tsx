@@ -2,10 +2,11 @@ import { computed, makeObservable } from "mobx";
 import { RouterError } from "./errors";
 import type { LoadOptions, Outlet } from "./outlet";
 import { Redirect } from "./redirect";
-import type { Component, Guard, GuardEntry, MatchLevel, Obj } from "./types";
+import type { Component, Guard, GuardEntry, MatchLevel, Obj, RoutePath } from "./types";
 
 export interface RouteConfig {
   path: string;
+  pattern?: RoutePath;
   outlets: Outlet[];
   guards: GuardEntry[];
   levels: MatchLevel[];
@@ -17,6 +18,19 @@ export interface RouteConfig {
 
 export class Route {
   readonly path: string;
+  /**
+   * This route's pattern, e.g. `/org/:orgId/surveys` — `path` with its
+   * dynamic segments left unsubstituted. Ready to hand to `to=` or
+   * `router.navigate()` alongside `params`.
+   *
+   * Comparing patterns is how you ask "which route is this" without
+   * interpolating params into a path and matching strings. `RouteLevel.pattern`
+   * is the same idea per level; this is the whole route's.
+   *
+   * `undefined` only on a synthetic error route, which by definition has no
+   * matched pattern — nothing matched, or matching is what failed.
+   */
+  readonly pattern?: RoutePath;
   readonly outlets: Outlet[];
   readonly guards: Guard[];
   readonly context: Obj;
@@ -55,6 +69,7 @@ export class Route {
 
   constructor(def: RouteConfig) {
     this.path = def.path;
+    this.pattern = def.pattern;
     this.guardEntries = def.guards;
     this.guards = def.guards.map((entry) => entry.guard);
     this.levels = def.levels;

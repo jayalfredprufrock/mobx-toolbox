@@ -47,6 +47,7 @@ An index key contributes no segment of its own, so paths never carry a trailing 
 | `{ [PAGE]: Component \| LazyComponent, ... }`           | Page with metadata (guard, loader, layout, loading, error)            |
 | `{ [REDIRECT]: path \| options \| (route) => options }` | Redirect, static or derived from the matched route (not path-checked) |
 | `{ key: ... }`                                          | Nested route definition                                               |
+| `{ _name: { ... } }`                                    | [Group](#_groups--config-without-a-segment) — config, no URL segment  |
 
 ### Dynamic segments
 
@@ -64,6 +65,54 @@ router.navigate({ to: "/users/:id", params: { id: "42" } }); // typed path is "/
 ```
 
 The param value is available on `route.params` (and `router.pathParams`) without any prefix. Only one dynamic segment is allowed per nesting level.
+
+### `_groups` — config without a segment
+
+A key beginning with `_` is a **group**. Its children are matched as if they were siblings of the group's parent, so it contributes no URL segment — but its `[WRAPPER]`, `[LOAD]`, `[GUARD]`, `[CONTEXT]`, `[ERROR]` and `[LOADING]` apply only within it. The name after the `_` is for humans.
+
+This is how a subset of siblings share config:
+
+```tsx
+surveys: {
+  _list: {
+    [WRAPPER]: SurveysChrome,     // the tabs, and only the tabs
+    [LOAD]: loadSurveys,
+    index: { [REDIRECT]: (route) => `/org/${route.params.orgId}/surveys/published` },
+    published: SurveysListPage,   // → /org/:orgId/surveys/published
+    draft: SurveysListPage,
+    archived: SurveysListPage,
+  },
+  $surveyId: {                    // outside the group — no SurveysChrome
+    [WRAPPER]: SurveyScope,
+    index: SurveyPage,
+  },
+}
+```
+
+Without groups, `[WRAPPER]` applies to a whole subtree, so sharing chrome between some siblings but not others means a conditional inside the wrapper — which mounts and unmounts the chrome as a side effect of navigation. A group makes the wrapper genuinely absent from the sibling's chain instead.
+
+Two sigils, one rule each: `$param` contributes a **dynamic** segment, `_name` contributes **none**. `_`-prefixed keys are reserved — they never match a literal URL segment, and they don't appear in `RoutePath`.
+
+**A group is a level.** It carries a wrapper, so it gets its own `RouteLevel`, with `segment` set to the group key (`_list`) and `pattern` set to the parent's — a definition key, not a URL segment, and the one place `level.segment` is not part of any path. An `index` inside a group still makes the _parent_ level navigable, so breadcrumbs deriving `to` from `level.pattern` work unchanged.
+
+**Precedence**, when a segment could resolve more than one way:
+
+1. a static key on the node
+2. static keys in its groups, in declaration order
+3. the dynamic (`$`/`:`) key on the node
+4. dynamic keys in its groups, in declaration order
+
+Groups may nest, and resolution recurses through them. An `index` never falls back to a dynamic key.
+
+**Collisions are rejected at boot.** Because a group's children are matched as siblings of its parent, a key present both on the parent and inside one of its groups would silently shadow — one of them simply never matches. `makeRoutes()` throws instead:
+
+```
+'section.published' and 'section._tabs.published' both address '/section/published'.
+```
+
+The same check catches two groups defining the same child, and a group `index` colliding with its parent's. A group holding a leaf rather than a route object is rejected too — it would address nothing.
+
+Like the rest of `makeRoutes()`'s validation, this is [development only](#redirect-targets-are-validated-at-boot-not-by-the-compiler). In production a shadowed key silently loses to whichever definition precedence picks first, so keep these errors in CI.
 
 ## Type-safe paths
 
@@ -352,6 +401,8 @@ makeRoutes()({
 ```
 
 It rejects a target no route addresses, a `:param` with nothing to fill it, and a chain that loops instead of landing on a page. The check is deterministic and runs on first import, so a broken redirect fails the same way on every run — it cannot get past a single dev or CI run, which is why throwing is safe here.
+
+**Development only.** All of `makeRoutes()`'s validation — redirect targets, loops, and [group collisions](#_groups--config-without-a-segment) — sits behind `process.env.NODE_ENV !== "production"`, the same guard mobx uses. Because every check is deterministic, production has nothing left to learn from them, and skipping keeps ~1.7 kB gzipped out of your production bundle: nothing else in the module references the validation code, so your bundler drops all of it. In production a mistyped redirect degrades to what it was before the check existed — a `NOT_FOUND` on the navigation after the redirect.
 
 Loop detection follows the chain hop by hop, so it catches a cycle anywhere downstream, not just an immediate `a ⇄ b`. Two redirects converging on the same page is not a loop. A cycle through a dynamic segment counts — `users: { $id: { [REDIRECT]: '/users/5' } }` sends `/users/9` to `/users/5`, which matches `$id` again and redirects to itself forever.
 
@@ -662,9 +713,49 @@ For finer-grained work, each outlet in the chain tracks its own state. `route.is
 | `"ready"`      | the outlet's component                             |
 | `"error"`      | the nearest `[ERROR]` component, in this slot only |
 
-### Active links lag during navigation
+### The two clocks — and how to avoid mixing them
 
-`router.location` updates as soon as a navigation starts, but `doesPathMatch` reads the _active_ route, which is still the previous one. So `aria-current` stays on the old link until the new route lands — correct behavior (the destination isn't showing yet), but if you want a pending affordance, read `router.pendingRoute?.path` alongside it.
+The store carries two views of "where we are", and they disagree for the whole duration of a navigation:
+
+| Signal                                                              | Updates                                  |
+| ------------------------------------------------------------------- | ---------------------------------------- |
+| `location`                                                          | the instant a navigation starts          |
+| `activeRoute` — and `pathParams`, `activeSegments`, `doesPathMatch` | only once guards **and** loaders resolve |
+
+Reading either alone is fine. **Combining them is the bug**, and it is easy to write by accident:
+
+```tsx
+// ✗ orgId comes from activeRoute (old); pathname already holds the new org
+const active = tabs.find((t) => pathname.startsWith(t.to.replace(":orgId", orgId)));
+```
+
+For the duration of every org switch that test fails, so a section looks un-entered and a wrapper can unmount its own chrome mid-navigation.
+
+`router.target` closes the gap. The matcher runs synchronously, before guards, so the destination is already known — `target` publishes it:
+
+```tsx
+// ✓ one clock, no interpolation
+const active = tabs.find((tab) => tab.to === router.target?.pattern)?.value;
+```
+
+```ts
+interface RouteTarget {
+  pathname: string;
+  pattern?: RoutePath; // e.g. "/org/:orgId/surveys/published"
+  params: Record<string, string>;
+  levels: RouteLevel[]; // the matched nesting levels — the ones [WRAPPER]s render at
+}
+```
+
+Comparing `pattern`s is the point: there is no param to interpolate, so the mistake above becomes unwriteable. `levels` lets a `[WRAPPER]` ask whether the destination is still inside it without waiting for the swap.
+
+`target` is not only set mid-navigation — when nothing is in flight it names the active route, so a tab strip expresses "the tab that is or will be selected" without branching on navigation state.
+
+`doesTargetMatch(path, exact?)` is the pending-aware sibling of `doesPathMatch`. Same signature and semantics, different clock — a separate method so the call site says which one it means.
+
+**What holds `target` steady.** A URL that produces no match leaves it alone rather than blanking. A `[REDIRECT]` leaf throws instead of matching, so clearing would flicker for exactly the one hop before the redirect's own match lands — which is where section chrome disappears. `NOT_FOUND` and rejected guards behave the same way: the error route commits through `activeRoute`, and `target` keeps naming the last route that matched. So `target` is not "the route on screen" — after a failed navigation the two differ until the next successful match. It is `undefined` only before the first match of the session.
+
+**Active links still lag, deliberately.** `makeLinkComponent` sets `aria-current` off `doesPathMatch`, so it stays on the old link until the new route lands — the destination isn't showing yet. For a pending affordance, use `doesTargetMatch` alongside it.
 
 ### View transitions
 
@@ -804,6 +895,7 @@ router.initialize(routes);             // call once with route definitions
 router.location                        // History Location — updates as soon as navigation starts
 router.activeRoute                     // Route | undefined — the page currently rendered
 router.pendingRoute                    // Route | undefined — the route being guarded/loaded
+router.target                          // RouteTarget | undefined — the destination, known immediately
 router.isNavigating                    // boolean — a navigation is in flight, guards included
 router.isLoading                       // boolean — any loading indicator is warranted
 router.isSlowNavigation                // boolean — slow nav (guards included) with a page on screen
@@ -813,7 +905,8 @@ router.pathParams                      // Record<string, string> — URL params
 
 // Navigation
 router.navigate(options)               // programmatic navigation
-router.doesPathMatch(path, exact?)     // boolean — active-link detection
+router.doesPathMatch(path, exact?)     // boolean — active-link detection (lags a navigation)
+router.doesTargetMatch(path, exact?)   // boolean — same, against the destination
 
 // Query param helpers
 router.setQueryParam(key, value)       // update one param, replaces current entry
@@ -828,6 +921,7 @@ The `Route` instance passed to guards and loaders; also `router.activeRoute`:
 
 ```ts
 route.path; // "dashboard/settings" — matched segments joined by "/" ("" at the root)
+route.pattern; // "/org/:orgId/surveys" — path with :params unsubstituted; undefined on error routes
 route.params; // Record<string, string> — URL params, e.g. { id: "42" }
 route.context; // Record<string, any> — merged [CONTEXT] from ancestor routes
 route.data; // Record<string, any> — merged return values of all [LOAD] functions
@@ -890,8 +984,10 @@ import type {
   DynamicRoutePath, // paths with :params
   NavigateOptions, // { to, params?, replace?, search?, preserveSearch?, state? }
   MobxRouterConfig, // { history?, viewTransitions? }
-  RouterErrorType, // "NOT_FOUND" | "GUARD" | "LOAD" | "RENDER"
+  RouterErrorType, // "NOT_FOUND" | "GUARD" | "LOAD" | "RENDER" | "REDIRECT"
+  RedirectTarget, // what [REDIRECT] accepts: path | options | (route) => path | options
   RouteLevel, // { index, segment, pattern? } — where a component sits
+  RouteTarget, // { pathname, pattern?, params, levels } — router.target
   WrapperComponentProps, // { route: Route; level: RouteLevel; children? }
   PageComponentProps, // { route: Route; level: RouteLevel }
   ErrorComponentProps, // { route: Route; error: RouterError; level?: RouteLevel }
@@ -904,6 +1000,8 @@ import type {
 
 ## Agent notes
 
+**`_`-prefixed keys are groups, not segments.** A `_name` key applies its config to its children while contributing nothing to the URL, and can never match a literal `_name` segment. Its children resolve as siblings of its parent, so a key defined both places is a boot-time error. See [`_groups`](#_groups--config-without-a-segment).
+
 **`$` is for route keys only; `:` is for path strings.** Dynamic segments are declared as `$id` keys in the routes object, but every path string in the API (`navigate({ to })`, `<Link to>`, `doesPathMatch`, `resolvePath`, the `RoutePath` union) spells that segment `:id`. A `$id` spelling inside a path string is treated as a literal segment and will not match or resolve.
 
 **Symbol keys must be imported.** `PAGE`, `GUARD`, `LOAD`, `LAYOUT`, `WRAPPER`, `CONTEXT`, `REDIRECT`, `ERROR`, `LOADING`, `SPLASH` are `unique symbol` values exported from `@mobx-toolbox/router`. They must be used as computed keys `[PAGE]: ...`. String keys like `"guard"` are treated as path segments, not metadata.
@@ -915,6 +1013,8 @@ import type {
 **Every outlet-rendered component receives `level`.** `[WRAPPER]`, `[PAGE]`, `[LOADING]` and `[ERROR]` each get their own `RouteLevel` — `{ index, segment, pattern? }` — so route-level metadata belongs in the component rather than being hardcoded against a duplicated path string. `level.pattern` is `undefined` for a nesting level with no `index` child, which is precisely the level that has no page to navigate to. Levels are not one-to-one with outlets: one level declaring both `[WRAPPER]` and `[LOAD]` produces two outlets sharing a level, so never index `route.outlets` by `level.index`. `Route.levels` remains internal and is not the same list.
 
 **The route swap is deferred.** `activeRoute` keeps rendering the previous page until the pending route's guards and loaders finish; the in-flight route is `router.pendingRoute`. So during a navigation `router.location` already points at the destination while `activeRoute`, `pathParams`, `activeSegments` and `doesPathMatch` still describe the page on screen. Staleness is compared by pathname, so a query-param change mid-navigation does not cancel the navigation in flight.
+
+**Never combine `location` with anything derived from `activeRoute`.** They are different clocks (see [The two clocks](#the-two-clocks--and-how-to-avoid-mixing-them)). Interpolating `pathParams` into a test against `location.pathname` is wrong for exactly as long as the navigation takes, and the failure is invisible when navigations are fast. Use `router.target` — one clock, and `target.pattern` needs no interpolation at all. `doesTargetMatch` is the destination-aware `doesPathMatch`.
 
 **Lazy component detection is source-string based.** `isLazyComponent` checks `fn.toString().startsWith("() => import(")`. Minified, transpiled, or wrapped functions will fail this check and be treated as eager. Always write lazy routes as inline `() => import('./Module')` arrow functions — not `async () =>`, not assigned to an intermediate variable.
 

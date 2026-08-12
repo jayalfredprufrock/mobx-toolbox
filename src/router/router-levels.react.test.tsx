@@ -115,4 +115,32 @@ describe("route levels reach the components that render at them", () => {
     expect(container.textContent).toBe("SKELETON");
     expect(seen).toBe("/reports");
   });
+
+  test("a group's [WRAPPER] renders in the chain for its children only", async () => {
+    const Chrome = ({ children }: WrapperComponentProps) => (
+      <div>
+        <span>CHROME</span>
+        {children}
+      </div>
+    );
+    const routes = makeRoutes()({
+      surveys: {
+        _list: {
+          [WRAPPER]: Chrome,
+          published: () => <span>PUBLISHED</span>,
+        },
+        $surveyId: { index: () => <span>DETAIL</span> },
+      },
+    });
+
+    const { router, container } = await mount(routes, "/surveys/published");
+    expect(container.textContent).toBe("CHROMEPUBLISHED");
+
+    // the sibling outside the group renders without the chrome, with no
+    // render-time conditional inside the wrapper to make it so
+    await act(async () => {
+      router.navigate({ to: "/surveys/:surveyId", params: { surveyId: "42" } });
+    });
+    expect(container.textContent).toBe("DETAIL");
+  });
 });

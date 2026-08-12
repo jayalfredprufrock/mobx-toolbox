@@ -112,6 +112,28 @@ describe.skipIf(!existsSync(tsc))(
       ).toBe("");
     });
 
+    test("a route group in the tree neither adds a segment nor breaks inference", () => {
+      const diagnostics = typecheck(
+        `
+  surveys: {
+    _list: {
+      index: Page,
+      published: Page,
+    },
+    $surveyId: { index: Page },
+  },`,
+        `
+      export const grouped = "/surveys/published" satisfies RoutePath;
+      export const groupIndex = "/surveys" satisfies RoutePath;
+      export const sibling = "/surveys/:surveyId" satisfies RoutePath;
+      // @ts-expect-error — the group key appears in no path
+      export const literal = "/surveys/_list/published" satisfies RoutePath;
+    `,
+      );
+
+      expect(diagnostics).toBe("");
+    });
+
     test("the augmentation still narrows RoutePath to the app's own paths", () => {
       const diagnostics = typecheck(
         `  old: { [REDIRECT]: "/about" },`,

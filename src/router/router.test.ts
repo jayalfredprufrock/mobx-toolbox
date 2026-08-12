@@ -1,5 +1,6 @@
 import { describe, expect, test, vi, beforeEach, afterEach } from "vite-plus/test";
 import { createMemoryHistory } from "history";
+import { autorun } from "mobx";
 import { DefaultErrorPage, RouteErrorBoundary } from "./components/error";
 import { RouterError } from "./errors";
 import { makeErrorRoute, makeRoutes, matchRoute } from "./make-routes";
@@ -243,6 +244,301 @@ describe("matchRoute", () => {
     });
     const route = matchRoute("/dashboard", r);
     expect(route.guards).toContain(guard);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// route groups (`_`-prefixed keys)
+// ---------------------------------------------------------------------------
+
+describe("route groups", () => {
+  const SurveysWrapper = () => null;
+  const SurveyScope = () => null;
+  const ListError = () => null;
+  const ListLoading = () => null;
+
+  // the motivating shape: tab routes share chrome, the sibling $surveyId
+  // must not inherit it
+  const routes = makeRoutes()({
+    org: {
+      $orgId: {
+        surveys: {
+          _list: {
+            [WRAPPER]: SurveysWrapper,
+            [CONTEXT]: { section: "list" },
+            index: { [REDIRECT]: (route) => `/org/${route.params.orgId}/surveys/published` },
+            published: PageA,
+            draft: PageB,
+          },
+          $surveyId: {
+            [WRAPPER]: SurveyScope,
+            index: PageC,
+          },
+        },
+      },
+    },
+  });
+
+  const wrappers = (route: Route) => route.outlets.map((o) => o.component).filter(Boolean);
+
+  test("a group contributes no URL segment", () => {
+    const route = matchRoute("/org/7/surveys/published", routes);
+    expect(route.path).toBe("org/7/surveys/published");
+    expect(route.pattern).toBe("/org/:orgId/surveys/published");
+    expect(route.params).toEqual({ orgId: "7" });
+  });
+
+  test("the group's [WRAPPER] applies to its own children", () => {
+    expect(wrappers(matchRoute("/org/7/surveys/published", routes))).toContain(SurveysWrapper);
+    expect(wrappers(matchRoute("/org/7/surveys/draft", routes))).toContain(SurveysWrapper);
+  });
+
+  test("a sibling outside the group does not inherit it", () => {
+    // the entire point of the feature — no render-time conditional needed
+    const route = matchRoute("/org/7/surveys/42", routes);
+    expect(wrappers(route)).toContain(SurveyScope);
+    expect(wrappers(route)).not.toContain(SurveysWrapper);
+    expect(route.params).toEqual({ orgId: "7", surveyId: "42" });
+  });
+
+  test("the group's [CONTEXT] is scoped to it", () => {
+    expect(matchRoute("/org/7/surveys/published", routes).context).toEqual({ section: "list" });
+    expect(matchRoute("/org/7/surveys/42", routes).context).toEqual({});
+  });
+
+  test("an index inside a group keeps the parent level navigable", () => {
+    // without traversing groups for `index`, the surveys level reports itself
+    // non-navigable and any breadcrumb deriving `to` from it renders unlinked
+    const route = matchRoute("/org/7/surveys/published", routes);
+    const surveysLevel = route.levels.map((l) => l.level).find((l) => l.segment === "surveys");
+    expect(surveysLevel?.pattern).toBe("/org/:orgId/surveys");
+  });
+
+  test("a nesting level with no index anywhere stays non-navigable", () => {
+    const r = makeRoutes()({
+      section: { _tabs: { published: PageA } },
+    });
+    const sectionLevel = matchRoute("/section/published", r)
+      .levels.map((l) => l.level)
+      .find((l) => l.segment === "section");
+    expect(sectionLevel?.pattern).toBeUndefined();
+  });
+
+  test("the group gets a level of its own, keyed by the group name", () => {
+    const route = matchRoute("/org/7/surveys/published", routes);
+    const level = route.outlets.find((o) => o.component === SurveysWrapper)?.level;
+    expect(level?.segment).toBe("_list");
+    // no segment of its own, so it addresses the parent's path
+    expect(level?.pattern).toBe("/org/:orgId/surveys");
+  });
+
+  test("a group's [LOAD] runs for its children only", async () => {
+    const loaded = makeRoutes()({
+      section: {
+        _tabs: { [LOAD]: async () => ({ tabs: 1 }), a: PageA },
+        b: PageB,
+      },
+    });
+
+    const inside = matchRoute("/section/a", loaded);
+    await inside.load();
+    expect(inside.data).toEqual({ tabs: 1 });
+
+    const outside = matchRoute("/section/b", loaded);
+    await outside.load();
+    expect(outside.data).toEqual({});
+  });
+
+  test("a group's [GUARD] runs for its children only", async () => {
+    const calls: string[] = [];
+    const guarded = makeRoutes()({
+      section: {
+        _tabs: {
+          [GUARD]: async () => {
+            calls.push("tabs");
+          },
+          a: PageA,
+        },
+        b: PageB,
+      },
+    });
+
+    await matchRoute("/section/a", guarded).guard();
+    expect(calls).toEqual(["tabs"]);
+
+    await matchRoute("/section/b", guarded).guard();
+    expect(calls).toEqual(["tabs"]);
+  });
+
+  test("a group's [ERROR] and [LOADING] reach its children", () => {
+    const scoped = makeRoutes()({
+      section: {
+        _tabs: {
+          [ERROR]: ListError,
+          [LOADING]: ListLoading,
+          a: { [LOAD]: async () => ({}), [PAGE]: PageA },
+        },
+        b: { [LOAD]: async () => ({}), [PAGE]: PageB },
+      },
+    });
+
+    const inside = matchRoute("/section/a", scoped).outlets.at(-1);
+    expect(inside?.config.errorComponent).toBe(ListError);
+    expect(inside?.config.loadingComponent).toBe(ListLoading);
+
+    const outside = matchRoute("/section/b", scoped).outlets.at(-1);
+    expect(outside?.config.errorComponent).toBeUndefined();
+  });
+
+  test("groups may nest", () => {
+    const nested = makeRoutes()({
+      section: {
+        _outer: {
+          [WRAPPER]: SurveysWrapper,
+          _inner: { [WRAPPER]: SurveyScope, deep: PageA },
+        },
+      },
+    });
+
+    const route = matchRoute("/section/deep", nested);
+    expect(route.pattern).toBe("/section/deep");
+    expect(wrappers(route)).toEqual([SurveysWrapper, SurveyScope, PageA]);
+  });
+
+  test("a `_` key never matches a literal URL segment", () => {
+    expect(() => matchRoute("/org/7/surveys/_list", routes)).toThrow(RouterError);
+    expect(() =>
+      matchRoute("/section/_tabs", makeRoutes()({ section: { _tabs: { a: PageA } } })),
+    ).toThrow(RouterError);
+  });
+
+  test("an inherited property name is not a route", () => {
+    // `hasOwn` rather than a property read
+    expect(() => matchRoute("/constructor", makeRoutes()({ about: PageA }))).toThrow(RouterError);
+  });
+
+  describe("precedence", () => {
+    test("a static key on the parent wins over the same key in a group", () => {
+      const r = makeRoutes()({
+        section: {
+          own: PageA,
+          _group: { other: PageB },
+        },
+      });
+      expect(wrappers(matchRoute("/section/own", r))).toContain(PageA);
+    });
+
+    test("a static key in a group wins over the parent's dynamic key", () => {
+      const r = makeRoutes()({
+        section: {
+          _group: { published: PageA },
+          $id: PageB,
+        },
+      });
+      const route = matchRoute("/section/published", r);
+      expect(wrappers(route)).toContain(PageA);
+      expect(route.params).toEqual({});
+    });
+
+    test("groups are searched in declaration order", () => {
+      const r = makeRoutes()({
+        section: {
+          _first: { [WRAPPER]: SurveysWrapper, $id: PageA },
+          _second: { [WRAPPER]: SurveyScope, other: PageB },
+        },
+      });
+      // both groups hold a dynamic candidate path; the first declared wins
+      expect(wrappers(matchRoute("/section/anything", r))).toContain(SurveysWrapper);
+    });
+
+    test("a dynamic key on the parent wins over one in a group", () => {
+      const r = makeRoutes()({
+        section: {
+          $own: PageA,
+          _group: { $other: PageB },
+        },
+      });
+      const route = matchRoute("/section/42", r);
+      expect(wrappers(route)).toContain(PageA);
+      expect(route.params).toEqual({ own: "42" });
+    });
+  });
+
+  describe("validation", () => {
+    test("rejects a group holding a leaf", () => {
+      expect(() => makeRoutes()({ section: { _tabs: PageA } })).toThrow(
+        "Route group 'section._tabs' holds a leaf",
+      );
+    });
+
+    test("rejects a key reachable both on the parent and inside its group", () => {
+      expect(() =>
+        makeRoutes()({
+          section: {
+            published: PageA,
+            _tabs: { published: PageB },
+          },
+        }),
+      ).toThrow("both address '/section/published'");
+    });
+
+    test("rejects the same key in two sibling groups", () => {
+      expect(() =>
+        makeRoutes()({
+          section: {
+            _a: { published: PageA },
+            _b: { published: PageB },
+          },
+        }),
+      ).toThrow("both address '/section/published'");
+    });
+
+    test("rejects an index colliding with a group's index", () => {
+      expect(() =>
+        makeRoutes()({
+          section: {
+            index: PageA,
+            _tabs: { index: PageB },
+          },
+        }),
+      ).toThrow("both address '/section'");
+    });
+
+    test("validates redirect targets through group transparency", () => {
+      // the target lives inside a group, so it must still be addressable
+      expect(() =>
+        makeRoutes()({
+          section: {
+            _tabs: { published: PageA },
+          },
+          old: { [REDIRECT]: "/section/published" },
+        }),
+      ).not.toThrow();
+
+      expect(() =>
+        makeRoutes()({
+          section: { _tabs: { published: PageA } },
+          old: { [REDIRECT]: "/section/_tabs/published" },
+        }),
+      ).toThrow("which no route in this tree addresses");
+    });
+  });
+
+  test("group keys contribute no segment to the typed path union", () => {
+    const r = makeRoutes()({
+      section: {
+        _tabs: { index: PageA, published: PageB },
+        $id: PageC,
+      },
+    });
+
+    const published = "/section/published" satisfies ExtractPaths<typeof r>;
+    const index = "/section" satisfies ExtractPaths<typeof r>;
+    const dynamic = "/section/:id" satisfies ExtractPaths<typeof r>;
+    // @ts-expect-error — the group key appears in no path
+    const grouped = "/section/_tabs/published" satisfies ExtractPaths<typeof r>;
+
+    expect([published, index, dynamic, grouped]).toHaveLength(4);
   });
 });
 
@@ -2009,6 +2305,338 @@ describe("route levels", () => {
 // ---------------------------------------------------------------------------
 // resolvePath / tryResolvePath
 // ---------------------------------------------------------------------------
+
+describe("Route.pattern", () => {
+  const routes = makeRoutes()({
+    index: PageA,
+    about: PageB,
+    org: {
+      $orgId: {
+        index: PageA,
+        surveys: { published: PageB },
+      },
+    },
+  });
+
+  test("is the path with its dynamic segments left unsubstituted", () => {
+    const route = matchRoute("/org/7/surveys/published", routes);
+    expect(route.path).toBe("org/7/surveys/published");
+    expect(route.pattern).toBe("/org/:orgId/surveys/published");
+  });
+
+  test("is the parent's pattern for an index route", () => {
+    expect(matchRoute("/org/7", routes).pattern).toBe("/org/:orgId");
+  });
+
+  test("is '/' at the root", () => {
+    expect(matchRoute("/", routes).pattern).toBe("/");
+  });
+
+  test("has no params to substitute on a static route", () => {
+    expect(matchRoute("/about", routes).pattern).toBe("/about");
+  });
+
+  test("agrees with the level pattern the page renders at", () => {
+    const route = matchRoute("/org/7/surveys/published", routes);
+    const pageLevel = route.outlets.at(-1)?.level;
+    expect(route.pattern).toBe(pageLevel?.pattern);
+  });
+
+  test("resolves back to the concrete path with the route's own params", () => {
+    const route = matchRoute("/org/7/surveys/published", routes);
+    expect(resolvePath(route.pattern ?? "", route.params)).toBe(`/${route.path}`);
+  });
+
+  test("is absent on a synthetic error route", () => {
+    try {
+      matchRoute("/org/7/nope", routes);
+      expect.unreachable();
+    } catch (e) {
+      expect(makeErrorRoute(e as RouterError, "/org/7/nope").pattern).toBeUndefined();
+    }
+  });
+});
+
+describe("router.target", () => {
+  const deferred = () => {
+    let resolve!: (value?: unknown) => void;
+    const promise = new Promise((res) => {
+      resolve = res as any;
+    });
+    return { promise, resolve };
+  };
+
+  const routes = makeRoutes()({
+    index: PageA,
+    about: PageB,
+    org: {
+      $orgId: {
+        index: { [REDIRECT]: (route) => `/org/${route.params.orgId}/surveys/published` },
+        surveys: { published: PageA, drafts: PageB },
+      },
+    },
+  });
+
+  const makeRouter = (initialPath: string) => {
+    const history = createMemoryHistory({ initialEntries: [initialPath] });
+    const router = new RouterStore({ history });
+    router.routesDef = routes;
+    return { router, history };
+  };
+
+  test("is undefined before the first match", () => {
+    const { router } = makeRouter("/about");
+    expect(router.target).toBeUndefined();
+  });
+
+  test("equals the active route once a navigation lands", async () => {
+    const { router, history } = makeRouter("/about");
+    await router.setLocation(history.location);
+
+    expect(router.target?.pathname).toBe("/about");
+    expect(router.target?.pattern).toBe("/about");
+    expect(router.target?.pattern).toBe(router.activeRoute?.pattern);
+  });
+
+  test("names the destination while a guard is still pending", async () => {
+    const gate = deferred();
+    const guarded = makeRoutes()({
+      about: PageB,
+      org: {
+        $orgId: {
+          [GUARD]: async () => {
+            await gate.promise;
+          },
+          surveys: { published: PageA },
+        },
+      },
+    });
+    const history = createMemoryHistory({ initialEntries: ["/about"] });
+    const router = new RouterStore({ history });
+    router.routesDef = guarded;
+    await router.setLocation(history.location);
+
+    // second navigation, deliberately not awaited: its guard is blocked
+    history.push("/org/7/surveys/published");
+    const navigation = router.setLocation(history.location);
+
+    // activeRoute still shows the old page — but target already knows
+    expect(router.activeRoute?.pattern).toBe("/about");
+    expect(router.pendingRoute).toBeUndefined();
+    expect(router.target?.pattern).toBe("/org/:orgId/surveys/published");
+    expect(router.target?.params).toEqual({ orgId: "7" });
+
+    gate.resolve();
+    await navigation;
+    expect(router.activeRoute?.pattern).toBe("/org/:orgId/surveys/published");
+  });
+
+  test("never mixes clocks: params and pathname come from the same match", async () => {
+    // the original bug — pathname held the new org while params held the old
+    const gate = deferred();
+    const guarded = makeRoutes()({
+      org: {
+        $orgId: {
+          [GUARD]: async () => {
+            await gate.promise;
+          },
+          surveys: PageA,
+        },
+      },
+    });
+    const history = createMemoryHistory({ initialEntries: ["/org/old/surveys"] });
+    const router = new RouterStore({ history });
+    router.routesDef = guarded;
+    gate.resolve();
+    await router.setLocation(history.location);
+
+    const blocked = deferred();
+    const nextGuarded = makeRoutes()({
+      org: {
+        $orgId: {
+          [GUARD]: async () => {
+            await blocked.promise;
+          },
+          surveys: PageA,
+        },
+      },
+    });
+    router.routesDef = nextGuarded;
+    history.push("/org/new/surveys");
+    const navigation = router.setLocation(history.location);
+
+    // pathParams still reads the old org, straight off activeRoute
+    expect(router.pathParams).toEqual({ orgId: "old" });
+    // target is internally consistent — both halves are the new org
+    expect(router.target?.pathname).toBe("/org/new/surveys");
+    expect(router.target?.params).toEqual({ orgId: "new" });
+
+    blocked.resolve();
+    await navigation;
+  });
+
+  test("holds its value across a [REDIRECT] hop instead of blanking", async () => {
+    const { router, history } = makeRouter("/org/7/surveys/drafts");
+    router.initialize(routes);
+    await vi.waitFor(() => expect(router.activeRoute?.path).toBe("org/7/surveys/drafts"));
+
+    const seen: (string | undefined)[] = [];
+    const stop = autorun(() => seen.push(router.target?.pattern));
+
+    // /org/9 is a [REDIRECT] leaf: it throws rather than matching, so the
+    // hop through it must not clear target
+    history.push("/org/9");
+    await vi.waitFor(() => expect(router.activeRoute?.params).toEqual({ orgId: "9" }));
+    stop();
+
+    expect(router.target?.pattern).toBe("/org/:orgId/surveys/published");
+    // never blanked on the way through
+    expect(seen).not.toContain(undefined);
+  });
+
+  test("keeps the last matched route when a URL doesn't match at all", async () => {
+    const { router, history } = makeRouter("/about");
+    await router.setLocation(history.location);
+
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    history.push("/nope");
+    await router.setLocation(history.location);
+
+    expect(router.activeRoute?.error?.type).toBe("NOT_FOUND");
+    expect(router.target?.pattern).toBe("/about");
+    vi.restoreAllMocks();
+  });
+
+  test("names the blocked destination when a guard rejects", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    const guarded = makeRoutes()({
+      about: PageB,
+      admin: {
+        [GUARD]: async () => {
+          throw new Error("denied");
+        },
+        users: PageA,
+      },
+    });
+    const history = createMemoryHistory({ initialEntries: ["/admin/users"] });
+    const router = new RouterStore({ history });
+    router.routesDef = guarded;
+    await router.setLocation(history.location);
+
+    expect(router.activeRoute?.error?.type).toBe("GUARD");
+    // the guard ran after the match, so target names where we were headed
+    expect(router.target?.pattern).toBe("/admin/users");
+    vi.restoreAllMocks();
+  });
+
+  test("exposes the matched levels a wrapper can test itself against", async () => {
+    const { router, history } = makeRouter("/org/7/surveys/published");
+    await router.setLocation(history.location);
+
+    expect(router.target?.levels.map((l) => l.segment)).toEqual(["", "org", ":orgId", "surveys"]);
+  });
+
+  test("a superseded navigation does not clobber a newer target", async () => {
+    const slow = deferred();
+    const guarded = makeRoutes()({
+      index: PageA,
+      slowRoute: {
+        [GUARD]: async () => {
+          await slow.promise;
+        },
+        [PAGE]: PageA,
+      },
+      fast: PageB,
+    });
+    const history = createMemoryHistory({ initialEntries: ["/"] });
+    const router = new RouterStore({ history });
+    router.routesDef = guarded;
+    await router.setLocation(history.location);
+
+    history.push("/slowRoute");
+    const first = router.setLocation(history.location);
+    expect(router.target?.pattern).toBe("/slowRoute");
+
+    history.push("/fast");
+    await router.setLocation(history.location);
+    expect(router.target?.pattern).toBe("/fast");
+
+    // the abandoned navigation resolves last and must not reinstate itself
+    slow.resolve();
+    await first;
+    expect(router.target?.pattern).toBe("/fast");
+    expect(router.activeRoute?.pattern).toBe("/fast");
+  });
+});
+
+describe("doesTargetMatch", () => {
+  const deferred = () => {
+    let resolve!: (value?: unknown) => void;
+    const promise = new Promise((res) => {
+      resolve = res as any;
+    });
+    return { promise, resolve };
+  };
+
+  const routes = makeRoutes()({
+    index: PageA,
+    about: PageB,
+    org: { $orgId: { index: PageA, surveys: PageB } },
+  });
+
+  test("answers for the destination while doesPathMatch still lags", async () => {
+    const gate = deferred();
+    const guarded = makeRoutes()({
+      about: PageB,
+      org: {
+        $orgId: {
+          [GUARD]: async () => {
+            await gate.promise;
+          },
+          surveys: PageA,
+        },
+      },
+    });
+    const history = createMemoryHistory({ initialEntries: ["/about"] });
+    const router = new RouterStore({ history });
+    router.routesDef = guarded;
+    await router.setLocation(history.location);
+
+    history.push("/org/7/surveys");
+    const navigation = router.setLocation(history.location);
+
+    expect(router.doesPathMatch("/org/:orgId")).toBe(false);
+    expect(router.doesTargetMatch("/org/:orgId")).toBe(true);
+
+    gate.resolve();
+    await navigation;
+    expect(router.doesPathMatch("/org/:orgId")).toBe(true);
+  });
+
+  test("matches prefixes non-exactly and honours exact", async () => {
+    const history = createMemoryHistory({ initialEntries: ["/org/7/surveys"] });
+    const router = new RouterStore({ history });
+    router.routesDef = routes;
+    await router.setLocation(history.location);
+
+    expect(router.doesTargetMatch("/org/:orgId")).toBe(true);
+    expect(router.doesTargetMatch("/org/:orgId", true)).toBe(false);
+    expect(router.doesTargetMatch("/org/:orgId/surveys", true)).toBe(true);
+    expect(router.doesTargetMatch("/about")).toBe(false);
+  });
+
+  test("agrees with doesPathMatch once a navigation has landed", async () => {
+    const history = createMemoryHistory({ initialEntries: ["/org/7/surveys"] });
+    const router = new RouterStore({ history });
+    router.routesDef = routes;
+    await router.setLocation(history.location);
+
+    for (const path of ["/", "/about", "/org/:orgId", "/org/:orgId/surveys"] as const) {
+      expect(router.doesTargetMatch(path)).toBe(router.doesPathMatch(path));
+      expect(router.doesTargetMatch(path, true)).toBe(router.doesPathMatch(path, true));
+    }
+  });
+});
 
 describe("tryResolvePath", () => {
   test("substitutes params like resolvePath", () => {

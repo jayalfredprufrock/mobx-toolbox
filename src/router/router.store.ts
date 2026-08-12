@@ -6,7 +6,15 @@ import { makeErrorRoute, matchRoute } from "./make-routes";
 import { LOADING_DELAY_MS } from "./outlet";
 import { Redirect } from "./redirect";
 import type { Route } from "./route";
-import type { Component, MobxRouterConfig, NavigateOptions, Obj, RoutePath, Routes } from "./types";
+import type {
+  Component,
+  MobxRouterConfig,
+  NavigateOptions,
+  Obj,
+  RoutePath,
+  RouteTarget,
+  Routes,
+} from "./types";
 import { resolvePath } from "./util";
 
 export interface MobxRenderSegment {
@@ -15,13 +23,53 @@ export interface MobxRenderSegment {
   props?: Obj;
 }
 
+/** Narrows a freshly matched route to the value `target` publishes. */
+const toTarget = (route: Route, pathname: string): RouteTarget => ({
+  pathname,
+  pattern: route.pattern,
+  params: { ...route.params },
+  levels: route.levels.map((level) => level.level),
+});
+
+/**
+ * Whether `path` addresses `segments`, a `:param` in `path` matching any
+ * value. Shared by `doesPathMatch` and `doesTargetMatch` so the two can only
+ * differ in which clock they read.
+ */
+const matchesSegments = (path: string, segments: string[], exact?: boolean): boolean => {
+  const parts = path.slice(1).split("/");
+
+  return (
+    parts.every((part, i) => part === segments[i] || part.startsWith(":")) &&
+    segments.length >= parts.length &&
+    (!exact || parts.length === segments.length)
+  );
+};
+
 export class RouterStore {
   readonly history: History;
   readonly viewTransitions: boolean;
 
   routesDef?: Routes;
 
+  /**
+   * The current URL. Updates the **instant** a navigation starts, before
+   * guards and loaders run.
+   *
+   * `activeRoute` — and so `pathParams`, `activeSegments` and
+   * `doesPathMatch` — commits only once the navigation lands. The two
+   * therefore disagree for the whole duration of a navigation, and combining
+   * them silently mixes clocks: interpolating `pathParams` (old) into a test
+   * against `location.pathname` (new) is wrong for exactly as long as the
+   * navigation takes. Use {@link target} for a matched view of the
+   * destination that is available immediately.
+   */
   location!: Location;
+
+  /**
+   * The route on screen. Commits after guards **and** loaders resolve, so it
+   * lags `location` for the duration of a navigation — see the note there.
+   */
   activeRoute: Route | undefined;
 
   /**
@@ -29,8 +77,14 @@ export class RouterStore {
    * a navigation and cleared when it lands. `activeRoute` keeps rendering
    * the previous page while this is set, so navigation never blanks the
    * screen — see {@link isNavigating}.
+   *
+   * Assigned only once guards have resolved, because it gates rendering. For
+   * the destination as soon as it is *known*, use {@link target}.
    */
   pendingRoute: Route | undefined;
+
+  /** Backs {@link target}; written at match time, never cleared. */
+  private matchedTarget: RouteTarget | undefined;
 
   /**
    * Navigation-scoped state, tracked from the first line of a navigation
@@ -55,6 +109,39 @@ export class RouterStore {
 
   get activeSegments(): string[] {
     return this.activeRoute?.path.split("/") ?? [];
+  }
+
+  /**
+   * Where navigation is headed, as soon as the matcher knows — before guards
+   * and loaders, and so well before `activeRoute` swaps. When nothing is in
+   * flight this is the active route, so consumers never branch on navigation
+   * state: `target.pattern` answers "which route is, or is about to be,
+   * on screen".
+   *
+   * Compare `pattern`s rather than interpolating params into a path — that
+   * is the comparison that mixes the `location` and `activeRoute` clocks.
+   *
+   * ```tsx
+   * const active = tabs.find((tab) => tab.to === router.target?.pattern);
+   * ```
+   *
+   * Holds its previous value when a URL produces no match, rather than
+   * blanking: a `[REDIRECT]` leaf throws instead of matching, and clearing
+   * would flicker for exactly the one hop before the redirect's own match
+   * lands. The same applies to a `NOT_FOUND` or a rejected guard — the error
+   * route commits through `activeRoute`, and `target` keeps naming the last
+   * route that matched. So this is not "the route on screen": after a failed
+   * navigation the two differ until the next successful match.
+   *
+   * `undefined` only before the first successful match of the session.
+   */
+  get target(): RouteTarget | undefined {
+    return this.matchedTarget;
+  }
+
+  private get targetSegments(): string[] {
+    const pathname = this.target?.pathname;
+    return pathname === undefined ? [] : pathname.replace(/^\//, "").split("/");
   }
 
   /**
@@ -107,16 +194,22 @@ export class RouterStore {
   }
 
   constructor(config?: MobxRouterConfig) {
-    makeObservable<RouterStore, "navigating" | "navigationSlow">(this, {
+    makeObservable<
+      RouterStore,
+      "navigating" | "navigationSlow" | "matchedTarget" | "targetSegments"
+    >(this, {
       location: observable.ref,
       activeRoute: observable.ref,
       pendingRoute: observable.ref,
+      matchedTarget: observable.ref,
       navigating: observable,
       navigationSlow: observable,
 
       search: computed,
       pathParams: computed,
       activeSegments: computed,
+      target: computed,
+      targetSegments: computed,
       isNavigating: computed,
       isLoading: computed,
       isSlowNavigation: computed,
@@ -137,17 +230,24 @@ export class RouterStore {
     void this.setLocation(this.history.location);
   }
 
+  /**
+   * Whether `path` matches the route **on screen**. Lags a navigation in
+   * flight, because it reads `activeSegments`; use {@link doesTargetMatch} for
+   * the destination. A `:param` segment in `path` matches any value.
+   */
   doesPathMatch<P extends RoutePath>(path: P, exact?: boolean): boolean {
-    const segments = path.slice(1).split("/");
-    const segmentsMatch = segments.every(
-      (segment, i) => segment === this.activeSegments[i] || segment.startsWith(":"),
-    );
+    return matchesSegments(path, this.activeSegments, exact);
+  }
 
-    return (
-      segmentsMatch &&
-      this.activeSegments.length >= segments.length &&
-      (!exact || segments.length === this.activeSegments.length)
-    );
+  /**
+   * {@link doesPathMatch} against {@link target} instead of the active route,
+   * so it answers for the destination the moment a navigation starts.
+   *
+   * A separate method rather than an option on `doesPathMatch`: which clock a
+   * call site means is worth stating at the call site.
+   */
+  doesTargetMatch<P extends RoutePath>(path: P, exact?: boolean): boolean {
+    return matchesSegments(path, this.targetSegments, exact);
   }
 
   navigate<P extends RoutePath>(options: NavigateOptions<P>): void {
@@ -253,7 +353,17 @@ export class RouterStore {
 
     let matchedRoute: Route | undefined;
     try {
-      matchedRoute = matchRoute(location.pathname, this.routesDef);
+      const matched = matchRoute(location.pathname, this.routesDef);
+      matchedRoute = matched;
+
+      // Published before guards run — the point of `target` is that the
+      // destination is known here and nothing else exposes it until the swap.
+      // No staleness check is needed: matching is synchronous and there is no
+      // await between assigning `this.location` above and this write, so
+      // concurrent navigations cannot interleave and the newest always wins.
+      runInAction(() => {
+        this.matchedTarget = toTarget(matched, location.pathname);
+      });
 
       await matchedRoute.guard();
 

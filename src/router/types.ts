@@ -35,6 +35,9 @@ export interface RouteLevel {
    * The route-definition key for this level, with a dynamic segment
    * normalized to its path spelling (`$orgId` and `":orgId"` both read as
    * `:orgId`). `"index"` for an index page, `""` for the root level.
+   *
+   * A definition key, not necessarily a URL segment: on a group's level this
+   * is the group key (`_list`), which appears in no path.
    */
   segment: string;
   /**
@@ -86,6 +89,37 @@ export interface ErrorComponentProps {
 export interface LoadingComponentProps {
   route: Route;
   level: RouteLevel;
+}
+
+/**
+ * A matched view of where navigation is headed, published the moment the
+ * matcher resolves a URL — before guards and loaders run. See
+ * {@link MobxRouterConfig} consumers via `RouterStore.target`.
+ *
+ * Deliberately a plain value rather than the matched `Route`: at this point
+ * the route's outlets have not loaded, so handing it out would invite reading
+ * `route.data` before the loaders ran, and would keep outlets alive for a
+ * navigation that may yet be abandoned.
+ */
+export interface RouteTarget {
+  /** The destination URL's pathname. */
+  pathname: string;
+  /**
+   * The matched pattern, e.g. `/org/:orgId/surveys`. Compare against this
+   * instead of interpolating params into a path — that comparison is where
+   * the two clocks get mixed.
+   *
+   * `undefined` only when carried over from a route that never matched a
+   * pattern; see `RouterStore.target`.
+   */
+  pattern?: RoutePath;
+  params: Record<string, string>;
+  /**
+   * The matched nesting levels — the same ones `[WRAPPER]`s render at. A
+   * wrapper can compare its own `level` against these to ask whether the
+   * destination is still inside it, without waiting for the swap.
+   */
+  levels: RouteLevel[];
 }
 
 /** @internal a guard together with the route level that declared it */
@@ -257,14 +291,19 @@ export type ExtractParams<P> = P extends `${infer S1}/${infer Rest}`
 // its own: `{ account: { index: Page } }` is `/account`, not `/account/`. At
 // the root that leaves the empty string, which `NormalizeRootPath` turns back
 // into `/` — the one path with no segments at all.
+// A `_`-prefixed key is a group: config-only, contributing no segment, so it
+// recurses without joining anything. Without this branch its children would
+// come out as `/surveys/_list/published`.
 export type ExtractPaths<R> = {
-  [S in keyof R]: S extends string
-    ? S extends "index"
-      ? ""
-      : R[S] extends Leaf
-        ? `/${SegmentName<S> extends string ? SegmentName<S> : ""}`
-        : JoinSegments<SegmentName<S>, ExtractPaths<R[S]>>
-    : never;
+  [S in keyof R]: S extends `_${string}`
+    ? ExtractPaths<R[S]>
+    : S extends string
+      ? S extends "index"
+        ? ""
+        : R[S] extends Leaf
+          ? `/${SegmentName<S> extends string ? SegmentName<S> : ""}`
+          : JoinSegments<SegmentName<S>, ExtractPaths<R[S]>>
+      : never;
 }[keyof R];
 
 export type NormalizeRootPath<P> = P extends "" ? "/" : P;

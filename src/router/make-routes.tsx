@@ -7,6 +7,7 @@ import { CONTEXT, ERROR, GUARD, LAYOUT, LOAD, LOADING, PAGE, REDIRECT, WRAPPER }
 import type {
   Component,
   GuardEntry,
+  Leaf,
   MatchLevel,
   Obj,
   RedirectOptions,
@@ -15,7 +16,7 @@ import type {
   RoutePath,
   Routes,
 } from "./types";
-import { isComponent, isLazyComponent, isLeaf, isPage, isRedirect } from "./util";
+import { isComponent, isLazyComponent, isLeaf, isPage, isRedirect, resolvePath } from "./util";
 
 const pathToSegments = (path: string): string[] => {
   return path.replace(/^\/+|\/+$/g, "").split("/");
@@ -96,26 +97,32 @@ export const makeErrorRoute = (
   });
 };
 
+/** A bare path is the one-field spelling of the options object. */
+const toRedirectOptions = (target: string | RedirectOptions): RedirectOptions =>
+  typeof target === "string" ? { to: target } : target;
+
 /**
  * Resolves a `[REDIRECT]` to the navigation it names.
  *
  * The function form is called with the route the redirect matched — the
  * whole point being that a redirect to a dynamic path can read
- * `route.params` itself. A throw from it fails the navigation as a redirect
- * rather than as a generic render error, and carries the matched prefix
- * along so the nearest `[ERROR]` renders inside its layout and wrappers.
+ * `route.params` itself. It may return either spelling: a path it has
+ * already substituted, or options for the router to substitute. A throw from
+ * it fails the navigation as a redirect rather than as a generic render
+ * error, and carries the matched prefix along so the nearest `[ERROR]`
+ * renders inside its layout and wrappers.
  */
 const makeRedirect = (target: RedirectTarget, state: MatchState): Redirect => {
   let options: RedirectOptions;
 
   if (typeof target === "function") {
     try {
-      options = target(makeRoute(state));
+      options = toRedirectOptions(target(makeRoute(state)));
     } catch (cause) {
       throw redirectFailed(cause, `/${state.segments.join("/")}`, { state });
     }
   } else {
-    options = typeof target === "string" ? ({ to: target } as RedirectOptions) : target;
+    options = toRedirectOptions(target);
   }
 
   const redirect = new Redirect(options as any);
@@ -268,16 +275,160 @@ export const matchRoute = (path: string, routeDef: Routes, matchState?: MatchSta
   return matchRoute(remainingPath, defAtSegment, state);
 };
 
+/** @internal a leaf together with the path it answers to */
+interface Addressable {
+  /** this leaf's own pattern, e.g. `/org/:orgId/overview` */
+  pattern: string;
+  /** dotted route-key trail, so validation errors can name the culprit */
+  at: string;
+  def: Leaf;
+}
+
+/**
+ * Every path the tree can address, in `:param` pattern spelling. Mirrors how
+ * `matchRoute` walks it: an `index` key addresses its parent's path and adds
+ * no segment, a leaf adds its own, and a nesting level without an `index` is
+ * not addressable at all — so it is correctly absent here.
+ */
+const collectAddressable = (
+  routeDef: Routes,
+  prefix: string[] = [],
+  trail: string[] = [],
+  out: Addressable[] = [],
+): Addressable[] => {
+  for (const key of Object.keys(routeDef)) {
+    const def = routeDef[key];
+    if (def === undefined) continue;
+
+    const segments = key === "index" ? prefix : [...prefix, toPatternSegment(key)];
+    const keys = [...trail, key];
+    if (isLeaf(def)) {
+      out.push({ pattern: `/${segments.join("/")}`, at: keys.join("."), def });
+    } else {
+      collectAddressable(def, segments, keys, out);
+    }
+  }
+  return out;
+};
+
+/** Whether `path` addresses `pattern`, a `:param` segment matching anything. */
+const matchesPattern = (path: string, pattern: string): boolean => {
+  const pathSegments = path.split("/");
+  const patternSegments = pattern.split("/");
+
+  return (
+    pathSegments.length === patternSegments.length &&
+    patternSegments.every((segment, i) =>
+      segment.startsWith(":") ? !!pathSegments[i] : segment === pathSegments[i],
+    )
+  );
+};
+
+/** The first `:param` in `to` that `params` has no value for. */
+const unresolvedParam = (to: string, params?: Obj<string>): string | undefined =>
+  to.split("/").find((segment) => segment.startsWith(":") && !params?.[segment.slice(1)]);
+
+/**
+ * The leaf a concrete path lands on. Exact patterns win over dynamic ones, the
+ * way `matchRoute` prefers a literal key over the level's `$param` key.
+ */
+const findAddressable = (path: string, entries: Addressable[]): Addressable | undefined =>
+  entries.find((entry) => entry.pattern === path) ??
+  entries.find((entry) => matchesPattern(path, entry.pattern));
+
+/**
+ * Follows a redirect's static targets and returns the cycle it falls into, if
+ * any — `["/a", "/b", "/a"]` for a two-hop loop.
+ *
+ * Revisiting a pattern is always a real loop: a static target is the same
+ * every time that leaf is matched, so a second visit resolves identically and
+ * would keep doing so. A function target ends the walk instead of being
+ * guessed at — where it goes depends on the route it matched.
+ */
+const findRedirectLoop = (start: Addressable, entries: Addressable[]): string[] | undefined => {
+  const chain: string[] = [];
+  let current: Addressable | undefined = start;
+
+  while (current && isRedirect(current.def)) {
+    const seen = chain.indexOf(current.pattern);
+    if (seen !== -1) return [...chain.slice(seen), current.pattern];
+    chain.push(current.pattern);
+
+    const target = current.def[REDIRECT];
+    if (typeof target === "function") return undefined;
+
+    const { to, params } = toRedirectOptions(target);
+    // an unresolvable or unaddressable target is reported on its own entry
+    if (unresolvedParam(to, params)) return undefined;
+    current = findAddressable(resolvePath(to, params), entries);
+  }
+
+  return undefined;
+};
+
+/**
+ * Rejects a `[REDIRECT]` that can never work: a target no route addresses, a
+ * `:param` with nothing to fill it, or a chain that loops instead of landing.
+ * Runs when the route tree is defined, so it throws on first import —
+ * deterministic, and therefore impossible to ship past a single dev or CI run.
+ * Without it these surface late and quietly: a mistyped target is a valid path
+ * string, so the redirect happens and the *next* navigation 404s, one step
+ * removed from the actual mistake.
+ *
+ * Function targets are skipped. What they return depends on the route they
+ * matched, which does not exist yet.
+ */
+const validateRedirects = (entries: Addressable[]): void => {
+  for (const entry of entries) {
+    if (!isRedirect(entry.def)) continue;
+
+    const target = entry.def[REDIRECT];
+    if (typeof target === "function") continue;
+
+    const { to, params } = toRedirectOptions(target);
+    const unresolved = unresolvedParam(to, params);
+    if (unresolved) {
+      throw new Error(
+        `[REDIRECT] at '${entry.at}' targets '${to}', but '${unresolved}' has no value. ` +
+          "Supply it in `params`, or use the function form to read it off the " +
+          "matched route: [REDIRECT]: (route) => ...",
+      );
+    }
+
+    if (!findAddressable(resolvePath(to, params), entries)) {
+      throw new Error(
+        `[REDIRECT] at '${entry.at}' targets '${to}', which no route in this tree addresses.`,
+      );
+    }
+
+    const loop = findRedirectLoop(entry, entries);
+    if (loop) {
+      throw new Error(`[REDIRECT] at '${entry.at}' never lands — it loops: ${loop.join(" → ")}.`);
+    }
+  }
+};
+
 // TODO: ideally this could resolve to something less than R,
 // but specific enough to infer all paths as a literal union.
 // As it stands, there are certain things we can't access reliably
 // without the compiler complaining about circular references
 // try "as const satisfies" approach which would allow us to
 // exchange a less specific version of MobxRoutesRoot for this
+//
+// The concrete rule that falls out of `R extends Routes`: **nothing
+// reachable from `Routes` may reference `RoutePath`** (or `StaticRoutePath`,
+// or anything else derived from `MobxRouter["routes"]`). `RoutePath` comes
+// from the object being inferred here, so naming it inside the constraint
+// makes `typeof routes` depend on itself — TS7022, and the whole tree types
+// as `any` in any app that augments `MobxRouter`. Route *values* may of
+// course be typed against paths at their own call sites; the route
+// definition types may not. router.types.test.ts guards this.
 export const makeRoutes =
   () =>
   <R extends Routes>(routes: R): R => {
-    // todo: perform some validation here
+    validateRedirects(collectAddressable(routes));
+
+    // todo: perform the rest of the validation here
     // - no forward slashes in keys
     // - at most one variable segment per level
     // - only lowercase letters (except variables)

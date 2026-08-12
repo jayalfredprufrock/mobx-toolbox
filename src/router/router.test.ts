@@ -8,7 +8,7 @@ import { redirect, Redirect } from "./redirect";
 import type { Route } from "./route";
 import { RouterStore } from "./router.store";
 import { CONTEXT, ERROR, GUARD, LAYOUT, LOAD, LOADING, PAGE, REDIRECT, WRAPPER } from "./symbols";
-import type { ExtractPaths, Guard, NavigateOptions, NormalizeRootPath, RouteLevel } from "./types";
+import type { ExtractPaths, Guard, NormalizeRootPath, RedirectTarget, RouteLevel } from "./types";
 import { resolvePath, tryResolvePath } from "./util";
 
 const PageA = () => null;
@@ -159,6 +159,26 @@ describe("matchRoute", () => {
     }
   });
 
+  test("[REDIRECT] as a function may return a bare path", () => {
+    const r = makeRoutes()({
+      org: {
+        $orgId: {
+          index: { [REDIRECT]: (route) => `/org/${route.params.orgId}/home` },
+          home: PageA,
+        },
+      },
+    });
+
+    try {
+      matchRoute("/org/7", r);
+      expect.unreachable();
+    } catch (e) {
+      expect(e).toBeInstanceOf(Redirect);
+      // already substituted, so it needs no params of its own
+      expect((e as Redirect).options).toEqual({ to: "/org/7/home" });
+    }
+  });
+
   test("[REDIRECT] as a function sees context and path, but no data", () => {
     const seen: any[] = [];
     const r = makeRoutes()({
@@ -227,6 +247,157 @@ describe("matchRoute", () => {
 });
 
 // ---------------------------------------------------------------------------
+// makeRoutes — boot-time validation
+// ---------------------------------------------------------------------------
+
+describe("makeRoutes redirect validation", () => {
+  test("rejects a target no route addresses", () => {
+    expect(() =>
+      makeRoutes()({
+        auth: { login: PageA },
+        old: { [REDIRECT]: "/auth/lgoin" },
+      }),
+    ).toThrow("targets '/auth/lgoin', which no route in this tree addresses");
+  });
+
+  test("names the route key trail so the culprit is findable", () => {
+    expect(() =>
+      makeRoutes()({
+        admin: { legacy: { billing: { [REDIRECT]: "/nowhere" } } },
+      }),
+    ).toThrow("[REDIRECT] at 'admin.legacy.billing'");
+  });
+
+  test("rejects a static target with an unfilled :param", () => {
+    expect(() =>
+      makeRoutes()({
+        users: { $id: PageA },
+        old: { [REDIRECT]: { to: "/users/:id" } },
+      }),
+    ).toThrow("but ':id' has no value");
+  });
+
+  test("accepts a dynamic target once params are supplied", () => {
+    expect(() =>
+      makeRoutes()({
+        users: { $id: PageA },
+        old: { [REDIRECT]: { to: "/users/:id", params: { id: "42" } } },
+      }),
+    ).not.toThrow();
+  });
+
+  test("accepts a concrete value in place of a dynamic segment", () => {
+    expect(() =>
+      makeRoutes()({
+        users: { $id: PageA },
+        old: { [REDIRECT]: "/users/42" },
+      }),
+    ).not.toThrow();
+  });
+
+  test("accepts index and root targets", () => {
+    expect(() =>
+      makeRoutes()({
+        index: PageA,
+        users: { index: PageB },
+        toRoot: { [REDIRECT]: "/" },
+        toUsers: { [REDIRECT]: "/users" },
+      }),
+    ).not.toThrow();
+  });
+
+  test("rejects a target addressing a nesting level with no index", () => {
+    // matchRoute would 404 on it — the level has no page of its own
+    expect(() =>
+      makeRoutes()({
+        users: { $id: PageA },
+        old: { [REDIRECT]: "/users" },
+      }),
+    ).toThrow("which no route in this tree addresses");
+  });
+
+  test("rejects a redirect to itself", () => {
+    expect(() =>
+      makeRoutes()({
+        loop: { [REDIRECT]: "/loop" },
+      }),
+    ).toThrow("never lands — it loops: /loop → /loop");
+  });
+
+  test("rejects a two-hop loop", () => {
+    expect(() =>
+      makeRoutes()({
+        a: { [REDIRECT]: "/b" },
+        b: { [REDIRECT]: "/a" },
+      }),
+    ).toThrow("it loops: /a → /b → /a");
+  });
+
+  test("rejects a loop entered partway down a longer chain", () => {
+    expect(
+      () =>
+        makeRoutes()({
+          start: { [REDIRECT]: "/a" },
+          a: { [REDIRECT]: "/b" },
+          b: { [REDIRECT]: "/c" },
+          c: { [REDIRECT]: "/a" },
+        }),
+      // reported as the cycle itself, not the /start approach to it
+    ).toThrow("it loops: /a → /b → /c → /a");
+  });
+
+  test("rejects a loop through a dynamic segment", () => {
+    // /users/9 → /users/5, which matches $id again and redirects to /users/5…
+    expect(() =>
+      makeRoutes()({
+        users: { $id: { [REDIRECT]: "/users/5" } },
+      }),
+    ).toThrow("it loops: /users/:id → /users/:id");
+  });
+
+  test("accepts a chain that lands on a page", () => {
+    expect(() =>
+      makeRoutes()({
+        a: { [REDIRECT]: "/b" },
+        b: { [REDIRECT]: "/c" },
+        c: PageA,
+      }),
+    ).not.toThrow();
+  });
+
+  test("accepts two redirects onto the same page", () => {
+    // converging is not looping
+    expect(() =>
+      makeRoutes()({
+        a: { [REDIRECT]: "/c" },
+        b: { [REDIRECT]: "/c" },
+        c: PageA,
+      }),
+    ).not.toThrow();
+  });
+
+  test("stops the loop walk at a function target rather than guessing", () => {
+    expect(() =>
+      makeRoutes()({
+        a: { [REDIRECT]: "/b" },
+        b: { [REDIRECT]: () => "/a" },
+      }),
+    ).not.toThrow();
+  });
+
+  test("skips function targets, whose result depends on the matched route", () => {
+    expect(() =>
+      makeRoutes()({
+        users: { $id: PageA },
+        // unresolvable if taken literally, but the function is free to
+        // return something else entirely — nothing to check at boot
+        old: { [REDIRECT]: () => ({ to: "/users/:id" }) },
+      }),
+    ).not.toThrow();
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Redirect
 // ---------------------------------------------------------------------------
 
@@ -243,17 +414,15 @@ describe("Redirect", () => {
     expect(r.options.replace).toBe(true);
   });
 
-  test("[REDIRECT] options distribute over paths, so a dynamic `to` still requires params", () => {
-    // the mechanism `RedirectOptions` relies on: mapped over the RoutePath
-    // union rather than `NavigateOptions<RoutePath>`, which collapses
-    // `HasParam` to `boolean` and drops the requirement
-    type Paths = "/about" | "/users/:id";
-    type Options = { [P in Paths]: NavigateOptions<P> }[Paths];
-
-    const staticPath = { to: "/about" } satisfies Options;
-    const dynamicPath = { to: "/users/:id", params: { id: "7" } } satisfies Options;
-    // @ts-expect-error — "/users/:id" cannot be redirected to without params
-    const unresolvable = { to: "/users/:id" } satisfies Options;
+  test("[REDIRECT] targets are typed structurally, not against RoutePath", () => {
+    // `[REDIRECT]` is reachable from `Routes`, so naming `RoutePath` in its
+    // type makes the route tree self-referential — see the note on
+    // `RedirectTarget` and the augmented-program tests in
+    // router.types.test.ts. `params` is therefore optional and an
+    // unresolvable `to` is caught at runtime, as a REDIRECT RouterError.
+    const staticPath = { to: "/about" } satisfies RedirectTarget;
+    const dynamicPath = { to: "/users/:id", params: { id: "7" } } satisfies RedirectTarget;
+    const unresolvable = { to: "/users/:id" } satisfies RedirectTarget;
 
     expect([staticPath, dynamicPath, unresolvable]).toHaveLength(3);
   });
@@ -675,11 +844,14 @@ describe("error handling", () => {
   });
 
   describe("failed redirects", () => {
-    test("a [REDIRECT] whose :params can't be filled renders [ERROR] instead of escaping", async () => {
+    test("a [REDIRECT] function returning an unresolvable path renders [ERROR] instead of escaping", async () => {
+      // the static spelling of this is rejected at boot (see the
+      // makeRoutes validation tests), so the function form is the only way
+      // an unresolvable target still reaches the router
       const routes = makeRoutes()({
         [LAYOUT]: AppShell,
         [ERROR]: RootErrorPage,
-        old: { [REDIRECT]: { to: "/users/:id" } },
+        old: { [REDIRECT]: () => ({ to: "/users/:id" }) },
         users: { $id: PageA },
       });
       const { router, history } = await makeRouter(routes, "/old");

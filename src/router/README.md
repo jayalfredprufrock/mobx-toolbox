@@ -40,13 +40,13 @@ An index key contributes no segment of its own, so paths never carry a trailing 
 
 ### Route value types
 
-| Value                                                   | Meaning                                                    |
-| ------------------------------------------------------- | ---------------------------------------------------------- |
-| `Component`                                             | Renders at that path                                       |
-| `() => import('./Page')`                                | Lazy-loaded component (code split)                         |
-| `{ [PAGE]: Component \| LazyComponent, ... }`           | Page with metadata (guard, loader, layout, loading, error) |
-| `{ [REDIRECT]: path \| options \| (route) => options }` | Redirect, static or derived from the matched route         |
-| `{ key: ... }`                                          | Nested route definition                                    |
+| Value                                                   | Meaning                                                               |
+| ------------------------------------------------------- | --------------------------------------------------------------------- |
+| `Component`                                             | Renders at that path                                                  |
+| `() => import('./Page')`                                | Lazy-loaded component (code split)                                    |
+| `{ [PAGE]: Component \| LazyComponent, ... }`           | Page with metadata (guard, loader, layout, loading, error)            |
+| `{ [REDIRECT]: path \| options \| (route) => options }` | Redirect, static or derived from the matched route (not path-checked) |
+| `{ key: ... }`                                          | Nested route definition                                               |
 
 ### Dynamic segments
 
@@ -295,19 +295,14 @@ Pass a `NavigateOptions` object instead of a string to include search params, re
 
 ### Redirecting to a dynamic path
 
-The bare-string form takes a **static** path — a path with an unfilled `:param` has nothing to resolve it against, so the type rejects it. When the target depends on the URL that matched, pass a function of the matched route:
+A bare string can only name a static path — a `:param` in it has nothing to resolve against. When the target depends on the URL that matched, pass a function of the matched route:
 
 ```tsx
 const routes = makeRoutes()({
   org: {
     $orgId: {
       // "/org/7" → "/org/7/overview"
-      index: {
-        [REDIRECT]: (route) => ({
-          to: "/org/:orgId/overview",
-          params: { orgId: route.params.orgId },
-        }),
-      },
+      index: { [REDIRECT]: (route) => `/org/${route.params.orgId}/overview` },
       overview: OverviewPage,
       settings: SettingsPage,
     },
@@ -315,13 +310,61 @@ const routes = makeRoutes()({
 });
 ```
 
+Return either spelling — a path you have already substituted, as above, or a `NavigateOptions` object for the router to substitute:
+
+```tsx
+[REDIRECT]: (route) => ({
+  to: "/org/:orgId/overview",
+  params: { orgId: route.params.orgId },
+  replace: true,
+}),
+```
+
+The options form is what you want when the redirect needs `replace`, `search` or `state`; otherwise the bare path reads better.
+
 `route` is the route the redirect itself matched. It runs during matching — before guards and loaders — so `route.data` is empty; `params`, `context` and `path` are what it has to work with. Anything needing loaded data or an async check is a `[GUARD]`, not a redirect.
 
 A `[GUARD]` that does nothing but `throw redirect(...)` is the older spelling of this and still works, but the function form says what it means and keeps the route table readable.
 
+### Redirect targets are validated at boot, not by the compiler
+
+Unlike `navigate()`, `<Link to>` and `redirect()`, a `[REDIRECT]` target is **not** path-checked by TypeScript: `to` is a plain `string` and `params` is optional, even after you augment `MobxRouter`.
+
+This is a hard constraint, not an oversight. `RoutePath` is derived from `MobxRouter["routes"]` — the same object `makeRoutes()` is inferring — so a `RoutePath` reference anywhere inside the `Routes` type makes the `R extends Routes` constraint depend on the route tree while inferring it. TypeScript gives up, reports TS7022, and types the whole tree `any`, taking every path in the app with it. Nothing reachable from `Routes` may name `RoutePath`; `router.types.test.ts` compiles an augmented fixture to keep it that way.
+
+So `makeRoutes()` checks them itself, when the tree is defined:
+
+```tsx
+makeRoutes()({
+  auth: { login: LoginPage },
+  old: { [REDIRECT]: "/auth/lgoin" },
+  // Error: [REDIRECT] at 'old' targets '/auth/lgoin', which no route in this tree addresses.
+
+  users: { $id: UserPage },
+  legacy: { [REDIRECT]: "/users/:id" },
+  // Error: [REDIRECT] at 'legacy' targets '/users/:id', but ':id' has no value.
+  //        Supply it in `params`, or use the function form…
+
+  a: { [REDIRECT]: "/b" },
+  b: { [REDIRECT]: "/a" },
+  // Error: [REDIRECT] at 'a' never lands — it loops: /a → /b → /a.
+});
+```
+
+It rejects a target no route addresses, a `:param` with nothing to fill it, and a chain that loops instead of landing on a page. The check is deterministic and runs on first import, so a broken redirect fails the same way on every run — it cannot get past a single dev or CI run, which is why throwing is safe here.
+
+Loop detection follows the chain hop by hop, so it catches a cycle anywhere downstream, not just an immediate `a ⇄ b`. Two redirects converging on the same page is not a loop. A cycle through a dynamic segment counts — `users: { $id: { [REDIRECT]: '/users/5' } }` sends `/users/9` to `/users/5`, which matches `$id` again and redirects to itself forever.
+
+Two things it can't cover:
+
+- **Function targets are skipped** — what they return depends on the route they matched, which doesn't exist yet. A chain reaching one ends the loop walk there rather than being guessed at, so `a → b → (route) => '/a'` is not reported.
+- **`redirect()` thrown from a guard or loader** is an ordinary runtime value, so it isn't visible to the tree walk at all.
+
 ### When a redirect fails
 
-A redirect that can't be carried out — a function that throws, or a `to` whose `:params` don't resolve — is a navigation failure like any other: it renders the nearest `[ERROR]` with `type: "REDIRECT"` and the underlying error on `cause`, keeping the matched prefix's `[LAYOUT]` and `[WRAPPER]`s and leaving the URL where it was. It does not escape as an unhandled rejection.
+A redirect that can't be carried out — a function that throws or returns an unresolvable path, or a `redirect()` thrown by a guard whose `:params` don't resolve — is a navigation failure like any other: it renders the nearest `[ERROR]` with `type: "REDIRECT"` and the underlying error on `cause`, keeping the matched prefix's `[LAYOUT]` and `[WRAPPER]`s and leaving the URL where it was. It does not escape as an unhandled rejection.
+
+Static targets never reach this path — boot validation rejects them first. It covers exactly the two cases that validation can't see: function targets and thrown `redirect()`s.
 
 ## `[CONTEXT]` — static route data
 

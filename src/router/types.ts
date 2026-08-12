@@ -143,31 +143,37 @@ export interface Page extends Omit<RouteConfig, typeof WRAPPER> {
 }
 
 /**
- * Navigation options for a `[REDIRECT]`, as a union over every known path.
+ * Navigation options for a `[REDIRECT]`.
  *
- * Distributing is what keeps `params` required on a dynamic `to`: over a
- * union of paths `HasParam` collapses to `boolean`, and a bare
- * `NavigateOptions<RoutePath>` would quietly drop the requirement.
+ * Deliberately path-agnostic: `to` is a plain `string` and `params` is
+ * always optional, so a dynamic target types the same as a static one.
+ * See the note on {@link RedirectTarget} for why this cannot be `RoutePath`.
  */
-export type RedirectOptions = { [P in RoutePath]: NavigateOptions<P> }[RoutePath];
+export type RedirectOptions = Omit<NavigateOptions<string>, "params"> & { params?: Obj<string> };
 
 /**
- * What `[REDIRECT]` accepts.
+ * What `[REDIRECT]` accepts: a path, full navigation options, or a function
+ * of the route the redirect matched.
  *
- * The function form receives the route the redirect matched, so a redirect
- * to a dynamic path can read `route.params` rather than borrowing a
- * `[GUARD]` to do the same job. It runs during matching — before guards and
- * loaders — so `route.data` is empty; `params`, `context` and `path` are
- * what it has to work with. Throwing from it fails the navigation as a
- * `RouterError` of type `"REDIRECT"`.
+ * The function form is how a redirect reaches a dynamic path — it can read
+ * `route.params` rather than borrowing a `[GUARD]` to do the same job. It
+ * runs during matching, before guards and loaders, so `route.data` is empty;
+ * `params`, `context` and `path` are what it has to work with. Throwing from
+ * it fails the navigation as a `RouterError` of type `"REDIRECT"`.
  *
- * The bare-string form is a static path: a path with an unfilled `:param`
- * cannot be resolved, so it takes the options or function form instead.
+ * **Nothing reachable from `Routes` may reference `RoutePath`.** `RoutePath`
+ * is derived from `MobxRouter["routes"]`, which is the very object being
+ * inferred — so naming it here makes `makeRoutes()`'s `R extends Routes`
+ * constraint depend on `typeof routes` while inferring `typeof routes`. The
+ * route object then collapses to `any` with TS7022 in every app that
+ * augments `MobxRouter`. That is why targets are checked structurally, and
+ * why an unresolvable `to` is a runtime `RouterError` rather than a type
+ * error. See `makeRoutes`' note on the same constraint.
  */
 export type RedirectTarget =
-  | StaticRoutePath
+  | string
   | RedirectOptions
-  | ((route: Route) => RedirectOptions);
+  | ((route: Route) => string | RedirectOptions);
 
 export interface Redirector {
   [REDIRECT]: RedirectTarget;

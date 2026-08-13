@@ -273,6 +273,19 @@ export class RouterStore {
     }
   }
 
+  /**
+   * The URL a set of navigation options addresses, as a single string.
+   *
+   * This is what the link components put on `href`, so a cmd-click lands on
+   * exactly where a plain click would have navigated — `search` and
+   * `preserveSearch` included. Reads {@link search} when preserving, so it
+   * re-derives as the current query changes.
+   */
+  resolveHref<P extends RoutePath>(options: NavigateOptions<P>): string {
+    const { pathname, search } = this.resolveLocation(options);
+    return `${pathname}${search ?? ""}`;
+  }
+
   private resolveLocation<P extends RoutePath>(
     options: NavigateOptions<P>,
   ): { pathname: string; search: string | undefined } {

@@ -859,6 +859,21 @@ export const ButtonLink = makeLinkComponent('button');
 - Calls `event.preventDefault()` and delegates to `router.navigate()` — on an unmodified primary click
 - Sets `aria-current="page"` when the route is active (uses `doesPathMatch`)
 
+### Navigation options as props
+
+Everything `navigate()` takes beyond the destination is a prop, with the same meaning:
+
+```tsx
+<Link to="/login" replace>Sign in</Link>                         // replace the history entry
+<Link to="/search" search={{ q: "hello" }}>Results</Link>        // query string
+<Link to="/search" search={{ q: "hello" }} preserveSearch>…</Link> // merge the current query
+<Link to="/checkout" state={{ from: "cart" }}>Checkout</Link>    // history state
+```
+
+`search` and `preserveSearch` are reflected in the `href`, so a cmd-click opens the same URL a plain click would have navigated to. `replace` and `state` are not — a new tab starts its own history — and never reach the DOM as attributes.
+
+These names are reserved on link components: a wrapped component's own `replace`/`state`/`search`/`preserveSearch` props are shadowed, as `to`, `params` and `exact` already are.
+
 You can wrap an existing component (e.g., a UI library button) and pass default props:
 
 ```tsx
@@ -905,6 +920,7 @@ router.pathParams                      // Record<string, string> — URL params
 
 // Navigation
 router.navigate(options)               // programmatic navigation
+router.resolveHref(options)            // string — the URL those options address, for `href`
 router.doesPathMatch(path, exact?)     // boolean — active-link detection (lags a navigation)
 router.doesTargetMatch(path, exact?)   // boolean — same, against the destination
 

@@ -82,6 +82,59 @@ describe("makeLinkComponent", () => {
     expect(history.location.pathname).toBe("/users/42");
   });
 
+  test("replaces the history entry with `replace`", async () => {
+    const { anchor, history } = await mount(() => (
+      <LooseLink to="/about" replace>
+        About
+      </LooseLink>
+    ));
+
+    await click(anchor);
+    expect(history.location.pathname).toBe("/about");
+    // memory history starts at one entry; replacing keeps the count
+    expect(history.index).toBe(0);
+    // and the prop never reaches the DOM
+    expect(anchor.hasAttribute("replace")).toBe(false);
+  });
+
+  test("passes `state` through to history", async () => {
+    const { anchor, history } = await mount(() => (
+      <LooseLink to="/about" state={{ from: "nav" }}>
+        About
+      </LooseLink>
+    ));
+
+    await click(anchor);
+    expect(history.location.state).toEqual({ from: "nav" });
+  });
+
+  test("puts `search` on both the href and the navigation", async () => {
+    const { anchor, history } = await mount(() => (
+      <LooseLink to="/about" search={{ q: "hello" }}>
+        About
+      </LooseLink>
+    ));
+    expect(anchor.getAttribute("href")).toBe("/about?q=hello");
+
+    await click(anchor);
+    expect(history.location.search).toBe("?q=hello");
+  });
+
+  test("`preserveSearch` merges the current query into the href too", async () => {
+    const { anchor, history } = await mount(
+      () => (
+        <LooseLink to="/about" search={{ q: "hello" }} preserveSearch>
+          About
+        </LooseLink>
+      ),
+      "/?tab=one",
+    );
+    expect(anchor.getAttribute("href")).toBe("/about?q=hello&tab=one");
+
+    await click(anchor);
+    expect(history.location.search).toBe("?q=hello&tab=one");
+  });
+
   test("sets aria-current on the active path", async () => {
     const { anchor } = await mount(() => <Link to="/about">About</Link>, "/about");
     expect(anchor.getAttribute("aria-current")).toBe("page");

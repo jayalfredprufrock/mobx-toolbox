@@ -60,3 +60,31 @@ Equivalent to:
 ```ts
 useEffect(() => autorun(func, options), []);
 ```
+
+## `WeakRefMap`
+
+A map with strong keys and weak values: entries disappear on their own once nothing else references
+the value. Used by `@mobx-toolbox/model` as the identity registry behind `Model.instantiate`.
+
+```ts
+import { WeakRefMap } from "@jayalfredprufrock/mobx-toolbox/util";
+
+const cache = new WeakRefMap<number, UserModel>();
+cache.add(user.id, user); // returns the value
+cache.get(user.id); // the same instance, while something still holds it
+cache.has(user.id);
+cache.delete(user.id); // drop immediately rather than waiting for collection
+cache.clear();
+```
+
+Identity therefore lasts exactly as long as someone holds the value — it is a liveness guarantee,
+not global uniqueness. Once the last reference goes, a lookup misses and the caller builds a fresh
+value, which is unobservable since nothing was holding the old one.
+
+Two things to know:
+
+- **Keys must not reference their values.** The key is retained by the `FinalizationRegistry`, so a
+  key holding a back-reference to its value would keep it alive and quietly defeat the point.
+  Primitive keys (an id, a composite string) are the intended use.
+- **`get` is the only honest read of liveness.** Between a value being collected and its finalizer
+  running, a dead entry can still sit in the underlying map; `get` returns `undefined` for it.

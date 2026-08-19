@@ -15,6 +15,17 @@ export type ColumnDef<T> =
 
 export type ColumnsDef<T> = (ColumnDef<T> | ((firstRow: T) => ColumnDef<T> | ColumnDef<T>[]))[];
 
+/**
+ * Decides what to do with a key found on the first row that no configured column covers. Return a
+ * def to configure that column, `true` for the default treatment (the key as a field column), or
+ * `false`/`undefined` to leave the key out.
+ */
+export type AutoColumnFn<T> = (
+  key: string,
+  value: unknown,
+  row: T,
+) => ColumnDef<T> | boolean | undefined;
+
 export type RowId = string | number;
 
 export interface TableConfig<T> {
@@ -41,7 +52,37 @@ export interface TableConfig<T> {
   rows?: T[] | (() => T[]);
   /** Fixed pixel height of every row (the virtualization contract). Default 40. */
   rowHeight?: number;
+  /**
+   * The curated columns. Read once, at construction — change the set at runtime through the model
+   * (`setColumns`, `addColumn`, `removeColumn`), which preserves what the user has done to the
+   * columns that survive the change.
+   *
+   * Configuring these does not stop `autoColumns` from filling in the rest; the two compose.
+   */
   columns?: ColumnsDef<T>;
+  /**
+   * What to do with keys on the first row that `columns` doesn't cover.
+   *
+   * `true` gives each one a default field column. A function decides per key — return a def to
+   * configure it, `true` for the default, `false` to leave it out — which is how you get automatic
+   * columns *and* control over them:
+   *
+   * ```ts
+   * autoColumns: (key, value) => {
+   *   if (key.startsWith("_")) return false;
+   *   if (typeof value === "number") return { key, align: "right" };
+   *   return true;
+   * };
+   * ```
+   *
+   * Defaults to `true` when `columns` is omitted, so a table with no column config still works, and
+   * to `false` when it isn't. Read once, at construction.
+   *
+   * Auto columns follow the data: they appear as keys appear and go as keys go. Curating a column or
+   * removing one no longer switches this off — use an allowlist in the function if you want a fixed
+   * set.
+   */
+  autoColumns?: boolean | AutoColumnFn<T>;
   /**
    * Height (px) of the detail panel below an expanded row. The binary-height contract: a row is
    * `rowHeight` or `rowHeight + expansionHeight`, never measured — panel content taller than
@@ -119,6 +160,8 @@ export interface ColumnConfig {
   /** Sort comparator over extracted values. Omitted = default (numeric / chronological / locale string). */
   compare?: (a: any, b: any) => number;
   title?: string;
+  /** See BaseColumnDef.order — declarative placement, lower first, default 0. */
+  order?: number;
   pinned?: false | "left" | "right";
   width?: ColumnWidth;
   minWidth?: number;
@@ -150,6 +193,13 @@ export interface BaseColumnDef<T> {
    * Dates chronologically, everything else by locale string, nullish first.
    */
   compare?: (a: any, b: any) => number;
+  /**
+   * Declarative placement, like CSS `order`: lower comes first, default `0`, and columns sharing a
+   * value keep their relative position — configured columns before auto ones. It decides where a
+   * column *lands*, not where it stays: dragging a column overrides it, and a column appearing later
+   * is inserted at the position its `order` implies rather than appended.
+   */
+  order?: number;
   /** Initial pin side; can also be changed at runtime via ColumnModel.setPinned. */
   pinned?: false | "left" | "right";
   /** Fixed pixel width (`number`) or a flex weight (`"Nfr"`). Defaults to `"1fr"`. */
@@ -188,6 +238,8 @@ export interface ComputedColumnDef<T> extends BaseColumnDef<T> {
 export interface SelectionColumnDef {
   selection: true;
   key?: string;
+  /** See BaseColumnDef.order — declarative placement, lower first, default 0. */
+  order?: number;
   pinned?: false | "left" | "right";
   width?: ColumnWidth;
   minWidth?: number;

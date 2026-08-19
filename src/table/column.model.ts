@@ -186,6 +186,17 @@ export class ColumnModel {
     return (this.config.compare ?? compareValues)(this.getValue(a), this.getValue(b));
   }
 
+  /**
+   * The key a def will produce, without building the column — what `TableModel` matches defs by
+   * (`removeColumn`) and checks for collisions with. Mirrors `fromDef`: a string def is its own
+   * key, and a selection def may omit one.
+   */
+  static keyOf(def: ColumnDef<any>): string {
+    if (typeof def === "string") return def;
+    const { key, selection } = def as { key?: string; selection?: boolean };
+    return key ?? (selection ? SELECTION_COLUMN_KEY : "");
+  }
+
   static fromDef(table: TableModel, def: ColumnDef<any>): ColumnModel {
     const normalizedDef = typeof def === "string" ? { key: def } : def;
     const { render, ...config } = normalizedDef as BaseColumnDef<any> & {
@@ -193,7 +204,7 @@ export class ColumnModel {
       value?: (row: RowData) => unknown;
       selection?: boolean;
     };
-    const key = config.key ?? (config.selection ? SELECTION_COLUMN_KEY : "");
+    const key = ColumnModel.keyOf(def);
     // the raw accessor: computed columns bring their own `value`; field columns resolve the key
     // as a (dot-)path. Selection columns have no value (rendered via <Table.SelectionCell>).
     const value =

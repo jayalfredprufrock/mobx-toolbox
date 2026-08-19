@@ -1,11 +1,13 @@
 # @mobx-toolbox/model
 
-Factory functions for creating MobX-observable model classes and their stores from a TypeBox schema. Models are lightweight, reactive data objects tied to an optional store reference; stores wrap a `transform` function and optionally expose `get`, `getAll`, and `create` methods.
+Factory functions for MobX-observable model classes and the stores that list them, built from a TypeBox schema.
+
+A **model** owns a resource: its schema, its endpoints, and its identity — one instance per record, shared by everything that loads it. A **store** owns a _list_ of them: a lazily-loaded observable array that stays in step with mutations. A resource usually has one model and as many stores as it has lists.
 
 ## Setup
 
 ```ts
-import { makeModel, makeStore } from "@jayalfredprufrock/mobx-toolbox/model";
+import { createStore, makeModel } from "@jayalfredprufrock/mobx-toolbox/model";
 import * as T from "typebox";
 ```
 
@@ -22,7 +24,8 @@ const UserSchema = T.Object({
 
 const UserModel = makeModel(UserSchema, {
   keys: ["id"] as const, // fields used to build API params
-  reload: (params) => api.getUser(params.id),
+  get: (params) => api.getUser(params.id), // → UserModel.get({ id }), and derives reload()
+  create: (body) => api.createUser(body), // → UserModel.create(body)
   update: (params, body) => api.updateUser(params.id, body),
   delete: (params) => api.deleteUser(params.id),
   actions: {
@@ -42,16 +45,115 @@ type UserInstance = InstanceType<typeof UserModel>;
 // keys: [] as const       →  methods receive no leading params arg
 ```
 
+### Statics — `get` and `create`
+
+`get` and `create` don't need an instance, so they become statics on the class, returning
+identity-mapped models:
+
+```ts
+const user = await UserModel.get({ id: 1 }); // → UserInstance
+const created = await UserModel.create({ name: "Alice", email: "a@example.com" });
+```
+
+Each static mirrors its config function's signature exactly, so extra arguments pass through
+(`UserModel.get({ id: 1 }, { expand: "roles" })`) and a resource with no key params reads naturally
+(`get: () => api.getSettings()` → `Settings.get()`).
+
+**Request bodies are typed by what you supply, not by the schema.** `create` and `update` leave the
+body unconstrained, so any shape attaches — and whatever you attach or annotate is the type callers
+see:
+
+```ts
+create: api.signUp,                                    // Model.create(body: { inviteToken: string })
+update: api.updateUser,                                // user.update(body: UpdateUserBody)
+create: (body: { name: string; password: string }) => api.signUp(body),
+```
+
+Constraining the body to `Partial<Resource>` was tried and reverted: TypeScript's weak-type rule
+rejects any body sharing no field names with the resource (`{ inviteToken: string }`), and a rejected
+slot makes the whole config fall back to its constraint — which silently removes _every_ generated
+method. An unannotated inline body is `any`; annotate it, or attach a typed client function.
+
+Two consequences worth knowing:
+
+- **`reload()` is derived from `get`**, so the endpoint is declared once instead of appearing as both
+  `get` and `reload`. There is no separate `reload` slot, and no `reload()` on a model without `get`.
+- **No store is required.** A route loader can call `SurveyModel.get({ id })` directly. A model holds
+  no reference to any store; stores listen to the _model class_, so a record fetched before any store
+  existed is still removed from every list when it is deleted.
+
+### Identity — one instance per record
+
+A keyed model class is an identity map. `Model.instantiate(data, store?)` returns the _same_ object
+every time it sees the same record, applying the newer payload to it rather than building a second
+copy:
+
+```ts
+const a = UserModel.instantiate({ id: 1, name: "Alice", email: "a@example.com" });
+const b = UserModel.instantiate({ id: 1, name: "Renamed", email: "a@example.com" });
+a === b; // true
+a.name; // "Renamed"
+```
+
+Pass the **model class** to a store and this is wired up for you — every list, `get`, and `create`
+hands back the same instance for a record, so a reference held by a detail panel keeps updating when
+the list reloads, an edit through one reference is visible through all of them, and _separate stores
+over the same model behave as one_:
+
+```ts
+const drafts = createStore(UserModel, { list: api.listDraftUsers });
+const active = createStore(UserModel, { list: api.listActiveUsers });
+// the same user in both lists is the same object
+```
+
+At scale this is also a performance feature: reloading a 50k-row list reuses the instances instead of
+running `makeObservable` 50k more times, which measured ~10× faster (233ms → 24ms).
+
+| Static                      | Description                                                          |
+| --------------------------- | -------------------------------------------------------------------- |
+| `instantiate(data, store?)` | The one instance for this record, created or updated                 |
+| `identityKey(source)`       | The registry key for a payload or model — override to scope identity |
+| `forget(source)`            | Drop the entry, so the next `instantiate` builds a fresh instance    |
+| `clearIdentity()`           | Forget every record — for logout or a tenant switch                  |
+| `keys`, `schema`            | The declared keys and schema                                         |
+
+Notes:
+
+- **`keys` is required.** `instantiate` throws without it, since there would be nothing to key on.
+- **Entries are weak.** The registry never keeps a model alive on its own: identity lasts exactly as
+  long as something — a collection, your own code — holds the instance. Once nothing does, the entry
+  goes and a later `instantiate` builds a fresh one, which is unobservable because nothing was
+  holding the old one.
+- **`delete()` gives up identity automatically.** The record is gone, so a later payload for its key
+  must not revive the deleted instance.
+- **Each subclass gets its own registry**, so `class Admin extends UserModel {}` never hands you a
+  plain `UserModel` where an `Admin` was expected. `Admin.instantiate(data)` is typed as an `Admin`.
+- **Override `identityKey` to scope identity** — folding in a tenant id, say, so ids from different
+  tenants cannot collide:
+
+```ts
+class TenantUser extends UserModel {
+  static override identityKey(source: { id: number }) {
+    return `${session.tenantId}:${source.id}`;
+  }
+}
+```
+
+- **Payload shapes must agree.** `instantiate` applies each payload with `setData`, which replaces
+  every field. If a list endpoint returns a projection and the detail endpoint returns the whole
+  record, a list refresh would wipe the detail-only fields — use separate models/stores for shapes
+  that genuinely differ.
+
 ### Built-in instance methods
 
-| Method                  | Description                                                                       |
-| ----------------------- | --------------------------------------------------------------------------------- |
-| `reload(...rest)`       | Calls the `reload` fn, then calls `setData` with the result                       |
-| `update(body, ...rest)` | Calls the `update` fn with the body, then calls `setData`                         |
-| `delete(...rest)`       | Calls the `delete` fn, then calls `store.remove(this)`                            |
-| `setData(resource)`     | Replaces the model's data with a complete resource (full replace, not a merge)    |
-| `toJSON()`              | Returns a plain object with all schema-defined fields                             |
-| `buildParams()`         | Returns `{ [key]: this[key] }` for each configured key, or `undefined` if no keys |
+| Method                  | Description                                                                           |
+| ----------------------- | ------------------------------------------------------------------------------------- |
+| `reload(...rest)`       | Calls the `get` fn with this model's params, then `setData` (present only with `get`) |
+| `update(body, ...rest)` | Calls the `update` fn with the body, then calls `setData`                             |
+| `delete(...rest)`       | Calls the `delete` fn, tells every listener, then gives up identity                   |
+| `setData(resource)`     | Replaces the model's data with a complete resource (full replace, not a merge)        |
+| `toJSON()`              | Returns a plain object with all schema-defined fields                                 |
+| `buildParams()`         | Returns `{ [key]: this[key] }` for each configured key, or `undefined` if no keys     |
 
 ### Custom actions via `actions`
 
@@ -69,17 +171,30 @@ await user.sendMessage({ text: "Hello" }); // fn({ id }, { text: "Hello" })
 
 ### Extending via subclass
 
-Override `buildParams()` when the API param names differ from model field names, or to include derived values:
+Subclass to add derived members, or to annotate extra observable fields:
 
 ```ts
 class UserInstance extends UserModel {
-  buildParams() {
-    return { userId: this.id, tenantId: currentTenant.id };
+  get label() {
+    return `${this.name} <${this.email}>`;
   }
   getMobxAnnotations() {
     return { role: observable }; // annotate extra fields
   }
 }
+```
+
+**`buildParams()` is not the place to rename params.** Its return type is `Pick<Resource, ...keys>`,
+so an override returning a different shape doesn't typecheck — and it wouldn't help anyway, since the
+config functions are typed from `keys` independently. When the API's param names differ from the
+model's fields, map them where the endpoint is declared:
+
+```ts
+const UserModel = makeModel(UserSchema, {
+  keys: ["id"] as const,
+  get: ({ id }) => api.getUser({ userId: id }), // ← the mapping lives here
+  update: ({ id }, body) => api.updateUser({ userId: id }, body),
+});
 ```
 
 `getMobxAnnotations()` is merged into the `makeObservable` call in the constructor, allowing subclasses to add their own observable fields without re-calling `makeObservable`.
@@ -150,48 +265,168 @@ class Payment extends PaymentModel {
 - **`setData` switches variants cleanly.** It takes the full resource and reassigns every field, so moving between variants clears the previous variant's fields on the live instance (not just in `toJSON`).
 - **Reflection still sees every key.** `Object.keys`, spread, and `in` expose all union properties (inactive ones as `undefined`); only typed access (via the guards) and `toJSON` are variant-faithful. This is the deliberate trade for a subclassable, reactive model.
 
-`makeStore` accepts a union schema too, so a store of union models (built in `transform` via `makeUnionModel`) is fully typed.
+`makeStore` accepts a union model class too, so a store of union models is fully typed.
+
+---
+
+## Mutations travel by event
+
+A model reports its own mutations, and stores listen on the **class** — so a model never references a
+store, and every store over a resource stays in step regardless of which one loaded a record.
+
+| event     | emitted by                      | what a store does by default                  |
+| --------- | ------------------------------- | --------------------------------------------- |
+| `created` | `Model.create` / `store.create` | marks its lists stale                         |
+| `updated` | `update()` and custom `actions` | nothing — identity already shows the change   |
+| `deleted` | `delete()`                      | removes the model from every list, no refetch |
+
+Loads never emit, so a 50k-row refresh costs no notifications.
+
+`updated` doing nothing is the identity map paying off: every list holding that record holds the
+_same object_, so it already shows the new fields. Opt in per list when membership depends on a
+mutable field:
+
+```ts
+createStore(SurveyModel, { list: api.listDrafts, invalidateOn: ["created", "updated"] });
+```
+
+`"deleted"` may be listed too — the model is removed either way, so add it only when a deletion
+changes the list in some _other_ way, a server-side count or ordering, say.
+
+Anything can listen, not just stores — a count, a chart, a hand-rolled feed:
+
+```ts
+class SurveyFeed implements ModelListener {
+  constructor() {
+    SurveyModel.addListener(this); // held weakly; nothing to dispose
+  }
+  onModelEvent(type: ModelEventType, model: SurveyInstance) {
+    if (type === "deleted") this.rows.remove(model);
+  }
+}
+```
+
+Listeners live in a `WeakRef` set, pruned as they are collected, so registering never keeps a store or
+a page model alive.
 
 ---
 
 ## Defining a store
 
-`makeStore(schema, config?)` returns a class that manages a collection of models. The schema is used to type the raw API response (`R = T.Static<S>`) so all config methods and the `transform` parameter are fully typed.
+A store is **one list**. `createStore(model, config?)` returns an instance; `makeStore` returns the
+class, for when you want to subclass it.
 
 ```ts
-const UserStore = makeStore(UserSchema, {
-  transform(data) {
-    // data is typed as T.Static<typeof UserSchema> — no annotation needed
-    return new UserModel(data, this); // `this` is the store instance
-  },
-  get: (id: number) => api.getUser(id),
-  getAll: () => api.getUsers(),
-  create: (body: Partial<User>) => api.createUser(body),
+export const draftSurveys = createStore(SurveyModel, {
+  list: (options) => api.listSurveys({ status: "draft", ...options }),
 });
 
-const userStore = new UserStore();
+export const publishedSurveys = createStore(SurveyModel, {
+  list: api.listPublishedSurveys, // attached directly — see below
+});
 ```
 
-`transform` is optional. When omitted, models are the raw schema objects (`M = R`):
+Several stores over one model is the normal arrangement, and they behave as one: identity lives on
+the model class, so the same record is the same object in every list, and mutations reach all of them
+by event.
+
+### `list`
+
+`list` receives `{ signal }`, which aborts when the request is superseded. A client whose own first
+parameter is an options bag can be **attached directly**; one that takes query params spreads it:
 
 ```ts
-const UserStore = makeStore(UserSchema, {
-  getAll: () => api.getUsers(),
+list: api.listSurveys,                                        // (options) => …
+list: (options) => api.listSurveys({ status: "draft", ...options }),
+```
+
+`store.list` is a `LazyObservableArray<M>` that loads when first observed in a reactive context. For
+imperative access, `await store.list.getOrLoad()`.
+
+`listOptions` passes lazy options through — throttled dependency tracking, caching, polling:
+
+```ts
+createStore(SurveyModel, {
+  list: api.listSurveys,
+  listOptions: { reloadEvery: 30_000, keepOnUnobserved: { for: 10_000 } },
 });
-// store.all.value is LazyObservableArray<T.Static<typeof UserSchema>>
+```
+
+### More than one list on a store
+
+`collection()` builds another, handling the transform and joining the store's mutation handling. Call
+it in a subclass field initializer — which is also how a list gets reactive parameters:
+
+```ts
+class SurveySearch extends makeStore(SurveyModel) {
+  query = "";
+
+  results = this.collection((options) => api.searchSurveys({ q: this.query, ...options }), {
+    trackDependencies: { throttle: 300 },
+  });
+
+  constructor() {
+    super();
+    // annotations only — mobx rejects an options object on an already-observable instance
+    makeObservable(this, { query: observable, setQuery: action });
+  }
+
+  setQuery(q: string) {
+    this.query = q;
+  }
+}
+```
+
+Reading `this.query` inside the fetch is what makes it refetch; the throttle folds a burst of
+keystrokes into one request, and the signal aborts what it supersedes. `list` is itself built with
+`collection()`, so the two behave identically.
+
+### `transform`
+
+Only for constructing something other than the model class — a subclass, say:
+
+```ts
+createStore(UserModel, {
+  transform(data) {
+    return Admin.instantiate(data);
+  },
+  list: api.listUsers,
+});
 ```
 
 ### Store methods and properties
 
-| Name              | Description                                                                  |
-| ----------------- | ---------------------------------------------------------------------------- |
-| `remove(model)`   | Removes the model from `all.value`                                           |
-| `get(...args)`    | Calls the `get` fn and returns a transformed model                           |
-| `getAll()`        | Returns `all.getOrLoad()` — triggers a load if not yet loaded                |
-| `create(...args)` | Calls the `create` fn, transforms the result, and prepends it to `all.value` |
-| `all`             | `LazyObservableArray<M>` — populated when `getAll` is configured             |
+| Name                          | Description                                                            |
+| ----------------------------- | ---------------------------------------------------------------------- |
+| `list`                        | `LazyObservableArray<M>` — present when `list` is configured           |
+| `collection(fetch, options?)` | Build another list on this store                                       |
+| `get(...args)`                | Delegates to `Model.get`                                               |
+| `create(...args)`             | Delegates to `Model.create` and prepends the row to `list`             |
+| `remove(model)`               | Drops a model from every list on this store, without deleting anything |
+| `onModelEvent(type, model)`   | The mutation handler — override to extend it                           |
 
-`all` is a `LazyObservableArray` that loads automatically when first observed in a reactive context (e.g., inside an observer component). Use `getAll()` for imperative access.
+`get` and `create` exist only when the model declares them.
+
+Extending `onModelEvent` is how anything else on the store joins in:
+
+```ts
+class SurveysWithCounts extends makeStore(SurveyModel, { list: api.listSurveys }) {
+  counts = lazyObservable(api.surveyCounts);
+
+  override onModelEvent(type: ModelEventType, model: SurveyInstance) {
+    super.onModelEvent(type, model);
+    if (type === "created") this.counts.invalidate();
+  }
+}
+```
+
+### What a store deliberately isn't
+
+- **Accumulating lists** ("load more") don't fit a lazy: its fetch returns the whole value, so
+  `reload()` and "next page" would be the same operation. Build those as a plain
+  `observable.array` plus a `loadMore()` action, and implement `ModelListener` to stay in step.
+- **Paginated envelopes** — `list` must resolve to `R[]`, so a `{ items, total }` response needs the
+  extra fields written out of the fetch as a side effect.
 
 ### Full example
 
@@ -207,28 +442,23 @@ const UserSchema = T.Object({
 
 const UserModel = makeModel(UserSchema, {
   keys: ["id"] as const,
-  reload: ({ id }) => api.get(`/users/${id}`),
+  get: ({ id }) => api.get(`/users/${id}`),
+  create: (body) => api.post("/users", body),
   update: ({ id }, body) => api.patch(`/users/${id}`, body),
   delete: ({ id }) => api.delete(`/users/${id}`),
 });
 
-const UserStore = makeStore(UserSchema, {
-  transform(data) {
-    return new UserModel(data, this);
-  },
-  getAll: () => api.get("/users"),
-  create: (body) => api.post("/users", body),
+export const userStore = createStore(UserModel, {
+  list: (options) => api.get("/users", options),
 });
 
-export const userStore = new UserStore();
-
 // In a component (observer):
-const users = userStore.all.value; // loads on first observation
+const users = userStore.list.value; // loads on first observation
 
 // Imperatively:
-const user = await userStore.get(42);
+const user = await userStore.get({ id: 42 });
 await user.update({ name: "New Name" });
-await user.delete(); // also calls userStore.remove(user)
+await user.delete(); // removed from every list over this model
 ```
 
 ---
@@ -241,10 +471,14 @@ import type {
   ModelConfig, // config object passed to makeModel / makeUnionModel
   ModelConstructor, // the class returned by makeModel
   UnionModelConstructor, // the class returned by makeUnionModel
-  ModelStore, // minimal interface a store must satisfy (has remove?)
-  StoreConfig, // config object passed to makeStore
+  ModelListener, // what a store exposes to hear about mutations
+  ModelEventType, // "created" | "updated" | "deleted"
+  ModelIdentity, // the identity-map statics on a generated model class
+  StoreConfig, // config object passed to makeStore / createStore
+  CollectionOptions, // options for collection() — lazy options plus invalidateOn
+  AnyModelClass, // a model class accepted as makeStore's first argument
   StoreConstructor, // the class returned by makeStore
-  LazyObservableArray, // the type of store.all
+  LazyObservableArray, // the type of store.list
   AnnotationsMap, // re-export from mobx, for getMobxAnnotations return type
 } from "@jayalfredprufrock/mobx-toolbox/model";
 ```
@@ -255,12 +489,20 @@ import type {
 
 **`buildParams` returns `undefined` when `keys` is empty.** All internal method implementations branch on `params === undefined` to decide whether to prepend the params argument. If you override `buildParams()` and return `undefined`, the methods behave as if no keys were configured.
 
-**`store.remove` is called only if the store reference exists and exposes a `remove` method.** The `ModelStore` interface makes `remove` optional — stores that do not manage a collection can omit it.
+**A model holds no reference to a store.** Mutations travel by event to listeners registered on the model _class_, held in a `WeakRef` set. So there is no ownership, no ordering to get wrong, and every store over the resource is notified — not just whichever one loaded the record first.
 
-**`transform` is optional.** When omitted, the model type is `T.Static<S>` (the raw schema type). When provided, the model type is its return type.
+**Loads never emit events; only mutations do.** `create`, `update`, `delete`, and custom `actions` notify. `reload`, `get`, and list loads do not — which is why no suppression is needed when a 50k-row list refreshes.
 
-**`transform` is bound to the store instance.** Inside `transform`, `this` refers to the store. This allows the transform to pass `this` as the store reference to the model constructor, wiring up `model.store`.
+**`transform` is optional.** It defaults to `Model.instantiate(data)` — or `new Model(data)` if the model has no `keys` to identity-map on. When provided, the model type is its return type. `this` inside it is the store.
 
-**`all` is only present when `getAll` is configured.** Accessing `store.all` when `getAll` was not passed to `makeStore` returns `undefined`. The `getAll()` method and `create` method both depend on `all` being present.
+**`makeStore` requires a model class.** The schema form is gone: `makeModel(schema)` is the one extra line, and having a single source for the schema, keys, identity, and endpoints is what keeps the store's type surface from being inference-derived.
 
-**`create` prepends to `all.value` — it does not append.** Newly created models appear at index `0` of the observable array.
+**`store.list` is only present when `list` is configured.** `collection()` is always available, so a store with no `list` can still declare lists in a subclass.
+
+**`create` prepends to `list.value` — it does not append.** It also marks the list stale via the `created` event, so the server still decides position and membership; identity means the refetch reuses that instance, so the row moves rather than flickering. With an identity-mapped model it checks first: a record the list already holds is not inserted twice.
+
+**`remove(model)` drops the model from every list on the store but keeps its identity.** Removing from a list is not the same as the record ceasing to exist, so a later payload for that key still updates the same instance. `model.delete()` forgets identity, because there the record really is gone.
+
+**A subclass may call `makeObservable(this, annotations)` but not pass an options object.** The generated base constructor already made the instance observable, and mobx rejects a second options argument with "Options can't be provided for already observable objects."
+
+**Request bodies are typed by what you supply.** `create` and `update` leave the body unconstrained so any shape attaches; the type callers see comes from the function you attach or annotate. A `Partial<Resource>` default was tried and reverted — TypeScript's weak-type rule rejects any body sharing no field names with the resource, and a rejected slot makes the whole config fall back to its constraint, silently removing every generated method.

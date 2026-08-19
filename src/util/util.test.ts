@@ -1,6 +1,7 @@
 import { describe, expect, test } from "vite-plus/test";
 import { autorun, runInAction } from "mobx";
 import { mutable } from "./mutable";
+import { WeakRefMap } from "./weak-ref-map";
 
 // ---------------------------------------------------------------------------
 // mutable decorator — tested programmatically since the test transform does
@@ -74,5 +75,72 @@ describe("mutable", () => {
 
     dispose();
     expect(runs).toBe(1); // only initial run
+  });
+});
+
+// ---------------------------------------------------------------------------
+// WeakRefMap — collection itself is not asserted (finalization is
+// non-deterministic); the bookkeeping around it is.
+// ---------------------------------------------------------------------------
+
+describe("WeakRefMap", () => {
+  test("returns the same instance for a key", () => {
+    const map = new WeakRefMap<number, { id: number }>();
+    const value = { id: 1 };
+    expect(map.add(1, value)).toBe(value);
+    expect(map.get(1)).toBe(value);
+    expect(map.has(1)).toBe(true);
+  });
+
+  test("misses report undefined rather than throwing", () => {
+    const map = new WeakRefMap<number, { id: number }>();
+    expect(map.get(99)).toBeUndefined();
+    expect(map.has(99)).toBe(false);
+  });
+
+  test("adding the same value twice is a no-op", () => {
+    const map = new WeakRefMap<number, { id: number }>();
+    const value = { id: 1 };
+    map.add(1, value);
+    expect(map.add(1, value)).toBe(value);
+    expect(map.get(1)).toBe(value);
+  });
+
+  test("replacing a key keeps the newest value", () => {
+    const map = new WeakRefMap<number, { id: number; tag: string }>();
+    const first = { id: 1, tag: "first" };
+    const second = { id: 1, tag: "second" };
+    map.add(1, first);
+    map.add(1, second);
+    expect(map.get(1)).toBe(second);
+  });
+
+  test("delete removes the entry immediately", () => {
+    const map = new WeakRefMap<number, { id: number }>();
+    map.add(1, { id: 1 });
+    expect(map.delete(1)).toBe(true);
+    expect(map.get(1)).toBeUndefined();
+    expect(map.delete(1)).toBe(false);
+  });
+
+  test("clear forgets every entry", () => {
+    const map = new WeakRefMap<number, { id: number }>();
+    const held = { id: 1 };
+    map.add(1, held);
+    map.add(2, { id: 2 });
+    map.clear();
+    expect(map.get(1)).toBeUndefined();
+    expect(map.get(2)).toBeUndefined();
+    // the value itself is untouched, it is simply no longer identity-mapped
+    expect(held.id).toBe(1);
+  });
+
+  test("a key can be re-added after being deleted", () => {
+    const map = new WeakRefMap<number, { id: number }>();
+    map.add(1, { id: 1 });
+    map.delete(1);
+    const fresh = { id: 1 };
+    map.add(1, fresh);
+    expect(map.get(1)).toBe(fresh);
   });
 });

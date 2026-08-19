@@ -16,7 +16,8 @@ import type { RowData, TableConfig } from "./table.types";
  * read observables — a getter over props or React state is never re-run.
  *
  * Everything else (`columns`, `getRowId`, `onStateChange`, `filter`) is captured at construction;
- * change them through the model (`setFilter`, `applyState`) rather than by re-rendering.
+ * change them through the model (`setColumns`/`addColumn`/`removeColumn`, `setFilter`, `applyState`)
+ * rather than by re-rendering.
  */
 export const useTable = <T>(config?: TableConfig<T>): TableModel => {
   const tableRef = useRef<TableModel | undefined>(undefined);

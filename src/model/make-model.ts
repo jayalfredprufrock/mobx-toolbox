@@ -1,4 +1,5 @@
 import { action, makeObservable, observable, runInAction, toJS, type AnnotationsMap } from "mobx";
+import { WeakRefMap } from "../util/weak-ref-map";
 import * as T from "typebox";
 import * as Value from "typebox/value";
 
@@ -6,9 +7,16 @@ import * as Value from "typebox/value";
 // Public structural contract
 // -----------------------------------------------------------------------------
 
-/** Minimal interface a model's host store must satisfy. */
-export interface ModelStore<M> {
-  remove?(model: M): void;
+/** What a model reports to its stores. Loads never emit — only mutations do. */
+export type ModelEventType = "created" | "updated" | "deleted";
+
+/**
+ * The one thing a store exposes for a model to keep it in step. Stores register themselves with the
+ * model class, held weakly, so a model needs no reference to any store — which is what lets several
+ * stores over the same resource all stay consistent.
+ */
+export interface ModelListener {
+  onModelEvent(type: ModelEventType, model: any): void;
 }
 
 /**
@@ -72,7 +80,7 @@ type ReplaceReturn<F, R> = F extends (...args: infer A) => Promise<any>
   ? (...args: A) => Promise<R>
   : never;
 
-type ReservedActionKey = "reload" | "update" | "delete" | "setData" | "toJSON" | "store";
+type ReservedActionKey = "reload" | "update" | "delete" | "setData" | "toJSON";
 
 type ActionsConfig<S extends ModelSchema, K extends readonly (keyof Resource<S>)[]> = {
   [name: string]: KeyedFn<S, K, Resource<S>>;
@@ -80,7 +88,21 @@ type ActionsConfig<S extends ModelSchema, K extends readonly (keyof Resource<S>)
 
 export interface ModelConfig<S extends ModelSchema, K extends readonly (keyof Resource<S>)[]> {
   keys: K;
-  reload?: KeyedFn<S, K, Resource<S>>;
+  /**
+   * Fetch one record. Exposed as the static `Model.get(params)`, which returns the identity-mapped
+   * instance, and used to derive the instance's `reload()` — so the endpoint is declared once.
+   */
+  get?: KeyedFn<S, K, Resource<S>>;
+  /**
+   * Create a record. Exposed as the static `Model.create(body)`.
+   *
+   * The body is deliberately unconstrained: its real type comes from whatever you attach or
+   * annotate, and that flows through to `Model.create`. Defaulting it to a partial of the resource
+   * looks more helpful but *rejects* any body sharing no field names with it — TypeScript's
+   * weak-type rule — and a rejected slot makes the whole config fall back to its constraint,
+   * silently removing every generated method.
+   */
+  create?: (body: any, ...rest: any[]) => Promise<Resource<S>>;
   update?: KeyedBodyFn<S, K, Resource<S>>;
   delete?: KeyedFn<S, K, any>;
   actions?: ActionsConfig<S, K>;
@@ -89,7 +111,8 @@ export interface ModelConfig<S extends ModelSchema, K extends readonly (keyof Re
 // Instance method shape from config. Self-mutating methods return Promise<any>;
 // the instance is mutated in place via setData, so callers typically read fields
 // off the same reference instead of chaining the return.
-type ModelMethods<K extends readonly any[], Cfg> = (Cfg extends { reload: infer F }
+// `reload` is derived from `get`: refreshing an instance is the same endpoint as fetching one.
+type ModelMethods<K extends readonly any[], Cfg> = (Cfg extends { get: infer F }
   ? { reload: ReplaceReturn<StripParams<K, F>, any> }
   : {}) &
   (Cfg extends { update: infer F } ? { update: ReplaceReturn<StripParams<K, F>, any> } : {}) &
@@ -107,17 +130,54 @@ type ModelMethods<K extends readonly any[], Cfg> = (Cfg extends { reload: infer 
 // -----------------------------------------------------------------------------
 
 type ModelInstance<S extends ModelSchema, K extends readonly any[], Cfg> = Resource<S> & {
-  readonly store?: ModelStore<any>;
   setData(data: Resource<S>): void;
   toJSON(): Resource<S>;
   buildParams(): KeyShape<S, K extends readonly (keyof Resource<S>)[] ? K : readonly []>;
   getMobxAnnotations?(): AnnotationsMap<any, never>;
 } & ModelMethods<K, Cfg>;
 
+/** The identity-map statics added to every generated model class. */
+export interface ModelIdentity<S extends ModelSchema, I extends object> {
+  readonly keys: readonly (keyof Resource<S>)[];
+  readonly identityCache: WeakRefMap<string | number, I>;
+  /** The registry key for a payload or model. Override on a subclass to scope identity. */
+  identityKey(source: Resource<S> | I): string | number;
+  /**
+   * The one instance for this record — existing and updated, or newly created and registered.
+   * Typed through the class it is called on, so a subclass's own members come through:
+   * `Admin.instantiate(data)` is an `Admin`, not a base instance.
+   */
+  instantiate<This extends new (...args: any[]) => any>(
+    this: This,
+    data: Resource<S>,
+  ): InstanceType<This>;
+  /** Drop this record's entry so the next `instantiate` builds a fresh instance. */
+  forget(source: Resource<S> | I): boolean;
+  /** Forget every record. For teardown — a logout, or switching tenant. */
+  clearIdentity(): void;
+  /**
+   * Start hearing about mutations to this resource. Held weakly, so registering never keeps a
+   * listener alive — a store that goes out of scope is dropped on the next event. Called for you by
+   * `makeStore`; only needed directly for something hand-rolled that has to stay in step.
+   */
+  addListener(listener: ModelListener): void;
+  /** @internal Fan a mutation out to every live listener. */
+  notifyListeners(type: ModelEventType, model: I): void;
+}
+
+/** Statics generated from the config slots that don't need an instance. */
+type ModelStatics<Cfg, I extends object> = (Cfg extends {
+  get: (...args: infer A) => any;
+}
+  ? { get(...args: A): Promise<I> }
+  : {}) &
+  (Cfg extends { create: (...args: infer A) => any } ? { create(...args: A): Promise<I> } : {});
+
 export type ModelConstructor<S extends ModelSchema, K extends readonly any[], Cfg> = {
-  new (data: Resource<S>, store?: ModelStore<any>): ModelInstance<S, K, Cfg>;
+  new (data: Resource<S>): ModelInstance<S, K, Cfg>;
   readonly schema: S;
-};
+} & ModelIdentity<S, ModelInstance<S, K, Cfg>> &
+  ModelStatics<Cfg, ModelInstance<S, K, Cfg>>;
 
 // -----------------------------------------------------------------------------
 // Shared class builder
@@ -133,12 +193,96 @@ function createModelClass(schema: ModelSchema, config?: ModelConfig<any, any>): 
 
   abstract class BaseModel {
     static readonly schema = schema;
+    static readonly keys = keys;
 
-    readonly store?: ModelStore<any>;
+    /**
+     * Identity registry for this class. Created per class on first access — via an own property
+     * rather than an inherited one — so a subclass never shares its parent's registry and can
+     * never be handed a parent instance in its place.
+     */
+    static get identityCache(): WeakRefMap<string | number, any> {
+      if (!Object.hasOwn(this, "_identityCache")) {
+        Object.defineProperty(this, "_identityCache", {
+          value: new WeakRefMap<string | number, any>(),
+          configurable: true,
+        });
+      }
+      return (this as any)._identityCache;
+    }
 
-    constructor(data: any, store?: ModelStore<any>) {
-      this.store = store;
+    /**
+     * The registry key for a payload or a model — both expose the schema's fields. Override on a
+     * subclass to scope identity, e.g. to fold in a tenant id so ids from different tenants can't
+     * collide.
+     */
+    static identityKey(source: any): string | number {
+      if (!keys.length) {
+        throw new Error(
+          "Model identity requires `keys` — declare them in the model config, or override identityKey().",
+        );
+      }
+      return keys.length === 1
+        ? source[keys[0] as keyof typeof source]
+        : keys.map((key) => String(source[key as keyof typeof source])).join("\u0000");
+    }
 
+    /**
+     * The one instance for this record: the existing one with `data` applied to it, or a new one
+     * registered for next time. Use in place of `new Model(...)` so every part of the app that
+     * loads the same record ends up holding the same object.
+     */
+    static instantiate(data: any): any {
+      const key = this.identityKey(data);
+      const existing = this.identityCache.get(key);
+      if (existing) {
+        existing.setData(data);
+        return existing;
+      }
+      return this.identityCache.add(key, new (this as any)(data));
+    }
+
+    /**
+     * Drop a record's registry entry, so the next `instantiate` builds a fresh instance rather
+     * than reviving this one. Called automatically by `delete()`.
+     */
+    static forget(source: any): boolean {
+      return this.identityCache.delete(this.identityKey(source));
+    }
+
+    /** Forget every record. For teardown — a logout, or switching tenant. */
+    static clearIdentity(): void {
+      this.identityCache.clear();
+    }
+
+    /**
+     * Listeners, held weakly and per class, exactly as `identityCache` is. Weak because the model
+     * class outlives everything: a strong set would keep every store ever created alive, which for
+     * a scoped store means leaking it and every model in its collections.
+     */
+    static get listeners(): Set<WeakRef<ModelListener>> {
+      if (!Object.hasOwn(this, "_listeners")) {
+        Object.defineProperty(this, "_listeners", {
+          value: new Set<WeakRef<ModelListener>>(),
+          configurable: true,
+        });
+      }
+      return (this as any)._listeners;
+    }
+
+    static addListener(listener: ModelListener): void {
+      this.listeners.add(new WeakRef(listener));
+    }
+
+    /** Fan a mutation out, pruning any listener that has since been collected. */
+    static notifyListeners(type: ModelEventType, model: any): void {
+      for (const ref of this.listeners) {
+        const listener = ref.deref();
+        if (listener) listener.onModelEvent(type, model);
+        else this.listeners.delete(ref);
+      }
+    }
+
+    constructor(data: any) {
       // Make every property of every variant observable up front, so `setData`
       // stays reactive even when it switches the active variant. Foreign-variant
       // fields sit as `undefined`; TypeScript hides them, and `toJSON` cleans them out.
@@ -201,8 +345,27 @@ function createModelClass(schema: ModelSchema, config?: ModelConfig<any, any>): 
 
   const proto = BaseModel.prototype as any;
 
-  if (config?.reload) {
-    const reload = config.reload as (...args: any[]) => Promise<any>;
+  if (config?.get) {
+    const get = config.get as (...args: any[]) => Promise<any>;
+    (BaseModel as any).get = function (this: any, ...args: any[]) {
+      return get(...args).then((data: any) => this.instantiate(data));
+    };
+  }
+
+  if (config?.create) {
+    const create = config.create as (...args: any[]) => Promise<any>;
+    (BaseModel as any).create = function (this: any, ...args: any[]) {
+      return create(...args).then((data: any) => {
+        const model = this.instantiate(data);
+        this.notifyListeners("created", model);
+        return model;
+      });
+    };
+  }
+
+  // One endpoint declaration serves both: `Model.get(params)` and the instance's `reload()`.
+  if (config?.get) {
+    const reload = config.get as (...args: any[]) => Promise<any>;
     proto.reload = async function (...rest: any[]) {
       const params = this.buildParams();
       const data = params === undefined ? await reload(...rest) : await reload(params, ...rest);
@@ -218,6 +381,7 @@ function createModelClass(schema: ModelSchema, config?: ModelConfig<any, any>): 
       const data =
         params === undefined ? await update(body, ...rest) : await update(params, body, ...rest);
       runInAction(() => this.setData(data));
+      (this.constructor as typeof BaseModel).notifyListeners("updated", this);
       return this;
     };
   }
@@ -227,7 +391,10 @@ function createModelClass(schema: ModelSchema, config?: ModelConfig<any, any>): 
     proto.delete = async function (...rest: any[]) {
       const params = this.buildParams();
       const result = params === undefined ? await del(...rest) : await del(params, ...rest);
-      this.store?.remove?.(this);
+      // Every store listening to this model drops it, and a later payload for its key must not
+      // revive the instance.
+      (this.constructor as typeof BaseModel).notifyListeners("deleted", this);
+      if (keys.length) (this.constructor as typeof BaseModel).forget(this);
       return result;
     };
   }
@@ -244,6 +411,7 @@ function createModelClass(schema: ModelSchema, config?: ModelConfig<any, any>): 
           data = body === undefined ? await call(params) : await call(params, body, ...rest);
         }
         runInAction(() => this.setData(data));
+        (this.constructor as typeof BaseModel).notifyListeners("updated", this);
         return this;
       };
     }
@@ -261,7 +429,7 @@ export function makeModel<
   S extends T.TObject,
   K extends readonly (keyof Resource<S>)[],
   Cfg extends ModelConfig<S, K>,
->(schema: S, config: Cfg): ModelConstructor<S, K, Cfg>;
+>(schema: S, config: Cfg & { keys: K }): ModelConstructor<S, K, Cfg>;
 export function makeModel<S extends T.TObject>(
   schema: S,
   config?: ModelConfig<S, readonly (keyof Resource<S>)[]>,
@@ -292,7 +460,6 @@ interface UnionModelMembers<
   D extends keyof Resource<S>,
   K extends readonly any[],
 > {
-  readonly store?: ModelStore<any>;
   setData(data: Resource<S>): void;
   toJSON(): Resource<S>;
   buildParams(): KeyShape<S, K extends readonly (keyof Resource<S>)[] ? K : readonly []>;
@@ -319,10 +486,11 @@ export type UnionModelConstructor<
   K extends readonly any[],
   Cfg,
 > = {
-  new (data: Resource<S>, store?: ModelStore<any>): UnionModelInstance<S, D, K, Cfg>;
+  new (data: Resource<S>): UnionModelInstance<S, D, K, Cfg>;
   readonly schema: S;
   readonly discriminator: D;
-};
+} & ModelIdentity<S, UnionModelInstance<S, D, K, Cfg>> &
+  ModelStatics<Cfg, UnionModelInstance<S, D, K, Cfg>>;
 
 export function makeUnionModel<S extends UnionSchema, D extends keyof Resource<S> & string>(
   schema: S,
@@ -333,7 +501,7 @@ export function makeUnionModel<
   D extends keyof Resource<S> & string,
   K extends readonly (keyof Resource<S>)[],
   Cfg extends ModelConfig<S, K>,
->(schema: S, discriminator: D, config: Cfg): UnionModelConstructor<S, D, K, Cfg>;
+>(schema: S, discriminator: D, config: Cfg & { keys: K }): UnionModelConstructor<S, D, K, Cfg>;
 export function makeUnionModel(
   schema: UnionSchema,
   discriminator: string,
@@ -354,3 +522,4 @@ export function makeUnionModel(
 }
 
 export type { AnnotationsMap };
+export { WeakRefMap };

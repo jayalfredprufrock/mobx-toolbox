@@ -100,7 +100,7 @@ import { makeModel, makeStore } from "@jayalfredprufrock/mobx-toolbox/model";
 import * as T from "typebox";
 
 const UserModel = makeModel(T.Object({ id: T.Number(), name: T.String() }), {
-  keys: ["id"] as const,
+  keys: ["id"],
   reload: ({ id }) => api.get(`/users/${id}`),
   delete: ({ id }) => api.delete(`/users/${id}`),
 });

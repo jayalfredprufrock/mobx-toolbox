@@ -23,7 +23,7 @@ const UserSchema = T.Object({
 });
 
 const UserModel = makeModel(UserSchema, {
-  keys: ["id"] as const, // fields used to build API params
+  keys: ["id"], // fields used to build API params
   get: (params) => api.getUser(params.id), // → UserModel.get({ id }), and derives reload()
   create: (body) => api.createUser(body), // → UserModel.create(body)
   update: (params, body) => api.updateUser(params.id, body),
@@ -41,9 +41,14 @@ type UserInstance = InstanceType<typeof UserModel>;
 `keys` is a tuple of schema property names whose values are bundled into a params object and passed as the first argument to every API method. When `keys` is empty or omitted, API methods receive no leading params argument.
 
 ```ts
-// keys: ["id"] as const  →  methods receive { id: ... } as first arg
-// keys: [] as const       →  methods receive no leading params arg
+// keys: ["id"]  →  methods receive { id: ... } as first arg
+// keys: []      →  methods receive no leading params arg
 ```
+
+`as const` is not needed: the property names are inferred as literals from the array. It's only
+required when the config is hoisted into its own variable, where TypeScript widens the array to
+`string[]` before `makeModel` ever sees it — declare the config inline, or write
+`keys: ["id"] as const` there.
 
 ### Statics — `get` and `create`
 
@@ -57,7 +62,8 @@ const created = await UserModel.create({ name: "Alice", email: "a@example.com" }
 
 Each static mirrors its config function's signature exactly, so extra arguments pass through
 (`UserModel.get({ id: 1 }, { expand: "roles" })`) and a resource with no key params reads naturally
-(`get: () => api.getSettings()` → `Settings.get()`).
+(`get: () => api.getSettings()` → `Settings.get()`). Both are typed through the class they're called
+on, so `Admin.get({ id: 1 })` is an `Admin` — see [Identity](#identity--one-instance-per-record).
 
 **Request bodies are typed by what you supply, not by the schema.** `create` and `update` leave the
 body unconstrained, so any shape attaches — and whatever you attach or annotate is the type callers
@@ -127,7 +133,9 @@ Notes:
 - **`delete()` gives up identity automatically.** The record is gone, so a later payload for its key
   must not revive the deleted instance.
 - **Each subclass gets its own registry**, so `class Admin extends UserModel {}` never hands you a
-  plain `UserModel` where an `Admin` was expected. `Admin.instantiate(data)` is typed as an `Admin`.
+  plain `UserModel` where an `Admin` was expected. `Admin.instantiate(data)` is typed as an `Admin`,
+  and so are `Admin.get(...)` and `Admin.create(...)` — every static is typed through the class it
+  is called on, so a subclass's own members come through.
 - **Override `identityKey` to scope identity** — folding in a tenant id, say, so ids from different
   tenants cannot collide:
 
@@ -191,7 +199,7 @@ model's fields, map them where the endpoint is declared:
 
 ```ts
 const UserModel = makeModel(UserSchema, {
-  keys: ["id"] as const,
+  keys: ["id"],
   get: ({ id }) => api.getUser({ userId: id }), // ← the mapping lives here
   update: ({ id }, body) => api.updateUser({ userId: id }, body),
 });
@@ -222,7 +230,7 @@ const PaymentSchema = T.Union([
   T.Object({ kind: T.Literal("bank"), id: T.Number(), routing: T.String() }),
 ]);
 
-const PaymentModel = makeUnionModel(PaymentSchema, "kind", { keys: ["id"] as const });
+const PaymentModel = makeUnionModel(PaymentSchema, "kind", { keys: ["id"] });
 const payment = new PaymentModel({ kind: "card", id: 1, cardNumber: "4242" });
 
 payment.id; // ✅ shared field
@@ -441,7 +449,7 @@ const UserSchema = T.Object({
 });
 
 const UserModel = makeModel(UserSchema, {
-  keys: ["id"] as const,
+  keys: ["id"],
   get: ({ id }) => api.get(`/users/${id}`),
   create: (body) => api.post("/users", body),
   update: ({ id }, body) => api.patch(`/users/${id}`, body),

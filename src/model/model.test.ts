@@ -57,6 +57,29 @@ describe("makeModel", () => {
     expect(params).toEqual({ id: 42 });
   });
 
+  test("keys infer without `as const`", () => {
+    const UserModel = makeModel(UserSchema, { keys: ["id"] });
+    const user = new UserModel({ id: 42, name: "Alice", email: "alice@example.com" });
+    // the annotation would fail to compile if `K` widened to every schema key
+    const params: { id: number } = user.buildParams();
+    expect(params).toEqual({ id: 42 });
+  });
+
+  test("empty keys read as keyless without `as const`", async () => {
+    const updateFn = vi.fn().mockResolvedValue({ id: 1, name: "Bob", email: "a@example.com" });
+    const UserModel = makeModel(UserSchema, { keys: [], update: updateFn });
+    const user = new UserModel({ id: 1, name: "Alice", email: "a@example.com" });
+
+    // `keys: []` infers as `never[]`, so the empty case is tested through the member type —
+    // otherwise the model reads as keyed and `update` loses its body argument
+    const params: undefined = user.buildParams();
+    await user.update({ name: "Bob" });
+
+    expect(params).toBeUndefined();
+    expect(updateFn).toHaveBeenCalledWith({ name: "Bob" });
+    expect(user.name).toBe("Bob");
+  });
+
   test("schema is accessible as static property", () => {
     const UserModel = makeModel(UserSchema);
     expect(UserModel.schema).toBe(UserSchema);
@@ -770,6 +793,41 @@ describe("model statics", () => {
 
     expect(createFn).toHaveBeenCalledWith({ name: "Alice", email: "alice@example.com" });
     expect(UserModel.instantiate(alice)).toBe(created);
+  });
+
+  test("Model.get is typed and returned through the subclass it is called on", async () => {
+    const getFn = vi.fn().mockResolvedValue(alice);
+    const UserModel = makeModel(UserSchema, { keys: ["id"], get: getFn });
+    class Admin extends UserModel {
+      get displayName() {
+        return `${this.name} (admin)`;
+      }
+    }
+
+    const admin = await Admin.get({ id: 1 });
+    // the annotation would fail to compile if the static hardcoded the base instance
+    const displayName: string = admin.displayName;
+
+    expect(admin).toBeInstanceOf(Admin);
+    expect(displayName).toBe("Alice (admin)");
+  });
+
+  test("Model.create is typed and returned through the subclass it is called on", async () => {
+    const createFn = vi.fn().mockResolvedValue(alice);
+    const UserModel = makeModel(UserSchema, { keys: ["id"], create: createFn });
+    class Admin extends UserModel {
+      get displayName() {
+        return `${this.name} (admin)`;
+      }
+    }
+
+    const admin = await Admin.create({ name: "Alice", email: "alice@example.com" });
+    const displayName: string = admin.displayName;
+
+    expect(admin).toBeInstanceOf(Admin);
+    expect(displayName).toBe("Alice (admin)");
+    // the subclass has its own registry, so the base class never hands back this instance
+    expect(UserModel.instantiate(alice)).not.toBe(admin);
   });
 
   test("a listener registered after a model exists still hears about it", async () => {

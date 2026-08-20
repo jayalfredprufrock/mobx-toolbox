@@ -47,33 +47,34 @@ function getPropertyNames(schema: ModelSchema): string[] {
 
 type Resource<S extends ModelSchema> = T.Static<S>;
 
-type KeyShape<
-  S extends ModelSchema,
-  K extends readonly (keyof Resource<S>)[],
-> = K extends readonly [] ? undefined : Pick<Resource<S>, K[number]>;
+/**
+ * Whether `keys` declares nothing. Asked through the member type rather than `K extends readonly []`
+ * because an inline `keys: []` infers as `never[]`, which is not assignable to `readonly []` and so
+ * would read as keyed — leaving `buildParams()` typed `{}` and stripping the body argument off
+ * `update` and every action. Via `K[number]`, `keys: []` and `keys: [] as const` are identical.
+ */
+type Keyless<K extends readonly any[]> = [K[number]] extends [never] ? true : false;
 
-type KeyedFn<
-  S extends ModelSchema,
-  K extends readonly (keyof Resource<S>)[],
-  R,
-> = K extends readonly []
-  ? (...args: any[]) => Promise<R>
-  : (params: KeyShape<S, K>, ...rest: any[]) => Promise<R>;
+type KeyShape<S extends ModelSchema, K extends readonly (keyof Resource<S>)[]> =
+  Keyless<K> extends true ? undefined : Pick<Resource<S>, K[number]>;
 
-type KeyedBodyFn<
-  S extends ModelSchema,
-  K extends readonly (keyof Resource<S>)[],
-  R,
-> = K extends readonly []
-  ? (body: any, ...rest: any[]) => Promise<R>
-  : (params: KeyShape<S, K>, body: any, ...rest: any[]) => Promise<R>;
+type KeyedFn<S extends ModelSchema, K extends readonly (keyof Resource<S>)[], R> =
+  Keyless<K> extends true
+    ? (...args: any[]) => Promise<R>
+    : (params: KeyShape<S, K>, ...rest: any[]) => Promise<R>;
+
+type KeyedBodyFn<S extends ModelSchema, K extends readonly (keyof Resource<S>)[], R> =
+  Keyless<K> extends true
+    ? (body: any, ...rest: any[]) => Promise<R>
+    : (params: KeyShape<S, K>, body: any, ...rest: any[]) => Promise<R>;
 
 // Strip the first arg when keys is non-empty — model methods don't take the params.
-type StripParams<K extends readonly any[], F> = K extends readonly []
-  ? F
-  : F extends (params: any, ...rest: infer R) => infer Ret
-    ? (...args: R) => Ret
-    : never;
+type StripParams<K extends readonly any[], F> =
+  Keyless<K> extends true
+    ? F
+    : F extends (params: any, ...rest: infer R) => infer Ret
+      ? (...args: R) => Ret
+      : never;
 
 // Replace a function's Promise return with Promise<R>.
 type ReplaceReturn<F, R> = F extends (...args: infer A) => Promise<any>
@@ -165,19 +166,34 @@ export interface ModelIdentity<S extends ModelSchema, I extends object> {
   notifyListeners(type: ModelEventType, model: I): void;
 }
 
-/** Statics generated from the config slots that don't need an instance. */
-type ModelStatics<Cfg, I extends object> = (Cfg extends {
-  get: (...args: infer A) => any;
-}
-  ? { get(...args: A): Promise<I> }
+/**
+ * Statics generated from the config slots that don't need an instance. Both are typed through the
+ * class they are called on, exactly as `instantiate` is — a generated model class is always
+ * subclassed, and a static that hardcoded the base instance would drop the subclass's own members:
+ * `Admin.get(...)` is an `Admin`, not a base instance.
+ */
+type ModelStatics<Cfg> = (Cfg extends { get: (...args: infer A) => any }
+  ? {
+      get<This extends new (...args: any[]) => any>(
+        this: This,
+        ...args: A
+      ): Promise<InstanceType<This>>;
+    }
   : {}) &
-  (Cfg extends { create: (...args: infer A) => any } ? { create(...args: A): Promise<I> } : {});
+  (Cfg extends { create: (...args: infer A) => any }
+    ? {
+        create<This extends new (...args: any[]) => any>(
+          this: This,
+          ...args: A
+        ): Promise<InstanceType<This>>;
+      }
+    : {});
 
 export type ModelConstructor<S extends ModelSchema, K extends readonly any[], Cfg> = {
   new (data: Resource<S>): ModelInstance<S, K, Cfg>;
   readonly schema: S;
 } & ModelIdentity<S, ModelInstance<S, K, Cfg>> &
-  ModelStatics<Cfg, ModelInstance<S, K, Cfg>>;
+  ModelStatics<Cfg>;
 
 // -----------------------------------------------------------------------------
 // Shared class builder
@@ -490,7 +506,7 @@ export type UnionModelConstructor<
   readonly schema: S;
   readonly discriminator: D;
 } & ModelIdentity<S, UnionModelInstance<S, D, K, Cfg>> &
-  ModelStatics<Cfg, UnionModelInstance<S, D, K, Cfg>>;
+  ModelStatics<Cfg>;
 
 export function makeUnionModel<S extends UnionSchema, D extends keyof Resource<S> & string>(
   schema: S,

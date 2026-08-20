@@ -110,11 +110,14 @@ export interface CreateStoreConfig<R, M> extends StoreConfig<M> {
 type StoreInstance<M, MC, Cfg> = {
   remove(model: M): void;
   /**
-   * Mark every list on this store stale, for a change no model event describes — a tenant switch, a
-   * filter reset, a refresh button. Unlike the event path this ignores `invalidateOn`: a list that
-   * opted out of refetching on *events* has not opted out of being told directly.
+   * Mark every collection on this store stale, for a change no model event describes — a tenant
+   * switch, a filter reset, a refresh button. Unlike the event path this ignores `invalidateOn`: a
+   * list that opted out of refetching on *events* has not opted out of being told directly.
+   *
+   * Named for what it covers: a subclass may hold lazies that aren't collections — a count, a
+   * summary — and those are left alone.
    */
-  invalidate(options?: LazyInvalidateOptions): void;
+  invalidateCollections(options?: LazyInvalidateOptions): void;
   onModelEvent(type: ModelEventType, model: M): void;
   /**
    * Build another list on this store. Payloads become models, the list joins this
@@ -190,7 +193,7 @@ export function makeStore(
       makeObservable<this, "_collections">(this, {
         _collections: false,
         remove: action,
-        invalidate: action,
+        invalidateCollections: action,
         onModelEvent: action,
       });
 
@@ -242,11 +245,14 @@ export function makeStore(
     }
 
     /**
-     * Mark every list on this store stale. For a change no model event describes — a tenant switch,
-     * a filter reset, a refresh button. `invalidateOn` is deliberately not consulted: it governs
-     * which *events* reach a list, not whether you can refetch one on purpose.
+     * Mark every collection on this store stale. For a change no model event describes — a tenant
+     * switch, a filter reset, a refresh button. `invalidateOn` is deliberately not consulted: it
+     * governs which *events* reach a list, not whether you can refetch one on purpose.
+     *
+     * Only collections: a subclass's own lazies are its business, and it can invalidate them in
+     * whatever handler already knows they need it.
      */
-    invalidate(options?: LazyInvalidateOptions): void {
+    invalidateCollections(options?: LazyInvalidateOptions): void {
       for (const { lazy, discardOnInvalidate } of this._collections) {
         // An explicit `discard` wins; otherwise each list's own declaration stands.
         lazy.invalidate({ discard: options?.discard ?? discardOnInvalidate });

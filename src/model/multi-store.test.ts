@@ -570,14 +570,14 @@ describe("optimisticCreate", () => {
 });
 
 // ---------------------------------------------------------------------------
-// store.invalidate() — the imperative counterpart to the event path
+// store.invalidateCollections() — the imperative counterpart to the event path
 // ---------------------------------------------------------------------------
 
-describe("store.invalidate", () => {
+describe("store.invalidateCollections", () => {
   const Schema = T.Object({ id: T.Number(), title: T.String() });
   const rows = () => [{ id: 1, title: "Alpha" }];
 
-  test("marks every list on the store stale", async () => {
+  test("marks every collection on the store stale", async () => {
     const a = vi.fn(() => Promise.resolve(rows()));
     const b = vi.fn(() => Promise.resolve(rows()));
     const store = createStore(makeModel(Schema, { keys: ["id"] }), {
@@ -587,7 +587,7 @@ describe("store.invalidate", () => {
     const stopB = autorun(() => void store.b.value.slice());
     await vi.waitUntil(() => store.a.loaded && store.b.loaded);
 
-    store.invalidate();
+    store.invalidateCollections();
 
     await vi.waitUntil(() => a.mock.calls.length === 2 && b.mock.calls.length === 2);
     stopA();
@@ -602,7 +602,7 @@ describe("store.invalidate", () => {
     const stop = autorun(() => void store.quiet.value.slice());
     await vi.waitUntil(() => store.quiet.loaded);
 
-    store.invalidate();
+    store.invalidateCollections();
 
     await vi.waitUntil(() => quiet.mock.calls.length === 2);
     stop();
@@ -617,7 +617,7 @@ describe("store.invalidate", () => {
     expect(store.list.value).toHaveLength(1);
 
     // discard blanks the list while it refetches, rather than keeping the old rows visible
-    store.invalidate({ discard: true });
+    store.invalidateCollections({ discard: true });
 
     expect(store.list.value).toHaveLength(0);
     stop();
@@ -632,7 +632,7 @@ describe("store.invalidate", () => {
     const stop = autorun(() => void store.a.value.slice());
     await vi.waitUntil(() => store.a.loaded);
 
-    store.invalidate();
+    store.invalidateCollections();
 
     await vi.waitUntil(() => listA.mock.calls.length === 2);
     stop();
@@ -698,7 +698,7 @@ describe("discardOnInvalidate", () => {
     const stopB = autorun(() => void store.keeps.value.slice());
     await vi.waitUntil(() => store.blanks.loaded && store.keeps.loaded);
 
-    store.invalidate();
+    store.invalidateCollections();
 
     expect(store.blanks.value).toHaveLength(0);
     expect(store.keeps.value).toHaveLength(1);
@@ -706,7 +706,7 @@ describe("discardOnInvalidate", () => {
     stopB();
   });
 
-  test("an explicit discard on store.invalidate wins over the declaration", async () => {
+  test("an explicit discard on invalidateCollections wins over the declaration", async () => {
     const Model = makeModel(Schema, { keys: ["id"] });
     class Store extends makeStore(Model) {
       keeps = this.collection(() => Promise.resolve([{ id: 1, title: "Alpha" }]));
@@ -715,7 +715,7 @@ describe("discardOnInvalidate", () => {
     const stop = autorun(() => void store.keeps.value.slice());
     await vi.waitUntil(() => store.keeps.loaded);
 
-    store.invalidate({ discard: true });
+    store.invalidateCollections({ discard: true });
 
     expect(store.keeps.value).toHaveLength(0);
     stop();

@@ -133,7 +133,7 @@ options is optional. A collection's own options go in the verbose form —
 
 Four options are declared on the store and overridden per collection: `sort`, `invalidateOn`,
 `optimisticCreate`, and `discardOnInvalidate` (whether a list blanks while it refetches, default
-`false` — the old behaviour). `store.invalidate()` marks every list stale in one call.
+`false` — the old behaviour). `store.invalidateCollections()` marks every collection stale in one call.
 
 Mechanically: a `list: fn` config becomes `collections: { list: fn }` if you want to keep the name.
 A `makeStore(Model, { list })` whose class you instantiated once becomes `createStore`; one you
@@ -259,8 +259,8 @@ detail panel after the list reloads" workaround is likely now redundant.
 
 **Mutation events instead of manual refetch calls.** `invalidateOn` (default `["created"]`) and the
 automatic delete-sweep replace most `await store.<name>.reload()` calls after a mutation. For a
-refresh no mutation describes — a tenant switch, a filter reset — `store.invalidate()` marks every
-list on the store stale in one call, so hand-rolled loops over each list can go. Anything that
+refresh no mutation describes — a tenant switch, a filter reset — `store.invalidateCollections()`
+marks every collection stale in one call, so hand-rolled loops over each list can go. Anything that
 isn't a store — a count, a chart, a hand-rolled feed — can implement `ModelListener` and register
 with `Model.addListener(this)`; listeners are held weakly, so there's nothing to dispose.
 

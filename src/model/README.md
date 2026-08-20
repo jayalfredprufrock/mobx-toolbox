@@ -340,10 +340,13 @@ createStore(SurveyModel, {
 ```
 
 For a change no model event describes — a tenant switch, a filter reset, a refresh button —
-`store.invalidate()` marks every list on the store stale, honouring each list's
-`discardOnInvalidate`; an explicit `store.invalidate({ discard: true })` overrides them all. It
-deliberately ignores `invalidateOn`: that option governs which _events_ reach a list, not whether you
-can refetch one on purpose.
+`store.invalidateCollections()` marks every collection stale, honouring each list's
+`discardOnInvalidate`; an explicit `{ discard: true }` overrides them all. It deliberately ignores
+`invalidateOn`: that option governs which _events_ reach a list, not whether you can refetch one on
+purpose.
+
+It is named for what it covers. A subclass may hold lazies that aren't collections — `counts` in the
+example below — and those are left alone; invalidate them wherever you already know they're stale.
 
 Anything can listen, not just stores — a count, a chart, a hand-rolled feed:
 
@@ -514,15 +517,15 @@ are built with the same `collection()`, so the two behave identically.
 
 ### Store methods and properties
 
-| Name                          | Description                                                              |
-| ----------------------------- | ------------------------------------------------------------------------ |
-| _your collection names_       | `LazyObservableArray<M>` — one per entry in `collections`, or per field  |
-| `collection(fetch, options?)` | Build another list on this store                                         |
-| `get(...args)`                | Delegates to `Model.get`                                                 |
-| `create(...args)`             | Delegates to `Model.create`; inserts into lists with `optimisticCreate`  |
-| `invalidate(options?)`        | Marks every list stale, ignoring `invalidateOn`; `{ discard }` overrides |
-| `remove(model)`               | Drops a model from every list on this store, without deleting anything   |
-| `onModelEvent(type, model)`   | The mutation handler — override to extend it                             |
+| Name                           | Description                                                             |
+| ------------------------------ | ----------------------------------------------------------------------- |
+| _your collection names_        | `LazyObservableArray<M>` — one per entry in `collections`, or per field |
+| `collection(fetch, options?)`  | Build another list on this store                                        |
+| `get(...args)`                 | Delegates to `Model.get`                                                |
+| `create(...args)`              | Delegates to `Model.create`; inserts into lists with `optimisticCreate` |
+| `invalidateCollections(opts?)` | Marks every collection stale, ignoring `invalidateOn`                   |
+| `remove(model)`                | Drops a model from every list on this store, without deleting anything  |
+| `onModelEvent(type, model)`    | The mutation handler — override to extend it                            |
 
 `get` and `create` exist only when the model declares them.
 

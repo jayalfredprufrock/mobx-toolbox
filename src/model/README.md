@@ -325,6 +325,26 @@ changes the list in some _other_ way, a server-side count or ordering, say.
 Set on the store it covers every collection, and a single one can still override it — see
 [Options a collection inherits](#options-a-collection-inherits).
 
+**What a list shows while it refetches** is `discardOnInvalidate`. By default the rows stay readable,
+so a list doesn't blank on every mutation. Set it where stale rows would actively mislead — a
+filtered list whose membership an `update` may have changed:
+
+```ts
+createStore(SurveyModel, {
+  invalidateOn: ["created", "updated"],
+  collections: {
+    all: api.listSurveys,
+    drafts: { fetch: api.listDraftSurveys, discardOnInvalidate: true },
+  },
+});
+```
+
+For a change no model event describes — a tenant switch, a filter reset, a refresh button —
+`store.invalidate()` marks every list on the store stale, honouring each list's
+`discardOnInvalidate`; an explicit `store.invalidate({ discard: true })` overrides them all. It
+deliberately ignores `invalidateOn`: that option governs which _events_ reach a list, not whether you
+can refetch one on purpose.
+
 Anything can listen, not just stores — a count, a chart, a hand-rolled feed:
 
 ```ts
@@ -407,11 +427,12 @@ Three options are declared on the store and overridden per collection, since the
 applies to every list over a resource. Each resolves the same way — the collection's own value, else
 the store's, else the built-in default:
 
-| Option             | Store-level default | What a collection can say                       |
-| ------------------ | ------------------- | ----------------------------------------------- |
-| `sort`             | unsorted            | its own comparator, or `false` for server order |
-| `invalidateOn`     | `["created"]`       | its own event list, or `[]` to never refetch    |
-| `optimisticCreate` | `false`             | `true` to show a created record before it lands |
+| Option                | Store-level default | What a collection can say                       |
+| --------------------- | ------------------- | ----------------------------------------------- |
+| `sort`                | unsorted            | its own comparator, or `false` for server order |
+| `invalidateOn`        | `["created"]`       | its own event list, or `[]` to never refetch    |
+| `optimisticCreate`    | `false`             | `true` to show a created record before it lands |
+| `discardOnInvalidate` | `false`             | `true` to blank the list while it refetches     |
 
 Everything else on the store config applies to it as a whole.
 
@@ -493,14 +514,15 @@ are built with the same `collection()`, so the two behave identically.
 
 ### Store methods and properties
 
-| Name                          | Description                                                             |
-| ----------------------------- | ----------------------------------------------------------------------- |
-| _your collection names_       | `LazyObservableArray<M>` — one per entry in `collections`, or per field |
-| `collection(fetch, options?)` | Build another list on this store                                        |
-| `get(...args)`                | Delegates to `Model.get`                                                |
-| `create(...args)`             | Delegates to `Model.create`; inserts into lists with `optimisticCreate` |
-| `remove(model)`               | Drops a model from every list on this store, without deleting anything  |
-| `onModelEvent(type, model)`   | The mutation handler — override to extend it                            |
+| Name                          | Description                                                              |
+| ----------------------------- | ------------------------------------------------------------------------ |
+| _your collection names_       | `LazyObservableArray<M>` — one per entry in `collections`, or per field  |
+| `collection(fetch, options?)` | Build another list on this store                                         |
+| `get(...args)`                | Delegates to `Model.get`                                                 |
+| `create(...args)`             | Delegates to `Model.create`; inserts into lists with `optimisticCreate`  |
+| `invalidate(options?)`        | Marks every list stale, ignoring `invalidateOn`; `{ discard }` overrides |
+| `remove(model)`               | Drops a model from every list on this store, without deleting anything   |
+| `onModelEvent(type, model)`   | The mutation handler — override to extend it                             |
 
 `get` and `create` exist only when the model declares them.
 

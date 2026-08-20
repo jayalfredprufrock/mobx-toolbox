@@ -568,3 +568,156 @@ describe("optimisticCreate", () => {
     expect(store.search.value).toHaveLength(1);
   });
 });
+
+// ---------------------------------------------------------------------------
+// store.invalidate() — the imperative counterpart to the event path
+// ---------------------------------------------------------------------------
+
+describe("store.invalidate", () => {
+  const Schema = T.Object({ id: T.Number(), title: T.String() });
+  const rows = () => [{ id: 1, title: "Alpha" }];
+
+  test("marks every list on the store stale", async () => {
+    const a = vi.fn(() => Promise.resolve(rows()));
+    const b = vi.fn(() => Promise.resolve(rows()));
+    const store = createStore(makeModel(Schema, { keys: ["id"] }), {
+      collections: { a, b },
+    });
+    const stopA = autorun(() => void store.a.value.slice());
+    const stopB = autorun(() => void store.b.value.slice());
+    await vi.waitUntil(() => store.a.loaded && store.b.loaded);
+
+    store.invalidate();
+
+    await vi.waitUntil(() => a.mock.calls.length === 2 && b.mock.calls.length === 2);
+    stopA();
+    stopB();
+  });
+
+  test("ignores invalidateOn — an opt-out covers events, not a direct call", async () => {
+    const quiet = vi.fn(() => Promise.resolve(rows()));
+    const store = createStore(makeModel(Schema, { keys: ["id"] }), {
+      collections: { quiet: { fetch: quiet, invalidateOn: [] } },
+    });
+    const stop = autorun(() => void store.quiet.value.slice());
+    await vi.waitUntil(() => store.quiet.loaded);
+
+    store.invalidate();
+
+    await vi.waitUntil(() => quiet.mock.calls.length === 2);
+    stop();
+  });
+
+  test("passes options through to each lazy", async () => {
+    const store = createStore(makeModel(Schema, { keys: ["id"] }), {
+      collections: { list: { fetch: () => Promise.resolve(rows()) } },
+    });
+    const stop = autorun(() => void store.list.value.slice());
+    await vi.waitUntil(() => store.list.loaded);
+    expect(store.list.value).toHaveLength(1);
+
+    // discard blanks the list while it refetches, rather than keeping the old rows visible
+    store.invalidate({ discard: true });
+
+    expect(store.list.value).toHaveLength(0);
+    stop();
+  });
+
+  test("collections declared on a subclass are covered too", async () => {
+    const listA = vi.fn(() => Promise.resolve(rows()));
+    class Store extends makeStore(makeModel(Schema, { keys: ["id"] })) {
+      a = this.collection(listA);
+    }
+    const store = new Store();
+    const stop = autorun(() => void store.a.value.slice());
+    await vi.waitUntil(() => store.a.loaded);
+
+    store.invalidate();
+
+    await vi.waitUntil(() => listA.mock.calls.length === 2);
+    stop();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// discardOnInvalidate — what a list shows while it refetches
+// ---------------------------------------------------------------------------
+
+describe("discardOnInvalidate", () => {
+  const Schema = T.Object({ id: T.Number(), title: T.String() });
+  test("a mutation keeps the rows readable by default", async () => {
+    const Model = makeModel(Schema, {
+      keys: ["id"],
+      create: (body: { title: string }) => Promise.resolve({ id: 9, ...body }),
+    });
+    const store = createStore(Model, {
+      collections: { list: () => Promise.resolve([{ id: 1, title: "Alpha" }]) },
+    });
+    const stop = autorun(() => void store.list.value.slice());
+    await vi.waitUntil(() => store.list.loaded);
+
+    await store.create({ title: "Beta" });
+
+    // still showing the old rows while the refetch is in flight
+    expect(store.list.value).toHaveLength(1);
+    stop();
+  });
+
+  test("a collection can ask to blank instead", async () => {
+    const Model = makeModel(Schema, {
+      keys: ["id"],
+      create: (body: { title: string }) => Promise.resolve({ id: 9, ...body }),
+    });
+    const store = createStore(Model, {
+      collections: {
+        list: {
+          fetch: () => Promise.resolve([{ id: 1, title: "Alpha" }]),
+          discardOnInvalidate: true,
+        },
+      },
+    });
+    const stop = autorun(() => void store.list.value.slice());
+    await vi.waitUntil(() => store.list.loaded);
+
+    await store.create({ title: "Beta" });
+
+    expect(store.list.value).toHaveLength(0);
+    stop();
+  });
+
+  test("the store sets it for every list, and one can opt back out", async () => {
+    const Model = makeModel(Schema, { keys: ["id"] });
+    class Store extends makeStore(Model, { discardOnInvalidate: true }) {
+      blanks = this.collection(() => Promise.resolve([{ id: 1, title: "Alpha" }]));
+      keeps = this.collection(() => Promise.resolve([{ id: 1, title: "Alpha" }]), {
+        discardOnInvalidate: false,
+      });
+    }
+    const store = new Store();
+    const stopA = autorun(() => void store.blanks.value.slice());
+    const stopB = autorun(() => void store.keeps.value.slice());
+    await vi.waitUntil(() => store.blanks.loaded && store.keeps.loaded);
+
+    store.invalidate();
+
+    expect(store.blanks.value).toHaveLength(0);
+    expect(store.keeps.value).toHaveLength(1);
+    stopA();
+    stopB();
+  });
+
+  test("an explicit discard on store.invalidate wins over the declaration", async () => {
+    const Model = makeModel(Schema, { keys: ["id"] });
+    class Store extends makeStore(Model) {
+      keeps = this.collection(() => Promise.resolve([{ id: 1, title: "Alpha" }]));
+    }
+    const store = new Store();
+    const stop = autorun(() => void store.keeps.value.slice());
+    await vi.waitUntil(() => store.keeps.loaded);
+
+    store.invalidate({ discard: true });
+
+    expect(store.keeps.value).toHaveLength(0);
+    stop();
+  });
+});

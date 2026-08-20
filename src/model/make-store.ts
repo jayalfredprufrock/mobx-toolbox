@@ -2,6 +2,7 @@ import * as T from "typebox";
 import {
   lazyObservableArray,
   type LazyFetch,
+  type LazyInvalidateOptions,
   type LazyObservableArray,
   type LazyObservableOptions,
 } from "../lazy-observable/lazy-observable";
@@ -36,6 +37,15 @@ export interface CollectionOptions<M = any> extends LazyObservableOptions {
    * the lists a new record certainly joins — usually the unfiltered one.
    */
   optimisticCreate?: boolean;
+  /**
+   * Drop this list's rows while it refetches after being marked stale, rather than keeping them
+   * readable. Defaults to the store's `discardOnInvalidate`, itself `false`.
+   *
+   * Keeping them is usually right — the rows are still broadly correct and the list doesn't blank
+   * on every mutation. Discard when stale rows would actively mislead: a filtered list whose
+   * membership an `update` may have changed, for one.
+   */
+  discardOnInvalidate?: boolean;
 }
 
 export interface StoreConfig<M = any> {
@@ -52,6 +62,11 @@ export interface StoreConfig<M = any> {
    * Defaults to `false`; a single collection can still opt in or out.
    */
   optimisticCreate?: boolean;
+  /**
+   * Whether a list drops its rows while refetching after being marked stale, rather than keeping
+   * them readable. Defaults to `false`; a single collection can still opt in or out.
+   */
+  discardOnInvalidate?: boolean;
   /**
    * Which mutations to this resource — from *any* store, or from the model's own statics — mark this
    * list stale. Defaults to `["created"]`: a new record is the only event whose effect on a list
@@ -94,6 +109,12 @@ export interface CreateStoreConfig<R, M> extends StoreConfig<M> {
 // which TypeScript forbids when the base declares a property.
 type StoreInstance<M, MC, Cfg> = {
   remove(model: M): void;
+  /**
+   * Mark every list on this store stale, for a change no model event describes — a tenant switch, a
+   * filter reset, a refresh button. Unlike the event path this ignores `invalidateOn`: a list that
+   * opted out of refetching on *events* has not opted out of being told directly.
+   */
+  invalidate(options?: LazyInvalidateOptions): void;
   onModelEvent(type: ModelEventType, model: M): void;
   /**
    * Build another list on this store. Payloads become models, the list joins this
@@ -162,12 +183,14 @@ export function makeStore(
       invalidateOn: readonly ModelEventType[];
       sort: Comparator<any> | undefined;
       optimisticCreate: boolean;
+      discardOnInvalidate: boolean;
     }[] = [];
 
     constructor() {
       makeObservable<this, "_collections">(this, {
         _collections: false,
         remove: action,
+        invalidate: action,
         onModelEvent: action,
       });
 
@@ -190,7 +213,8 @@ export function makeStore(
      * mutation handling. Call it in a subclass field initializer.
      */
     collection(fetch: LazyFetch<R[]>, options?: CollectionOptions<any>): LazyObservableArray<any> {
-      const { invalidateOn, sort, optimisticCreate, ...lazyOptions } = options ?? {};
+      const { invalidateOn, sort, optimisticCreate, discardOnInvalidate, ...lazyOptions } =
+        options ?? {};
       // Omitted means "use the store's"; `false` means this one list keeps server order.
       const comparator = (sort === undefined ? config?.sort : sort) || undefined;
       const lazy = lazyObservableArray(
@@ -207,6 +231,7 @@ export function makeStore(
         invalidateOn: invalidateOn ?? config?.invalidateOn ?? ["created"],
         sort: comparator,
         optimisticCreate: optimisticCreate ?? config?.optimisticCreate ?? false,
+        discardOnInvalidate: discardOnInvalidate ?? config?.discardOnInvalidate ?? false,
       });
       return lazy;
     }
@@ -217,15 +242,27 @@ export function makeStore(
     }
 
     /**
+     * Mark every list on this store stale. For a change no model event describes — a tenant switch,
+     * a filter reset, a refresh button. `invalidateOn` is deliberately not consulted: it governs
+     * which *events* reach a list, not whether you can refetch one on purpose.
+     */
+    invalidate(options?: LazyInvalidateOptions): void {
+      for (const { lazy, discardOnInvalidate } of this._collections) {
+        // An explicit `discard` wins; otherwise each list's own declaration stands.
+        lazy.invalidate({ discard: options?.discard ?? discardOnInvalidate });
+      }
+    }
+
+    /**
      * A mutation happened somewhere — this store, another store over the same resource, or the
      * model's own statics. A deletion always drops the model from this list; whether any event also
      * marks the list stale is up to `invalidateOn`.
      */
     onModelEvent(type: ModelEventType, model: any): void {
-      for (const { lazy, invalidateOn } of this._collections) {
+      for (const { lazy, invalidateOn, discardOnInvalidate } of this._collections) {
         // Removal is unconditional: the record is gone, and dropping it is always correct.
         if (type === "deleted") lazy.value.remove(model);
-        if (invalidateOn.includes(type)) lazy.invalidate();
+        if (invalidateOn.includes(type)) lazy.invalidate({ discard: discardOnInvalidate });
       }
     }
   }

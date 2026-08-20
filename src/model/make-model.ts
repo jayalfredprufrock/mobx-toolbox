@@ -26,6 +26,9 @@ export interface ModelListener {
  */
 export type ModelSchema = T.TObject | T.TUnion<T.TObject[]>;
 
+/** The registry key a singleton (`keys: []`) maps to. Prefixed so no real id can collide with it. */
+const SINGLETON_KEY = "\u0000singleton";
+
 /**
  * Every property name across the schema. For a union this is the merged set of
  * all variants' keys, so all of them are made observable up front — that keeps
@@ -48,28 +51,51 @@ function getPropertyNames(schema: ModelSchema): string[] {
 type Resource<S extends ModelSchema> = T.Static<S>;
 
 /**
- * Whether `keys` declares nothing. Asked through the member type rather than `K extends readonly []`
- * because an inline `keys: []` infers as `never[]`, which is not assignable to `readonly []` and so
- * would read as keyed — leaving `buildParams()` typed `{}` and stripping the body argument off
- * `update` and every action. Via `K[number]`, `keys: []` and `keys: [] as const` are identical.
+ * What `keys` may hold: the schema fields that identify one record, or `false` to declare that this
+ * model has no identity at all. `[]` is neither of those — a resource with no identifying fields is
+ * a singleton, so it identity-maps to exactly one instance.
  */
-type Keyless<K extends readonly any[]> = [K[number]] extends [never] ? true : false;
+export type KeySpec<S extends ModelSchema> = readonly (keyof Resource<S>)[] | false;
 
-type KeyShape<S extends ModelSchema, K extends readonly (keyof Resource<S>)[]> =
-  Keyless<K> extends true ? undefined : Pick<Resource<S>, K[number]>;
+/**
+ * Whether the model's methods take a leading params argument. True for both `keys: false` and
+ * `keys: []`, which leave nothing to build params from.
+ *
+ * The empty-array case is asked through `K[number]` rather than `K extends readonly []` because an
+ * inline `keys: []` infers as `never[]`, which is not assignable to `readonly []` and so would read
+ * as keyed — leaving `buildParams()` typed `{}` and stripping the body argument off `update` and
+ * every action. Via `K[number]`, `keys: []` and `keys: [] as const` are identical.
+ */
+type Keyless<K> = [K] extends [readonly any[]]
+  ? [K[number]] extends [never]
+    ? true
+    : false
+  : true;
 
-type KeyedFn<S extends ModelSchema, K extends readonly (keyof Resource<S>)[], R> =
+/**
+ * Whether the identity map is available. `keys: false` — and the config-less `makeModel(schema)`,
+ * which resolves to the same `false` — drop `instantiate` and the rest of the registry statics off
+ * the class type, so reaching for identity you never declared fails to compile rather than throwing.
+ */
+type HasIdentity<K> = [K] extends [false] ? false : true;
+
+type KeyShape<S extends ModelSchema, K> =
+  Keyless<K> extends true
+    ? undefined
+    : Pick<Resource<S>, K extends readonly any[] ? K[number] : never>;
+
+type KeyedFn<S extends ModelSchema, K, R> =
   Keyless<K> extends true
     ? (...args: any[]) => Promise<R>
     : (params: KeyShape<S, K>, ...rest: any[]) => Promise<R>;
 
-type KeyedBodyFn<S extends ModelSchema, K extends readonly (keyof Resource<S>)[], R> =
+type KeyedBodyFn<S extends ModelSchema, K, R> =
   Keyless<K> extends true
     ? (body: any, ...rest: any[]) => Promise<R>
     : (params: KeyShape<S, K>, body: any, ...rest: any[]) => Promise<R>;
 
 // Strip the first arg when keys is non-empty — model methods don't take the params.
-type StripParams<K extends readonly any[], F> =
+type StripParams<K, F> =
   Keyless<K> extends true
     ? F
     : F extends (params: any, ...rest: infer R) => infer Ret
@@ -83,11 +109,15 @@ type ReplaceReturn<F, R> = F extends (...args: infer A) => Promise<any>
 
 type ReservedActionKey = "reload" | "update" | "delete" | "setData" | "toJSON";
 
-type ActionsConfig<S extends ModelSchema, K extends readonly (keyof Resource<S>)[]> = {
+type ActionsConfig<S extends ModelSchema, K> = {
   [name: string]: KeyedFn<S, K, Resource<S>>;
 } & { [Key in ReservedActionKey]?: never };
 
-export interface ModelConfig<S extends ModelSchema, K extends readonly (keyof Resource<S>)[]> {
+export interface ModelConfig<S extends ModelSchema, K> {
+  /**
+   * The schema fields that identify one record, or `false` for a model with no identity. `[]` marks
+   * a singleton resource — one with no identifying fields, and so exactly one instance.
+   */
   keys: K;
   /**
    * Fetch one record. Exposed as the static `Model.get(params)`, which returns the identity-mapped
@@ -113,7 +143,7 @@ export interface ModelConfig<S extends ModelSchema, K extends readonly (keyof Re
 // the instance is mutated in place via setData, so callers typically read fields
 // off the same reference instead of chaining the return.
 // `reload` is derived from `get`: refreshing an instance is the same endpoint as fetching one.
-type ModelMethods<K extends readonly any[], Cfg> = (Cfg extends { get: infer F }
+type ModelMethods<K, Cfg> = (Cfg extends { get: infer F }
   ? { reload: ReplaceReturn<StripParams<K, F>, any> }
   : {}) &
   (Cfg extends { update: infer F } ? { update: ReplaceReturn<StripParams<K, F>, any> } : {}) &
@@ -130,16 +160,33 @@ type ModelMethods<K extends readonly any[], Cfg> = (Cfg extends { get: infer F }
 // Constructor type
 // -----------------------------------------------------------------------------
 
-type ModelInstance<S extends ModelSchema, K extends readonly any[], Cfg> = Resource<S> & {
+type ModelInstance<S extends ModelSchema, K, Cfg> = Resource<S> & {
   setData(data: Resource<S>): void;
   toJSON(): Resource<S>;
-  buildParams(): KeyShape<S, K extends readonly (keyof Resource<S>)[] ? K : readonly []>;
+  buildParams(): KeyShape<S, K>;
   getMobxAnnotations?(): AnnotationsMap<any, never>;
 } & ModelMethods<K, Cfg>;
 
-/** The identity-map statics added to every generated model class. */
+/**
+ * Mutation fan-out, which every model class has whatever it declared for `keys` — a model with no
+ * identity still creates, updates and deletes records, and stores still need to hear about it.
+ */
+export interface ModelEvents<I extends object> {
+  /**
+   * Start hearing about mutations to this resource. Held weakly, so registering never keeps a
+   * listener alive — a store that goes out of scope is dropped on the next event. Called for you by
+   * `makeStore`; only needed directly for something hand-rolled that has to stay in step.
+   */
+  addListener(listener: ModelListener): void;
+  /** @internal Fan a mutation out to every live listener. */
+  notifyListeners(type: ModelEventType, model: I): void;
+}
+
+/**
+ * The identity-map statics. Present only on a model that declared identity — `keys: false`, and the
+ * config-less `makeModel(schema)` that means the same thing, leave these off the class type.
+ */
 export interface ModelIdentity<S extends ModelSchema, I extends object> {
-  readonly keys: readonly (keyof Resource<S>)[];
   readonly identityCache: WeakRefMap<string | number, I>;
   /** The registry key for a payload or model. Override on a subclass to scope identity. */
   identityKey(source: Resource<S> | I): string | number;
@@ -156,14 +203,6 @@ export interface ModelIdentity<S extends ModelSchema, I extends object> {
   forget(source: Resource<S> | I): boolean;
   /** Forget every record. For teardown — a logout, or switching tenant. */
   clearIdentity(): void;
-  /**
-   * Start hearing about mutations to this resource. Held weakly, so registering never keeps a
-   * listener alive — a store that goes out of scope is dropped on the next event. Called for you by
-   * `makeStore`; only needed directly for something hand-rolled that has to stay in step.
-   */
-  addListener(listener: ModelListener): void;
-  /** @internal Fan a mutation out to every live listener. */
-  notifyListeners(type: ModelEventType, model: I): void;
 }
 
 /**
@@ -189,10 +228,13 @@ type ModelStatics<Cfg> = (Cfg extends { get: (...args: infer A) => any }
       }
     : {});
 
-export type ModelConstructor<S extends ModelSchema, K extends readonly any[], Cfg> = {
+export type ModelConstructor<S extends ModelSchema, K, Cfg> = {
   new (data: Resource<S>): ModelInstance<S, K, Cfg>;
   readonly schema: S;
-} & ModelIdentity<S, ModelInstance<S, K, Cfg>> &
+  /** Exactly what was declared, so `Model.keys` reads back the tuple — or `false`. */
+  readonly keys: K;
+} & ModelEvents<ModelInstance<S, K, Cfg>> &
+  (HasIdentity<K> extends true ? ModelIdentity<S, ModelInstance<S, K, Cfg>> : {}) &
   ModelStatics<Cfg>;
 
 // -----------------------------------------------------------------------------
@@ -203,13 +245,19 @@ export type ModelConstructor<S extends ModelSchema, K extends readonly any[], Cf
 // Handles object and union schemas at runtime; the public factories layer the
 // appropriate types (and, for unions, the `is`/`as` guards) on top.
 function createModelClass(schema: ModelSchema, config?: ModelConfig<any, any>): any {
-  const keys = (config?.keys ?? []) as readonly PropertyKey[];
+  // `keys: false` opts out of identity, and no config at all means the same thing. `keys: []` is a
+  // different declaration: a resource with no identifying fields is a singleton, so it maps to one
+  // instance under a fixed key rather than to none.
+  const keySpec = (config?.keys ?? false) as readonly PropertyKey[] | false;
+  const hasIdentity = Array.isArray(keySpec);
+  const keys = (hasIdentity ? keySpec : []) as readonly PropertyKey[];
+  const isSingleton = hasIdentity && keys.length === 0;
   const isUnion = T.IsUnion(schema);
   const propertyNames = getPropertyNames(schema);
 
   abstract class BaseModel {
     static readonly schema = schema;
-    static readonly keys = keys;
+    static readonly keys = keySpec;
 
     /**
      * Identity registry for this class. Created per class on first access — via an own property
@@ -232,11 +280,13 @@ function createModelClass(schema: ModelSchema, config?: ModelConfig<any, any>): 
      * collide.
      */
     static identityKey(source: any): string | number {
-      if (!keys.length) {
+      if (!hasIdentity) {
         throw new Error(
-          "Model identity requires `keys` — declare them in the model config, or override identityKey().",
+          "This model has no identity — it was declared with `keys: false`, or with no config at all. Use `new Model(data)` for a detached instance, or declare `keys` to identity-map it.",
         );
       }
+      // A singleton has no identifying fields to read, and only ever occupies this one entry.
+      if (isSingleton) return SINGLETON_KEY;
       return keys.length === 1
         ? source[keys[0] as keyof typeof source]
         : keys.map((key) => String(source[key as keyof typeof source])).join("\u0000");
@@ -364,7 +414,11 @@ function createModelClass(schema: ModelSchema, config?: ModelConfig<any, any>): 
   if (config?.get) {
     const get = config.get as (...args: any[]) => Promise<any>;
     (BaseModel as any).get = function (this: any, ...args: any[]) {
-      return get(...args).then((data: any) => this.instantiate(data));
+      // Without identity there is nothing to map through, and the opt-out was explicit — so hand
+      // back a detached instance rather than throwing.
+      return get(...args).then((data: any) =>
+        hasIdentity ? this.instantiate(data) : new this(data),
+      );
     };
   }
 
@@ -372,7 +426,7 @@ function createModelClass(schema: ModelSchema, config?: ModelConfig<any, any>): 
     const create = config.create as (...args: any[]) => Promise<any>;
     (BaseModel as any).create = function (this: any, ...args: any[]) {
       return create(...args).then((data: any) => {
-        const model = this.instantiate(data);
+        const model = hasIdentity ? this.instantiate(data) : new this(data);
         this.notifyListeners("created", model);
         return model;
       });
@@ -410,7 +464,7 @@ function createModelClass(schema: ModelSchema, config?: ModelConfig<any, any>): 
       // Every store listening to this model drops it, and a later payload for its key must not
       // revive the instance.
       (this.constructor as typeof BaseModel).notifyListeners("deleted", this);
-      if (keys.length) (this.constructor as typeof BaseModel).forget(this);
+      if (hasIdentity) (this.constructor as typeof BaseModel).forget(this);
       return result;
     };
   }
@@ -440,15 +494,16 @@ function createModelClass(schema: ModelSchema, config?: ModelConfig<any, any>): 
 // makeModel (single object schemas)
 // -----------------------------------------------------------------------------
 
-export function makeModel<S extends T.TObject>(schema: S): ModelConstructor<S, readonly [], {}>;
-export function makeModel<
-  S extends T.TObject,
-  K extends readonly (keyof Resource<S>)[],
-  Cfg extends ModelConfig<S, K>,
->(schema: S, config: Cfg & { keys: K }): ModelConstructor<S, K, Cfg>;
+// No config means no identity, which is exactly what `keys: false` declares — so it resolves to the
+// same `false` rather than being a rule of its own.
+export function makeModel<S extends T.TObject>(schema: S): ModelConstructor<S, false, {}>;
+export function makeModel<S extends T.TObject, K extends KeySpec<S>, Cfg extends ModelConfig<S, K>>(
+  schema: S,
+  config: Cfg & { keys: K },
+): ModelConstructor<S, K, Cfg>;
 export function makeModel<S extends T.TObject>(
   schema: S,
-  config?: ModelConfig<S, readonly (keyof Resource<S>)[]>,
+  config?: ModelConfig<S, KeySpec<S>>,
 ): any {
   return createModelClass(schema, config);
 }
@@ -471,14 +526,10 @@ type VariantFields<S extends UnionSchema, D extends keyof Resource<S>, V> = Extr
 // The members makeUnionModel adds. An interface (not a type-alias literal) so the
 // polymorphic `this` in `is`/`as` is allowed; at a call site `this` resolves to
 // the full instance, so the guard reveals the variant's fields on it.
-interface UnionModelMembers<
-  S extends UnionSchema,
-  D extends keyof Resource<S>,
-  K extends readonly any[],
-> {
+interface UnionModelMembers<S extends UnionSchema, D extends keyof Resource<S>, K> {
   setData(data: Resource<S>): void;
   toJSON(): Resource<S>;
-  buildParams(): KeyShape<S, K extends readonly (keyof Resource<S>)[] ? K : readonly []>;
+  buildParams(): KeyShape<S, K>;
   getMobxAnnotations?(): AnnotationsMap<any, never>;
   /** Type guard: true when the discriminator equals `value`, revealing that variant's fields on this same instance. */
   is<V extends Resource<S>[D]>(value: V): this is this & VariantFields<S, D, V>;
@@ -492,30 +543,27 @@ interface UnionModelMembers<
 type UnionModelInstance<
   S extends UnionSchema,
   D extends keyof Resource<S>,
-  K extends readonly any[],
+  K,
   Cfg,
 > = SharedFields<S> & UnionModelMembers<S, D, K> & ModelMethods<K, Cfg>;
 
-export type UnionModelConstructor<
-  S extends UnionSchema,
-  D extends keyof Resource<S>,
-  K extends readonly any[],
-  Cfg,
-> = {
+export type UnionModelConstructor<S extends UnionSchema, D extends keyof Resource<S>, K, Cfg> = {
   new (data: Resource<S>): UnionModelInstance<S, D, K, Cfg>;
   readonly schema: S;
   readonly discriminator: D;
-} & ModelIdentity<S, UnionModelInstance<S, D, K, Cfg>> &
+  readonly keys: K;
+} & ModelEvents<UnionModelInstance<S, D, K, Cfg>> &
+  (HasIdentity<K> extends true ? ModelIdentity<S, UnionModelInstance<S, D, K, Cfg>> : {}) &
   ModelStatics<Cfg>;
 
 export function makeUnionModel<S extends UnionSchema, D extends keyof Resource<S> & string>(
   schema: S,
   discriminator: D,
-): UnionModelConstructor<S, D, readonly [], {}>;
+): UnionModelConstructor<S, D, false, {}>;
 export function makeUnionModel<
   S extends UnionSchema,
   D extends keyof Resource<S> & string,
-  K extends readonly (keyof Resource<S>)[],
+  K extends KeySpec<S>,
   Cfg extends ModelConfig<S, K>,
 >(schema: S, discriminator: D, config: Cfg & { keys: K }): UnionModelConstructor<S, D, K, Cfg>;
 export function makeUnionModel(

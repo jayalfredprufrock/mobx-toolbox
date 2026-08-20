@@ -2,7 +2,7 @@ import { describe, expect, test, vi } from "vite-plus/test";
 import * as T from "typebox";
 import { autorun, runInAction } from "mobx";
 import { makeModel, makeUnionModel } from "./make-model";
-import { makeStore } from "./make-store";
+import { createStore, makeStore } from "./make-store";
 
 // ---------------------------------------------------------------------------
 // Shared schema
@@ -297,21 +297,16 @@ describe("makeUnionModel", () => {
 describe("makeStore", () => {
   const UserModel = makeModel(UserSchema);
 
-  test("works without transform (built through the model class)", async () => {
+  test("models are built through the model class", async () => {
     const getAllFn = vi.fn().mockResolvedValue([{ id: 1, name: "Alice", email: "a@example.com" }]);
-    const UserStore = makeStore(UserModel, { list: getAllFn });
-    const store = new UserStore();
+    const store = createStore(UserModel, { collections: { list: getAllFn } });
     const users = await store.list.getOrLoad();
     expect(users[0]!.id).toBe(1);
     expect(users[0]!.name).toBe("Alice");
   });
 
   test("remove is a no-op when the store has no list", () => {
-    const UserStore = makeStore(UserModel, {
-      transform(data) {
-        return new UserModel(data);
-      },
-    });
+    const UserStore = makeStore(UserModel);
     const store = new UserStore();
     const user = new UserModel({ id: 1, name: "Alice", email: "a@example.com" });
     expect(() => store.remove(user)).not.toThrow();
@@ -321,8 +316,7 @@ describe("makeStore", () => {
     test("delegates to the model's static and claims the model", async () => {
       const getFn = vi.fn().mockResolvedValue({ id: 1, name: "Alice", email: "a@example.com" });
       const KeyedUser = makeModel(UserSchema, { keys: ["id"] as const, get: getFn });
-      const UserStore = makeStore(KeyedUser, { list: () => Promise.resolve([]) });
-      const store = new UserStore();
+      const store = createStore(KeyedUser, { collections: { list: () => Promise.resolve([]) } });
 
       const user = await store.get({ id: 1 });
 
@@ -337,13 +331,7 @@ describe("makeStore", () => {
         { id: 1, name: "Alice", email: "a@example.com" },
         { id: 2, name: "Bob", email: "b@example.com" },
       ]);
-      const UserStore = makeStore(UserModel, {
-        transform(data) {
-          return new UserModel(data);
-        },
-        list: getAllFn,
-      });
-      const store = new UserStore();
+      const store = createStore(UserModel, { collections: { list: getAllFn } });
       const users = await store.list.getOrLoad();
       expect(getAllFn).toHaveBeenCalledOnce();
       expect(users).toHaveLength(2);
@@ -358,8 +346,10 @@ describe("makeStore", () => {
         .mockResolvedValue([{ id: 1, name: "Alice", email: "a@example.com" }]);
       const createFn = vi.fn().mockResolvedValue({ id: 2, name: "Bob", email: "b@example.com" });
       const KeyedUser = makeModel(UserSchema, { keys: ["id"] as const, create: createFn });
-      const UserStore = makeStore(KeyedUser, { list: getAllFn });
-      const store = new UserStore();
+      const store = createStore(KeyedUser, {
+        optimisticCreate: true,
+        collections: { list: getAllFn },
+      });
       await store.list.getOrLoad();
 
       const created = await store.create({ name: "Bob", email: "b@example.com" });
@@ -376,13 +366,7 @@ describe("makeStore", () => {
         { id: 1, name: "Alice", email: "a@example.com" },
         { id: 2, name: "Bob", email: "b@example.com" },
       ]);
-      const UserStore = makeStore(UserModel, {
-        transform(data) {
-          return new UserModel(data);
-        },
-        list: getAllFn,
-      });
-      const store = new UserStore();
+      const store = createStore(UserModel, { collections: { list: getAllFn } });
       const users = await store.list.getOrLoad();
       store.remove(users[0]!);
       expect(store.list.value).toHaveLength(1);
@@ -472,10 +456,16 @@ describe("model identity", () => {
     expect(UserModel.instantiate({ id: 2, name: "Bob", email: "b@example.com" })).not.toBe(second);
   });
 
-  test("identity requires keys and says so", () => {
-    const UserModel = makeModel(UserSchema);
+  test("a model with no identity has no identity statics to call", () => {
+    const NoConfig = makeModel(UserSchema);
+    const OptedOut = makeModel(UserSchema, { keys: false });
 
-    expect(() => UserModel.instantiate(alice())).toThrow(/requires `keys`/);
+    // the @ts-expect-error proves identity is gone from the type; the assertion proves the throw
+    // still guards it underneath, for JS consumers and `as any` escapes
+    // @ts-expect-error identity statics are not on a model that declared none
+    expect(() => NoConfig.instantiate(alice())).toThrow(/no identity/);
+    // @ts-expect-error — and `keys: false` means exactly the same thing
+    expect(() => OptedOut.instantiate(alice())).toThrow(/no identity/);
   });
 
   test("identityKey can be overridden to scope identity", () => {
@@ -552,8 +542,10 @@ describe("makeStore with an identity-mapped model", () => {
       update: (params: { id: number }, body: Partial<(typeof data)[number]>) =>
         Promise.resolve({ ...data.find((row) => row.id === params.id)!, ...body }),
     });
-    const UserStore = makeStore(UserModel, { list: () => Promise.resolve(data) });
-    return new UserStore();
+    return createStore(UserModel, {
+      optimisticCreate: true,
+      collections: { list: () => Promise.resolve(data) },
+    });
   };
 
   test("reloading a collection keeps the same model instances", async () => {
@@ -632,10 +624,9 @@ describe("makeStore from a model class", () => {
   test("identity is wired up without writing a transform", async () => {
     const UserModel = makeModel(UserSchema, { keys: ["id"] as const });
     const data = rows();
-    const UserStore = makeStore(UserModel, {
-      list: () => Promise.resolve(data),
+    const store = createStore(UserModel, {
+      collections: { list: () => Promise.resolve(data) },
     });
-    const store = new UserStore();
 
     await store.list.getOrLoad();
     const held = store.list.value[0]!;
@@ -646,8 +637,7 @@ describe("makeStore from a model class", () => {
 
   test("the schema comes from the model, so it is declared once", async () => {
     const UserModel = makeModel(UserSchema, { keys: ["id"] as const });
-    const UserStore = makeStore(UserModel, { list: () => Promise.resolve(rows()) });
-    const store = new UserStore();
+    const store = createStore(UserModel, { collections: { list: () => Promise.resolve(rows()) } });
 
     const users = await store.list.getOrLoad();
     expect(users[0]!.name).toBe("Alice");
@@ -657,8 +647,7 @@ describe("makeStore from a model class", () => {
   test("models are wired to the store, so delete removes them from the collection", async () => {
     const deleteFn = vi.fn().mockResolvedValue(undefined);
     const UserModel = makeModel(UserSchema, { keys: ["id"] as const, delete: deleteFn });
-    const UserStore = makeStore(UserModel, { list: () => Promise.resolve(rows()) });
-    const store = new UserStore();
+    const store = createStore(UserModel, { collections: { list: () => Promise.resolve(rows()) } });
 
     await store.list.getOrLoad();
     await store.list.value[0]!.delete();
@@ -667,20 +656,16 @@ describe("makeStore from a model class", () => {
     expect(store.list.value).toHaveLength(1);
   });
 
-  test("an explicit transform still wins", async () => {
+  test("a subclass is used by passing it to the store directly", async () => {
     const UserModel = makeModel(UserSchema, { keys: ["id"] as const });
     class Admin extends UserModel {
       get label() {
         return `admin:${this.name}`;
       }
     }
-    const UserStore = makeStore(UserModel, {
-      transform(data) {
-        return Admin.instantiate(data);
-      },
-      list: () => Promise.resolve(rows()),
+    const store = createStore(Admin, {
+      collections: { list: () => Promise.resolve(rows()) },
     });
-    const store = new UserStore();
 
     await store.list.getOrLoad();
     expect(store.list.value[0]!.label).toBe("admin:Alice");
@@ -688,8 +673,7 @@ describe("makeStore from a model class", () => {
 
   test("a keyless model class still works, just without identity", async () => {
     const UserModel = makeModel(UserSchema);
-    const UserStore = makeStore(UserModel, { list: () => Promise.resolve(rows()) });
-    const store = new UserStore();
+    const store = createStore(UserModel, { collections: { list: () => Promise.resolve(rows()) } });
 
     await store.list.getOrLoad();
     const held = store.list.value[0]!;
@@ -705,10 +689,11 @@ describe("makeStore from a model class", () => {
       T.Object({ kind: T.Literal("bank"), id: T.Number(), routing: T.String() }),
     ]);
     const PaymentModel = makeUnionModel(PaymentSchema, "kind", { keys: ["id"] as const });
-    const PaymentStore = makeStore(PaymentModel, {
-      list: () => Promise.resolve([{ kind: "card" as const, id: 1, cardNumber: "4242" }]),
+    const store = createStore(PaymentModel, {
+      collections: {
+        list: () => Promise.resolve([{ kind: "card" as const, id: 1, cardNumber: "4242" }]),
+      },
     });
-    const store = new PaymentStore();
 
     await store.list.getOrLoad();
     const payment = store.list.value[0]!;
@@ -853,7 +838,9 @@ describe("model statics", () => {
       get: ({ id }) => Promise.resolve({ ...alice, id }),
       delete: vi.fn().mockResolvedValue(undefined),
     });
-    const UserStore = makeStore(UserModel, { list: () => Promise.resolve(data) });
+    class UserStore extends makeStore(UserModel) {
+      list = this.collection(() => Promise.resolve(data));
+    }
 
     // fetched standalone, before the store was even constructed
     const user = await UserModel.get({ id: 1 });
@@ -907,5 +894,164 @@ describe("create and update body typing", () => {
     // the config did not fall back to its constraint: the generated methods are all still there
     expect(typeof user.update).toBe("function");
     expect(typeof user.reload).toBe("function"); // derived from `get`
+  });
+});
+
+// ---------------------------------------------------------------------------
+// keys — the three identity modes
+// ---------------------------------------------------------------------------
+
+describe("identity modes", () => {
+  const SettingsSchema = T.Object({ theme: T.String(), locale: T.String() });
+  const settings = () => ({ theme: "dark", locale: "en" });
+
+  describe("keys: [] — a singleton", () => {
+    test("get returns the one instance, however many times it is called", async () => {
+      const getFn = vi.fn(() => Promise.resolve(settings()));
+      const Settings = makeModel(SettingsSchema, { keys: [], get: getFn });
+
+      const first = await Settings.get();
+      const second = await Settings.get();
+
+      expect(second).toBe(first);
+      expect(getFn).toHaveBeenCalledTimes(2);
+      expect(getFn).toHaveBeenCalledWith();
+    });
+
+    test("get applies the newer payload to the instance already held", async () => {
+      let theme = "dark";
+      const Settings = makeModel(SettingsSchema, {
+        keys: [],
+        get: () => Promise.resolve({ theme, locale: "en" }),
+      });
+
+      const s = await Settings.get();
+      theme = "light";
+      await Settings.get();
+
+      expect(s.theme).toBe("light");
+    });
+
+    test("create and instantiate land on the same instance as get", async () => {
+      const Settings = makeModel(SettingsSchema, {
+        keys: [],
+        get: () => Promise.resolve(settings()),
+        create: (body: { theme: string }) => Promise.resolve({ ...body, locale: "en" }),
+      });
+
+      const fetched = await Settings.get();
+      const created = await Settings.create({ theme: "light" });
+
+      expect(created).toBe(fetched);
+      expect(Settings.instantiate(settings())).toBe(fetched);
+    });
+
+    test("clearIdentity drops the singleton so the next get builds a fresh one", async () => {
+      const Settings = makeModel(SettingsSchema, {
+        keys: [],
+        get: () => Promise.resolve(settings()),
+      });
+
+      const first = await Settings.get();
+      Settings.clearIdentity();
+
+      expect(await Settings.get()).not.toBe(first);
+    });
+
+    test("delete gives up the singleton's identity", async () => {
+      const Settings = makeModel(SettingsSchema, {
+        keys: [],
+        get: () => Promise.resolve(settings()),
+        delete: vi.fn().mockResolvedValue(undefined),
+      });
+
+      const first = await Settings.get();
+      await first.delete();
+
+      expect(await Settings.get()).not.toBe(first);
+    });
+
+    test("methods still take no leading params argument", async () => {
+      const updateFn = vi.fn().mockResolvedValue({ theme: "light", locale: "en" });
+      const Settings = makeModel(SettingsSchema, { keys: [], update: updateFn });
+      const s = new Settings(settings());
+
+      const params: undefined = s.buildParams();
+      await s.update({ theme: "light" });
+
+      expect(params).toBeUndefined();
+      expect(updateFn).toHaveBeenCalledWith({ theme: "light" });
+    });
+  });
+
+  describe("keys: false — no identity", () => {
+    test("get hands back a detached instance rather than throwing", async () => {
+      const getFn = vi.fn(() => Promise.resolve(settings()));
+      const Settings = makeModel(SettingsSchema, { keys: false, get: getFn });
+
+      const first = await Settings.get();
+      const second = await Settings.get();
+
+      expect(first.theme).toBe("dark");
+      expect(second).not.toBe(first);
+    });
+
+    test("create hands back a detached instance and still announces itself", async () => {
+      const Settings = makeModel(SettingsSchema, {
+        keys: false,
+        create: (body: { theme: string }) => Promise.resolve({ ...body, locale: "en" }),
+      });
+      const heard: string[] = [];
+      Settings.addListener({ onModelEvent: (type) => heard.push(type) });
+
+      const a = await Settings.create({ theme: "light" });
+      const b = await Settings.create({ theme: "light" });
+
+      expect(b).not.toBe(a);
+      expect(heard).toEqual(["created", "created"]);
+    });
+
+    test("no config means exactly what keys: false means", () => {
+      const NoConfig = makeModel(SettingsSchema);
+      const OptedOut = makeModel(SettingsSchema, { keys: false });
+
+      expect(NoConfig.keys).toBe(false);
+      expect(OptedOut.keys).toBe(false);
+    });
+
+    test("delete does not reach for the registry", async () => {
+      const deleteFn = vi.fn().mockResolvedValue(undefined);
+      const Settings = makeModel(SettingsSchema, { keys: false, delete: deleteFn });
+      const s = new Settings(settings());
+
+      await expect(s.delete()).resolves.toBeUndefined();
+      expect(deleteFn).toHaveBeenCalledWith();
+    });
+  });
+
+  describe("stores follow the model's declaration", () => {
+    test("a singleton model routes its list through identity", async () => {
+      const Settings = makeModel(SettingsSchema, { keys: [] });
+      const store = createStore(Settings, {
+        collections: { list: () => Promise.resolve([settings()]) },
+      });
+
+      const rows = await store.list.getOrLoad();
+
+      expect(rows[0]).toBe(Settings.instantiate(settings()));
+    });
+
+    test("a model with no identity gets fresh instances per row", async () => {
+      const Settings = makeModel(SettingsSchema, { keys: false });
+      const store = createStore(Settings, {
+        collections: { list: () => Promise.resolve([settings()]) },
+      });
+
+      await store.list.getOrLoad();
+      const held = store.list.value[0]!;
+      await store.list.reload();
+
+      expect(store.list.value[0]).not.toBe(held);
+    });
   });
 });

@@ -12,44 +12,46 @@ import type { ModelEventType, ModelSchema } from "./make-model";
 // Type plumbing
 // -----------------------------------------------------------------------------
 
-// The structural shape passed as `this` inside `transform` — the only member
-// transform ever needs is `remove`, since it's about to construct a model and
-// hand the store reference along to its constructor.
-type StoreThis<M> = {
-  remove(model: M): void;
-};
+/** Orders a collection, like `Array#sort` — but over model instances rather than payloads. */
+export type Comparator<M> = (a: M, b: M) => number;
 
-// Infer M from config: when transform is present use its return type, else use R.
-type InferModel<R, Cfg> = Cfg extends { transform: (...args: any[]) => infer M } ? M : R;
-
-/** Per-list options: everything a lazy observable takes, plus which mutations mark it stale. */
-export interface CollectionOptions extends LazyObservableOptions {
+/** Per-list options: everything a lazy observable takes, plus staleness and ordering. */
+export interface CollectionOptions<M = any> extends LazyObservableOptions {
   /**
    * Which mutations to this resource mark this list stale. Defaults to the store's `invalidateOn`,
    * itself `["created"]`. A deletion always removes the model from the list regardless.
    */
   invalidateOn?: readonly ModelEventType[];
+  /**
+   * Order this list. Defaults to the store's `sort`, since one ordering usually applies to every
+   * collection over a resource. Pass `false` to keep server order on this list alone.
+   */
+  sort?: Comparator<M> | false;
+  /**
+   * Show a record from `create()` in this list straight away, without waiting for the refetch that
+   * the `created` event triggers. Defaults to the store's `optimisticCreate`, itself `false`.
+   *
+   * Off by default because only the server knows whether a new record belongs in a given list: a
+   * filtered or searched collection would flash a row that does not belong to it. Turn it on for
+   * the lists a new record certainly joins — usually the unfiltered one.
+   */
+  optimisticCreate?: boolean;
 }
 
-export interface StoreConfig<R> {
+export interface StoreConfig<M = any> {
   /**
-   * Build a model from a payload. Defaults to the model class's identity map, so supply this only
-   * to construct something else — a subclass, say.
-   */
-  transform?: (data: R) => any;
-  /**
-   * Fetch this store's list. Receives `{ signal }`, which aborts when the request is superseded — so
-   * a client whose own first parameter is an options bag can be attached directly, and one that
-   * takes query params can spread it: `(opts) => api.list({ status: "draft", ...opts })`.
+   * Order every collection on this store. Sorting is usually the one thing standing between an API
+   * client and being attached directly, and the same ordering almost always applies to every list
+   * over a resource — so it is declared once here, and a single collection can still override it.
    *
-   * `get` and `create` live on the model class, not here.
+   * Runs over model instances on every load.
    */
-  list?: LazyFetch<R[]>;
+  sort?: Comparator<M>;
   /**
-   * Options for `list` — throttled dependency tracking, caching, polling. The same options
-   * `collection()` takes, which is what `list` is built with.
+   * Whether a record from `create()` appears in this store's lists before the refetch confirms it.
+   * Defaults to `false`; a single collection can still opt in or out.
    */
-  listOptions?: LazyObservableOptions;
+  optimisticCreate?: boolean;
   /**
    * Which mutations to this resource — from *any* store, or from the model's own statics — mark this
    * list stale. Defaults to `["created"]`: a new record is the only event whose effect on a list
@@ -63,6 +65,29 @@ export interface StoreConfig<R> {
   invalidateOn?: readonly ModelEventType[];
 }
 
+/**
+ * How a collection is declared to `createStore`: its fetch alone, or its fetch plus that list's own
+ * options. The verbose form is what lets a single collection override the store's `sort`, set its
+ * own `invalidateOn`, or take any lazy option.
+ */
+export type CollectionSpec<R, M> =
+  | LazyFetch<R[]>
+  | ({ fetch: LazyFetch<R[]> } & CollectionOptions<M>);
+
+/** Names a collection may not take, since each is already a member of the store. */
+type ReservedCollectionName = "remove" | "collection" | "onModelEvent" | "get" | "create";
+
+/**
+ * `createStore` config: everything `makeStore` takes, plus the collections themselves. They live in
+ * the config here because there is no subclass to hang them off — the moment you do subclass, every
+ * collection is declared the same way, as a field built with `this.collection(...)`.
+ */
+export interface CreateStoreConfig<R, M> extends StoreConfig<M> {
+  collections: Record<string, CollectionSpec<R, M>> & {
+    [N in ReservedCollectionName]?: never;
+  };
+}
+
 // Final store-instance shape. `get`/`create` are delegated from the model class, so their presence
 // is keyed off the *class* rather than off an inferred config object. Each slot is declared as a
 // method rather than a function-valued property, so a subclass can override it with a method —
@@ -71,7 +96,7 @@ type StoreInstance<M, MC, Cfg> = {
   remove(model: M): void;
   onModelEvent(type: ModelEventType, model: M): void;
   /**
-   * Build another list on this store. Payloads are transformed into models, the list joins this
+   * Build another list on this store. Payloads become models, the list joins this
    * store's mutation handling, and every lazy option is available — so a search, a filtered view, or
    * a polled list is a field on a subclass:
    *
@@ -86,10 +111,10 @@ type StoreInstance<M, MC, Cfg> = {
    */
   collection(
     fetch: LazyFetch<MC extends { schema: infer S extends ModelSchema } ? T.Static<S>[] : never[]>,
-    options?: CollectionOptions,
+    options?: CollectionOptions<M>,
   ): LazyObservableArray<M>;
 } & (MC extends { get: (...args: infer A) => any } ? { get(...args: A): Promise<M> } : {}) &
-  (Cfg extends { list: any } ? { list: LazyObservableArray<M> } : {}) &
+  (Cfg extends { collections: infer C } ? { [N in keyof C]: LazyObservableArray<M> } : {}) &
   (MC extends { create: (...args: infer A) => any } ? { create(...args: A): Promise<M> } : {});
 
 export type StoreConstructor<M, MC, Cfg> = {
@@ -112,51 +137,48 @@ export type AnyModelClass = {
 export function makeStore<MC extends AnyModelClass>(
   model: MC,
 ): StoreConstructor<InstanceType<MC>, MC, {}>;
-export function makeStore<
-  MC extends AnyModelClass,
-  Cfg extends StoreConfig<T.Static<MC["schema"]>>,
->(
+export function makeStore<MC extends AnyModelClass, Cfg extends StoreConfig<InstanceType<MC>>>(
   model: MC,
-  // Typed from the model class, never from `Cfg`: referencing `Cfg` inside its own inference site
-  // makes TypeScript fall back to the constraint, which collapses every conditional slot below.
-  config: Cfg & ThisType<StoreThis<InstanceType<MC>>>,
-): StoreConstructor<InferModel<InstanceType<MC>, Cfg>, MC, Cfg>;
+  config: Cfg,
+): StoreConstructor<InstanceType<MC>, MC, Cfg>;
 export function makeStore(
   ModelClass: AnyModelClass,
-  config?: StoreConfig<any>,
+  config?: StoreConfig<any> & { collections?: Record<string, CollectionSpec<any, any>> },
 ): StoreConstructor<any, any, any> {
   type R = any;
 
-  class Store {
-    private readonly _transform: (data: R) => any;
+  const Model = ModelClass as any;
 
-    /** Every list this store owns, with the events that mark each stale. */
+  // Route through the model's identity map whenever it has one, so every list, `get`, and `create`
+  // hands back the same instance for a record. `keys` is `false` on a model that declared no
+  // identity; an empty array is a singleton, which still maps.
+  const buildModel = (data: R) =>
+    Array.isArray(Model.keys) ? Model.instantiate(data) : new Model(data);
+
+  class Store {
+    /** Every list this store owns, with the events that mark each stale and how each is ordered. */
     private readonly _collections: {
       lazy: LazyObservableArray<any>;
       invalidateOn: readonly ModelEventType[];
+      sort: Comparator<any> | undefined;
+      optimisticCreate: boolean;
     }[] = [];
 
-    list?: LazyObservableArray<any>;
-
     constructor() {
-      const rawTransform = config?.transform;
-      const Model = ModelClass as any;
-      this._transform = rawTransform
-        ? (data: R) => rawTransform.call(this, data)
-        : // Route through the model's identity map when it has keys to do so with, so every list,
-          // `get`, and `create` hands back the same instance for a record.
-          (data: R) => (Model.keys?.length ? Model.instantiate(data) : new Model(data));
-
-      makeObservable<this, "_transform" | "_collections">(this, {
-        _transform: false,
+      makeObservable<this, "_collections">(this, {
         _collections: false,
         remove: action,
         onModelEvent: action,
       });
 
-      // `list` is just the first collection — same code path as any added by a subclass.
-      if (config?.list) {
-        this.list = this.collection(config.list, config.listOptions);
+      // `createStore` puts collections in the config, since it has no subclass to hang them off.
+      // They go through the same `collection()` a subclass field would.
+      for (const [name, spec] of Object.entries(config?.collections ?? {})) {
+        if (name in this) {
+          throw new Error(`Collection "${name}" would shadow a member the store already has.`);
+        }
+        const { fetch, ...options } = typeof spec === "function" ? { fetch: spec } : spec;
+        (this as any)[name] = this.collection(fetch, options);
       }
 
       // Held weakly, so registering never keeps this store alive.
@@ -167,12 +189,15 @@ export function makeStore(
      * Build another list on this store: payloads become models, and the list joins this store's
      * mutation handling. Call it in a subclass field initializer.
      */
-    collection(fetch: LazyFetch<R[]>, options?: CollectionOptions): LazyObservableArray<any> {
-      const { invalidateOn, ...lazyOptions } = options ?? {};
+    collection(fetch: LazyFetch<R[]>, options?: CollectionOptions<any>): LazyObservableArray<any> {
+      const { invalidateOn, sort, optimisticCreate, ...lazyOptions } = options ?? {};
+      // Omitted means "use the store's"; `false` means this one list keeps server order.
+      const comparator = (sort === undefined ? config?.sort : sort) || undefined;
       const lazy = lazyObservableArray(
         async (fetchOptions) => {
           const items = await fetch(fetchOptions);
-          return items.map((item) => this._transform(item));
+          const models = items.map((item) => buildModel(item));
+          return comparator ? models.sort(comparator) : models;
         },
         // deep: false — models are observable in their own right, so nothing needs converting.
         { deep: false, ...lazyOptions },
@@ -180,6 +205,8 @@ export function makeStore(
       this._collections.push({
         lazy,
         invalidateOn: invalidateOn ?? config?.invalidateOn ?? ["created"],
+        sort: comparator,
+        optimisticCreate: optimisticCreate ?? config?.optimisticCreate ?? false,
       });
       return lazy;
     }
@@ -205,8 +232,6 @@ export function makeStore(
 
   const proto = Store.prototype as any;
 
-  const Model = ModelClass as any;
-
   if (typeof Model.get === "function") {
     // The static already returns the identity-mapped instance, and removal travels by event rather
     // than by ownership, so there is nothing for the store to add.
@@ -219,10 +244,22 @@ export function makeStore(
     proto.create = async function (...args: any[]) {
       const model = await Model.create(...args);
       return runInAction(() => {
-        // Prepend for immediate feedback; the `created` event has already marked this list stale, so
-        // the server still gets the last word on position and membership. Identity means the refetch
-        // reuses this instance, so the row moves rather than flickering.
-        if (this.list && !this.list.value.includes(model)) this.list.value.unshift(model);
+        // Show it immediately in the lists that asked for it; the `created` event has already
+        // marked them stale, so the server still gets the last word on position and membership.
+        // Identity means the refetch reuses this instance, so the row moves rather than flickering.
+        for (const { lazy, sort, optimisticCreate } of this._collections) {
+          if (!optimisticCreate) continue;
+          const rows = lazy.value;
+          if (rows.includes(model)) continue;
+          if (!sort) {
+            rows.unshift(model);
+            continue;
+          }
+          // Land it where the configured order puts it, rather than at the top where the next
+          // load would visibly move it.
+          const at = rows.findIndex((existing: any) => sort(model, existing) < 0);
+          rows.splice(at === -1 ? rows.length : at, 0, model);
+        }
         return model;
       });
     };
@@ -231,19 +268,30 @@ export function makeStore(
   return Store as unknown as StoreConstructor<any, any, any>;
 }
 
-export function createStore<MC extends AnyModelClass>(
-  model: MC,
-): StoreInstance<InstanceType<MC>, MC, {}>;
+/**
+ * `makeStore` plus `new`, for a store you don't need to subclass. Its collections are named in the
+ * config and land on the instance under those names — so `createStore` is the whole story when a
+ * store is just lists over a resource, and the moment you need behaviour of your own you move to
+ * `makeStore` and declare every collection as a field.
+ *
+ * ```ts
+ * const surveys = createStore(SurveyModel, {
+ *   sort: (a, b) => a.name.localeCompare(b.name),
+ *   collections: {
+ *     all: (options) => api.listSurveys(options),
+ *     drafts: { fetch: (options) => api.listSurveys({ status: "draft", ...options }), sort: false },
+ *   },
+ * });
+ *
+ * surveys.all.getOrLoad();
+ * ```
+ */
 export function createStore<
   MC extends AnyModelClass,
-  Cfg extends StoreConfig<T.Static<MC["schema"]>>,
->(
-  model: MC,
-  config: Cfg & ThisType<StoreThis<InstanceType<MC>>>,
-): StoreInstance<InferModel<InstanceType<MC>, Cfg>, MC, Cfg>;
+  Cfg extends CreateStoreConfig<T.Static<MC["schema"]>, InstanceType<MC>>,
+>(model: MC, config: Cfg): StoreInstance<InstanceType<MC>, MC, Cfg>;
 
-/** `makeStore` plus `new` — for the common case of one store per list. */
-export function createStore(model: AnyModelClass, config?: StoreConfig<any>): any {
+export function createStore(model: AnyModelClass, config: CreateStoreConfig<any, any>): any {
   return new (makeStore(model, config as any))();
 }
 

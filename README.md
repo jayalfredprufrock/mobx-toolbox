@@ -96,26 +96,25 @@ Includes a `LazyObserver` React component that renders a placeholder while loadi
 Factory functions for creating observable model classes and collection stores from TypeBox schemas.
 
 ```ts
-import { makeModel, makeStore } from "@jayalfredprufrock/mobx-toolbox/model";
+import { createStore, makeModel } from "@jayalfredprufrock/mobx-toolbox/model";
 import * as T from "typebox";
 
 const UserModel = makeModel(T.Object({ id: T.Number(), name: T.String() }), {
-  keys: ["id"],
-  reload: ({ id }) => api.get(`/users/${id}`),
+  keys: ["id"], // identifies a record — `[]` for a singleton, `false` for no identity
+  get: ({ id }) => api.get(`/users/${id}`), // → UserModel.get({ id }), and derives reload()
+  create: (body) => api.post("/users", body),
   delete: ({ id }) => api.delete(`/users/${id}`),
 });
 
-const UserStore = makeStore(UserSchema, {
-  transform(data) {
-    return new UserModel(data, this);
+export const users = createStore(UserModel, {
+  sort: (a, b) => a.name.localeCompare(b.name),
+  collections: {
+    all: (options) => api.get("/users", options),
   },
-  getAll: () => api.get("/users"),
-  create: (body) => api.post("/users", body),
 });
 
-export const userStore = new UserStore();
-await userStore.getAll(); // → User[]
-await userStore.all.value[0].delete(); // removes from store too
+await users.all.getOrLoad(); // → User[], loaded once and cached
+await users.all.value[0].delete(); // removed from every list over this model
 ```
 
 → [Full docs](src/model/README.md)

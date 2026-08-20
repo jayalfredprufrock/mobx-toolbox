@@ -42,9 +42,13 @@ const setup = () => {
     delete: api.remove,
   });
 
-  // Two stores, one per status. No collections feature involved.
-  const DraftStore = makeStore(SurveyModel, { list: () => api.list("draft") });
-  const PublishedStore = makeStore(SurveyModel, { list: () => api.list("published") });
+  // Two stores, one per status. Each declares its own list, as any subclassed store does.
+  class DraftStore extends makeStore(SurveyModel) {
+    list = this.collection(() => api.list("draft"));
+  }
+  class PublishedStore extends makeStore(SurveyModel) {
+    list = this.collection(() => api.list("published"));
+  }
 
   return { api, SurveyModel, DraftStore, PublishedStore };
 };
@@ -107,8 +111,8 @@ describe("one store per collection", () => {
       create: (body: { title: string; status: string }) => api.create(body),
     });
     void SurveyModel;
-    const a = createStore(CreatingModel, { list: () => api.list("draft") });
-    const b = createStore(CreatingModel, { list: () => api.list("draft") });
+    const a = createStore(CreatingModel, { collections: { list: () => api.list("draft") } });
+    const b = createStore(CreatingModel, { collections: { list: () => api.list("draft") } });
     const stopA = autorun(() => void a.list.value.slice());
     const stopB = autorun(() => void b.list.value.slice());
     await vi.waitUntil(() => a.list.loaded && b.list.loaded);
@@ -138,7 +142,7 @@ describe("list fetch contract", () => {
     };
     const Model = makeModel(Schema, { keys: ["id"] as const });
 
-    const store = createStore(Model, { list: listAll }); // ← no wrapper arrow
+    const store = createStore(Model, { collections: { list: listAll } }); // ← no wrapper arrow
     await store.list.getOrLoad();
 
     expect(store.list.value).toHaveLength(1);
@@ -155,7 +159,7 @@ describe("list fetch contract", () => {
     const Model = makeModel(Schema, { keys: ["id"] as const });
 
     const store = createStore(Model, {
-      list: (options) => list({ status: "draft", ...options }),
+      collections: { list: (options) => list({ status: "draft", ...options }) },
     });
     await store.list.getOrLoad();
 
@@ -167,9 +171,11 @@ describe("list fetch contract", () => {
     const signals: AbortSignal[] = [];
     const Model = makeModel(Schema, { keys: ["id"] as const });
     const store = createStore(Model, {
-      list: ({ signal }) => {
-        signals.push(signal);
-        return new Promise<never[]>(() => {});
+      collections: {
+        list: ({ signal }) => {
+          signals.push(signal);
+          return new Promise<never[]>(() => {});
+        },
       },
     });
 
@@ -200,7 +206,10 @@ describe("invalidateOn", () => {
         return Promise.resolve();
       },
     });
-    const store = createStore(Model, invalidateOn ? { list, invalidateOn } : { list });
+    const store = createStore(
+      Model,
+      invalidateOn ? { collections: { list }, invalidateOn } : { collections: { list } },
+    );
     return { store, list, Model };
   };
 
@@ -264,11 +273,12 @@ describe("collection()", () => {
     create: (body: { title: string }) => Promise.resolve({ id: 9, status: "draft", ...body }),
   });
 
-  test("a config `list` and an added collection behave identically", async () => {
+  test("every collection on a subclass behaves identically", async () => {
     const listA = vi.fn(() => Promise.resolve([{ id: 1, title: "A", status: "draft" }]));
     const listB = vi.fn(() => Promise.resolve([{ id: 2, title: "B", status: "published" }]));
 
-    class TwoLists extends makeStore(Model, { list: listA }) {
+    class TwoLists extends makeStore(Model) {
+      list = this.collection(listA);
       other = this.collection(listB);
     }
     const store = new TwoLists();
@@ -329,5 +339,232 @@ describe("collection()", () => {
     }
     // the base already made the instance observable, so mobx rejects a second options object
     expect(() => new WithOptions()).toThrow(/Options can't be provided/);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// sort — declared once for the store, overridable per collection
+// ---------------------------------------------------------------------------
+
+describe("sort", () => {
+  const Schema = T.Object({ id: T.Number(), title: T.String() });
+  const unsorted = () => [
+    { id: 3, title: "Charlie" },
+    { id: 1, title: "Alpha" },
+    { id: 2, title: "Bravo" },
+  ];
+  const byTitle = (a: { title: string }, b: { title: string }) => a.title.localeCompare(b.title);
+
+  test("the store's sort orders every collection", async () => {
+    const Model = makeModel(Schema, { keys: ["id"] });
+    class Store extends makeStore(Model, { sort: byTitle }) {
+      a = this.collection(() => Promise.resolve(unsorted()));
+      b = this.collection(() => Promise.resolve(unsorted()));
+    }
+    const store = new Store();
+
+    const [a, b] = await Promise.all([store.a.getOrLoad(), store.b.getOrLoad()]);
+
+    expect(a.map((m) => m.title)).toEqual(["Alpha", "Bravo", "Charlie"]);
+    expect(b.map((m) => m.title)).toEqual(["Alpha", "Bravo", "Charlie"]);
+  });
+
+  test("a collection can override the store's sort", async () => {
+    const Model = makeModel(Schema, { keys: ["id"] });
+    class Store extends makeStore(Model, { sort: byTitle }) {
+      byId = this.collection(() => Promise.resolve(unsorted()), {
+        sort: (a, b) => a.id - b.id,
+      });
+    }
+
+    const rows = await new Store().byId.getOrLoad();
+
+    expect(rows.map((m) => m.id)).toEqual([1, 2, 3]);
+  });
+
+  test("sort: false keeps server order on that one collection", async () => {
+    const Model = makeModel(Schema, { keys: ["id"] });
+    class Store extends makeStore(Model, { sort: byTitle }) {
+      ranked = this.collection(() => Promise.resolve(unsorted()), { sort: false });
+      named = this.collection(() => Promise.resolve(unsorted()));
+    }
+    const store = new Store();
+
+    const [ranked, named] = await Promise.all([store.ranked.getOrLoad(), store.named.getOrLoad()]);
+
+    expect(ranked.map((m) => m.id)).toEqual([3, 1, 2]);
+    expect(named.map((m) => m.title)).toEqual(["Alpha", "Bravo", "Charlie"]);
+  });
+
+  test("a created record lands in sorted position rather than on top", async () => {
+    const Model = makeModel(Schema, {
+      keys: ["id"],
+      create: (body: { title: string }) => Promise.resolve({ id: 4, ...body }),
+    });
+    const store = createStore(Model, {
+      sort: byTitle,
+      optimisticCreate: true,
+      collections: { list: () => Promise.resolve(unsorted()) },
+    });
+    await store.list.getOrLoad();
+
+    await store.create({ title: "Bravado" });
+
+    expect(store.list.value.map((m) => m.title)).toEqual(["Alpha", "Bravado", "Bravo", "Charlie"]);
+  });
+
+  test("without a sort a created record still goes on top", async () => {
+    const Model = makeModel(Schema, {
+      keys: ["id"],
+      create: (body: { title: string }) => Promise.resolve({ id: 4, ...body }),
+    });
+    const store = createStore(Model, {
+      optimisticCreate: true,
+      collections: { list: () => Promise.resolve(unsorted()) },
+    });
+    await store.list.getOrLoad();
+
+    await store.create({ title: "Zulu" });
+
+    expect(store.list.value[0]!.title).toBe("Zulu");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// createStore collections
+// ---------------------------------------------------------------------------
+
+describe("createStore collections", () => {
+  const Schema = T.Object({ id: T.Number(), title: T.String(), status: T.String() });
+  const row = (id: number, status: string) => ({ id, title: `Row ${id}`, status });
+
+  test("each collection lands on the instance under its own name", async () => {
+    const Model = makeModel(Schema, { keys: ["id"] });
+    const drafts = vi.fn(() => Promise.resolve([row(1, "draft")]));
+    const published = vi.fn(() => Promise.resolve([row(2, "published")]));
+    const store = createStore(Model, { collections: { drafts, published } });
+
+    const [d, p] = await Promise.all([store.drafts.getOrLoad(), store.published.getOrLoad()]);
+
+    expect(d[0]!.id).toBe(1);
+    expect(p[0]!.id).toBe(2);
+  });
+
+  test("the verbose form carries that collection's own options", async () => {
+    const Model = makeModel(Schema, { keys: ["id"] });
+    const quiet = vi.fn(() => Promise.resolve([row(1, "draft")]));
+    const store = createStore(Model, {
+      collections: { quiet: { fetch: quiet, invalidateOn: [] } },
+    });
+    const stop = autorun(() => void store.quiet.value.slice());
+    await vi.waitUntil(() => store.quiet.loaded);
+
+    store.quiet.value[0]!.setData(row(1, "draft"));
+    Model.notifyListeners("created", store.quiet.value[0]!);
+    await new Promise((r) => setTimeout(r, 20));
+
+    // invalidateOn: [] — a create does not mark this one stale
+    expect(quiet).toHaveBeenCalledTimes(1);
+    stop();
+  });
+
+  test("every collection joins the store's mutation handling", async () => {
+    const Model = makeModel(Schema, {
+      keys: ["id"],
+      delete: vi.fn().mockResolvedValue(undefined),
+    });
+    const store = createStore(Model, {
+      collections: {
+        a: () => Promise.resolve([row(1, "draft")]),
+        b: () => Promise.resolve([row(1, "draft")]),
+      },
+    });
+    await Promise.all([store.a.getOrLoad(), store.b.getOrLoad()]);
+
+    await store.a.value[0]!.delete();
+
+    expect(store.a.value).toHaveLength(0);
+    expect(store.b.value).toHaveLength(0);
+  });
+
+  test("a collection may not shadow a member the store already has", () => {
+    const Model = makeModel(Schema, { keys: ["id"] });
+
+    expect(() =>
+      createStore(Model, {
+        // @ts-expect-error `remove` is a store member, so the name is rejected at compile time too
+        collections: { remove: () => Promise.resolve([]) },
+      }),
+    ).toThrow(/would shadow/);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// optimisticCreate — off unless a list asks for it
+// ---------------------------------------------------------------------------
+
+describe("optimisticCreate", () => {
+  const Schema = T.Object({ id: T.Number(), title: T.String() });
+  const rows = () => [{ id: 1, title: "Alpha" }];
+  const makeCreatingModel = () =>
+    makeModel(Schema, {
+      keys: ["id"],
+      create: (body: { title: string }) => Promise.resolve({ id: 2, ...body }),
+    });
+
+  test("a created record does not appear until the refetch confirms it", async () => {
+    const server = [{ id: 1, title: "Alpha" }];
+    const Model = makeModel(Schema, {
+      keys: ["id"],
+      create: (body: { title: string }) => {
+        const row = { id: 2, ...body };
+        server.push(row);
+        return Promise.resolve(row);
+      },
+    });
+    const store = createStore(Model, {
+      collections: { list: () => Promise.resolve(server.map((r) => ({ ...r }))) },
+    });
+    await store.list.getOrLoad();
+
+    await store.create({ title: "Beta" });
+
+    // nothing was inserted behind the server's back
+    expect(store.list.value).toHaveLength(1);
+
+    // but the `created` event marked it stale, so it arrives on the next load
+    await store.list.reload();
+    expect(store.list.value).toHaveLength(2);
+  });
+
+  test("a single collection can opt in while its neighbours stay off", async () => {
+    const Model = makeCreatingModel();
+    const store = createStore(Model, {
+      collections: {
+        all: { fetch: () => Promise.resolve(rows()), optimisticCreate: true },
+        filtered: () => Promise.resolve(rows()),
+      },
+    });
+    await Promise.all([store.all.getOrLoad(), store.filtered.getOrLoad()]);
+
+    const created = await store.create({ title: "Beta" });
+
+    expect(store.all.value[0]).toBe(created);
+    expect(store.filtered.value).toHaveLength(1);
+  });
+
+  test("a collection can opt out of a store that turned it on", async () => {
+    const Model = makeCreatingModel();
+    class Store extends makeStore(Model, { optimisticCreate: true }) {
+      all = this.collection(() => Promise.resolve(rows()));
+      search = this.collection(() => Promise.resolve(rows()), { optimisticCreate: false });
+    }
+    const store = new Store();
+    await Promise.all([store.all.getOrLoad(), store.search.getOrLoad()]);
+
+    await store.create({ title: "Beta" });
+
+    expect(store.all.value).toHaveLength(2);
+    expect(store.search.value).toHaveLength(1);
   });
 });

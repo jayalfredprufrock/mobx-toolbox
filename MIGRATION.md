@@ -74,7 +74,7 @@ and **`set()` now beats an in-flight fetch** instead of being overwritten by it.
 code that relied on the old behaviour to deduplicate should use `getOrLoad()`, which still joins.
 
 **Keyed collections.** If you used `lazyObservableArrayMap` to hold one list per key, the replacement
-is one store (or one lazy) per list — see _Several stores per model_. If the keys were genuinely
+is one named collection (or one lazy) per list — see _Several lists, or several stores_. If the keys were genuinely
 dynamic (a page number, a search term), drive a single lazy from observable params instead, with
 `trackDependencies`.
 
@@ -83,14 +83,16 @@ dynamic (a page number, a search term), drive a single lazy from observable para
 | before                                     | after                                                      |
 | ------------------------------------------ | ---------------------------------------------------------- |
 | `makeStore(Schema, …)`                     | `makeStore(Model, …)` — the schema form is gone            |
-| `store.all`                                | `store.list`                                               |
-| config `getAll: …`                         | config `list: ({ signal }) => …`                           |
-| `await store.getAll()`                     | `await store.list.getOrLoad()`                             |
+| `store.all`                                | your own collection name — see _Collections_ below         |
+| config `getAll: …`                         | `collections: { <name>: ({ signal }) => … }`               |
+| `await store.getAll()`                     | `await store.<name>.getOrLoad()`                           |
+| config `list:` / `listOptions:`            | an entry in `collections` — there is no reserved `list`    |
 | store config `get:` / `create:`            | model config `get:` / `create:` (now statics on the model) |
 | model config `reload:`                     | removed — derived from `get`                               |
 | `new Model(data, store)`                   | `new Model(data)`                                          |
 | `Model.instantiate(data, store)`           | `Model.instantiate(data)`                                  |
-| `transform(data, store)`                   | `transform(data)` (`this` is the store)                    |
+| `transform: …`                             | removed — pass the subclass to the store instead           |
+| `keys: ["id"] as const`                    | `keys: ["id"]` — `as const` is no longer needed            |
 | `model.store`, `attachStore`, `ModelStore` | removed — see _Mutations travel by event_                  |
 
 A model no longer references a store. `delete()` used to call `store.remove(this)` on the one store
@@ -100,6 +102,66 @@ the record. If you have code compensating for the old single-store behaviour, it
 ⚠️ **`update()` no longer causes a refetch.** Lists holding the record already show the change,
 because identity means they hold the same object. If a list's _membership_ depends on a field that
 `update` can change (a status, an owner), opt in: `invalidateOn: ["created", "updated"]`.
+
+#### Collections
+
+Lists are named by you and declared in one place. Which place depends only on whether the store needs
+behaviour of its own — never a mix of the two:
+
+```ts
+// no subclass needed: name them in the config
+export const surveys = createStore(SurveyModel, {
+  collections: {
+    drafts: (options) => api.listSurveys({ status: "draft", ...options }),
+    published: api.listPublishedSurveys,
+  },
+});
+await surveys.drafts.getOrLoad();
+
+// needs state or reactive parameters: subclass, and every list is a field
+class SurveySearch extends makeStore(SurveyModel) {
+  query = "";
+  results = this.collection((options) => api.searchSurveys({ q: this.query, ...options }), {
+    trackDependencies: { throttle: 300 },
+  });
+}
+```
+
+`createStore` now requires `collections`; `makeStore` takes no collections at all and every one of its
+options is optional. A collection's own options go in the verbose form —
+`{ fetch: api.listSurveys, reloadEvery: 30_000 }` — which is where `listOptions` went.
+
+Mechanically: a `list: fn` config becomes `collections: { list: fn }` if you want to keep the name.
+A `makeStore(Model, { list })` whose class you instantiated once becomes `createStore`; one you
+subclassed keeps `makeStore` and declares `list = this.collection(fn)` alongside its siblings.
+
+⚠️ **A created record no longer appears in a list until the refetch confirms it.** The old config
+`list` received an optimistic prepend automatically. Nothing does now: `create()` announces itself,
+`invalidateOn` marks lists stale, and the row arrives with the reload. Only the server knows whether
+a new record belongs in a filtered list, so opt in per list where it certainly does:
+`{ fetch: api.listSurveys, optimisticCreate: true }`, or store-wide with `optimisticCreate: true`.
+
+#### `keys` declares identity
+
+`keys` now says what identifies a record, and answers three different ways:
+
+| `keys`   | Params to API methods | Identity                                        |
+| -------- | --------------------- | ----------------------------------------------- |
+| `["id"]` | `{ id }`              | one instance per `id` — unchanged               |
+| `[]`     | none                  | **singleton** — one instance, full stop         |
+| `false`  | none                  | none — the identity statics aren't on the class |
+
+`makeModel(schema)` with no config resolves to `keys: false`.
+
+⚠️ **`keys: []` used to mean "no identity"; it now means "singleton".** If you have a keyless model
+that stands for a single resource — settings, the session, the current user — this is the fix you
+wanted: `Settings.get()` used to throw and now returns the same instance every time. If instead you
+had `keys: []` on a multi-record resource, change it to `keys: false`.
+
+`instantiate`, `forget` and `clearIdentity` are no longer on a model that declared no identity, so
+reaching for them is a compile error rather than a runtime throw. To build a detached instance from a
+model that _does_ have identity — two live copies of one record, for a before/after diff or history
+rows sharing an id — use `new Model(data)`, which never touches the registry.
 
 ### table
 
@@ -164,18 +226,35 @@ list: () => api.listUsers(),
 // after
 get: api.getUser,
 create: api.createUser,
-list: api.listUsers,        // if its first parameter is an options bag
-list: (options) => api.listUsers({ status: "draft", ...options }),   // with query params
+collections: {
+  all: api.listUsers,                                          // first parameter is an options bag
+  drafts: (options) => api.listUsers({ status: "draft", ...options }),   // with query params
+},
 ```
 
 Keep the arrow where it reshapes arguments, or where the client's method is bound to `this`.
+
+**`sort` instead of ordering at the call site.** Ordering is often the last thing keeping a client
+method from being attached directly. Declare it once on the store and every collection inherits it;
+it runs over model instances on each load:
+
+```ts
+createStore(SurveyModel, {
+  sort: (a, b) => a.title.localeCompare(b.title),
+  collections: { all: api.listSurveys, drafts: api.listDraftSurveys },
+});
+```
+
+A single collection overrides it, or opts out with `sort: false` to keep server order — a
+relevance-ranked search, say. Look for `.sort()` in components, in `computed` getters that exist only
+to order a list, and in wrapper arrows around list endpoints.
 
 **Identity instead of hand-rolled deduplication.** A keyed model class returns the same instance for
 the same record. Any local `Map<id, model>` cache, `findById`-then-patch helper, or "refresh the
 detail panel after the list reloads" workaround is likely now redundant.
 
 **Mutation events instead of manual refetch calls.** `invalidateOn` (default `["created"]`) and the
-automatic delete-sweep replace most `await store.list.reload()` calls after a mutation. Anything that
+automatic delete-sweep replace most `await store.<name>.reload()` calls after a mutation. Anything that
 isn't a store — a count, a chart, a hand-rolled feed — can implement `ModelListener` and register
 with `Model.addListener(this)`; listeners are held weakly, so there's nothing to dispose.
 
@@ -193,10 +272,14 @@ its request is superseded.
 flight". A refresh keeps the old rows visible with `fetching` true, so `if (!loaded) return <Spinner/>`
 no longer blanks the table on every poll.
 
-**Several stores per model.** A store is one list. Separate stores for separate queries behave as one
-because identity lives on the model — so a single store with client-side filtering, or a store with
-branching fetch logic, can often become two or three plain stores. Use `createStore` for the common
-case, `makeStore` + a subclass with `collection()` when a list needs reactive parameters.
+**Several lists, or several stores.** Separate queries behave as one because identity lives on the
+model — so a single store with client-side filtering, or a store with branching fetch logic, can
+often become two or three named collections. Use `createStore` with `collections` for the common
+case, `makeStore` + a subclass when a list needs reactive parameters or the store needs state. Split
+into separate stores when the lists have genuinely different lifetimes.
+
+**Subclass statics are typed through the subclass.** `Admin.get(…)` and `Admin.create(…)` now return
+`Admin`, as `Admin.instantiate(…)` already did. Any cast or `as Admin` around those results can go.
 
 ---
 
@@ -204,6 +287,10 @@ case, `makeStore` + a subclass with `collection()` when a list needs reactive pa
 
 - `Map`/`WeakMap` model caches, and any `instantiate`-like helper of your own.
 - `store.getAll()` convenience wrappers.
+- `transform` config functions — pass the subclass to the store instead: `createStore(Admin, …)`.
+- `.sort()` calls and order-only `computed` getters over a store's lists — `sort` covers them.
+- Casts around `Model.get` / `Model.create` results on a subclass.
+- `as const` on `keys`.
 - Wrapper arrows that only forward arguments to the API client.
 - `AbortController` plumbing around list fetches.
 - Debounce/throttle wrappers around search inputs feeding a lazy.

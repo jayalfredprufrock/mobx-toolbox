@@ -38,14 +38,29 @@ type UserInstance = InstanceType<typeof UserModel>;
 
 ### `keys`
 
-`keys` is a tuple of schema property names whose values are bundled into a params object and passed as the first argument to every API method. When `keys` is empty or omitted, API methods receive no leading params argument.
+`keys` declares what identifies one record. Its values are bundled into a params object and passed
+as the first argument to every API method, and they are what the identity map keys on. It carries
+three declarations:
 
-```ts
-// keys: ["id"]  →  methods receive { id: ... } as first arg
-// keys: []      →  methods receive no leading params arg
-```
+| `keys`   | Params to API methods | Identity                                        |
+| -------- | --------------------- | ----------------------------------------------- |
+| `["id"]` | `{ id }`              | One instance per `id`                           |
+| `[]`     | none                  | Singleton — one instance, full stop             |
+| `false`  | none                  | None — the identity statics aren't on the class |
 
-`as const` is not needed: the property names are inferred as literals from the array. It's only
+`makeModel(schema)` with no config at all resolves to `keys: false`, so it means exactly what the
+explicit spelling means rather than being a rule of its own.
+
+**`[]` is a singleton, not "no identity".** A resource with no identifying fields is one you have
+exactly one of — settings, the current session — so `Settings.get()` hands back the same instance
+every time and anything observing it stays bound across refetches.
+
+**`false` opts out.** `instantiate`, `forget` and `clearIdentity` are removed from the class type, so
+reaching for identity you never declared is a compile error rather than a runtime throw. `get` and
+`create` still work; they hand back a detached instance per call. The throw remains underneath for
+JavaScript callers and `as any` escapes.
+
+`as const` is not needed on the array: the property names are inferred as literals. It's only
 required when the config is hoisted into its own variable, where TypeScript widens the array to
 `string[]` before `makeModel` ever sees it — declare the config inline, or write
 `keys: ["id"] as const` there.
@@ -107,25 +122,28 @@ the list reloads, an edit through one reference is visible through all of them, 
 over the same model behave as one_:
 
 ```ts
-const drafts = createStore(UserModel, { list: api.listDraftUsers });
-const active = createStore(UserModel, { list: api.listActiveUsers });
+const drafts = createStore(UserModel, { collections: { all: api.listDraftUsers } });
+const active = createStore(UserModel, { collections: { all: api.listActiveUsers } });
 // the same user in both lists is the same object
 ```
 
 At scale this is also a performance feature: reloading a 50k-row list reuses the instances instead of
 running `makeObservable` 50k more times, which measured ~10× faster (233ms → 24ms).
 
-| Static                      | Description                                                          |
-| --------------------------- | -------------------------------------------------------------------- |
-| `instantiate(data, store?)` | The one instance for this record, created or updated                 |
-| `identityKey(source)`       | The registry key for a payload or model — override to scope identity |
-| `forget(source)`            | Drop the entry, so the next `instantiate` builds a fresh instance    |
-| `clearIdentity()`           | Forget every record — for logout or a tenant switch                  |
-| `keys`, `schema`            | The declared keys and schema                                         |
+| Static                      | Description                                                              |
+| --------------------------- | ------------------------------------------------------------------------ |
+| `instantiate(data, store?)` | The one instance for this record, created or updated                     |
+| `identityKey(source)`       | The registry key for a payload or model — override to scope identity     |
+| `forget(source)`            | Drop the entry, so the next `instantiate` builds a fresh instance        |
+| `clearIdentity()`           | Forget every record — for logout or a tenant switch                      |
+| `keys`, `schema`            | Exactly what was declared — the tuple, `[]`, or `false` — and the schema |
 
 Notes:
 
-- **`keys` is required.** `instantiate` throws without it, since there would be nothing to key on.
+- **Identity is opt-out, per class and per instance.** `keys: false` removes it from the class; on a
+  model that has it, `new Model(data)` builds a detached instance that is never registered. Reach for
+  the latter when you need two live copies of one record — a before/after diff, or history rows
+  sharing an id — since `instantiate` would collapse them onto a single object.
 - **Entries are weak.** The registry never keeps a model alive on its own: identity lasts exactly as
   long as something — a collection, your own code — holds the instance. Once nothing does, the entry
   goes and a later `instantiate` builds a fresh one, which is unobservable because nothing was
@@ -295,11 +313,17 @@ _same object_, so it already shows the new fields. Opt in per list when membersh
 mutable field:
 
 ```ts
-createStore(SurveyModel, { list: api.listDrafts, invalidateOn: ["created", "updated"] });
+createStore(SurveyModel, {
+  collections: { drafts: api.listDrafts },
+  invalidateOn: ["created", "updated"],
+});
 ```
 
 `"deleted"` may be listed too — the model is removed either way, so add it only when a deletion
 changes the list in some _other_ way, a server-side count or ordering, say.
+
+Set on the store it covers every collection, and a single one can still override it — see
+[Options a collection inherits](#options-a-collection-inherits).
 
 Anything can listen, not just stores — a count, a chart, a hand-rolled feed:
 
@@ -321,49 +345,127 @@ a page model alive.
 
 ## Defining a store
 
-A store is **one list**. `createStore(model, config?)` returns an instance; `makeStore` returns the
-class, for when you want to subclass it.
+A store is **lists over one resource**. There are two ways in, and which one you want depends only on
+whether the store needs behaviour of its own:
+
+- **`createStore(model, config)`** returns an instance, with its collections named in the config.
+- **`makeStore(model, config?)`** returns the class, for when you want to subclass it. Every option
+  is optional; collections are declared as fields.
 
 ```ts
-export const draftSurveys = createStore(SurveyModel, {
-  list: (options) => api.listSurveys({ status: "draft", ...options }),
+export const surveys = createStore(SurveyModel, {
+  collections: {
+    drafts: (options) => api.listSurveys({ status: "draft", ...options }),
+    published: api.listPublishedSurveys, // attached directly — see below
+  },
 });
 
-export const publishedSurveys = createStore(SurveyModel, {
-  list: api.listPublishedSurveys, // attached directly — see below
-});
+surveys.drafts.getOrLoad();
 ```
 
-Several stores over one model is the normal arrangement, and they behave as one: identity lives on
+Collections are named by you — there is no reserved `list`. They are the same thing whichever way
+you declare them, so a store never mixes config-level lists with subclass-level ones: use
+`createStore` until you need a subclass, then declare every collection as a field.
+
+Several stores over one model is also a normal arrangement, and they behave as one: identity lives on
 the model class, so the same record is the same object in every list, and mutations reach all of them
 by event.
 
-### `list`
+Models are built by the store from the class you hand it, so **to get a subclass in a list, pass the
+subclass**: `createStore(Admin, …)` fills its collections with `Admin` instances.
 
-`list` receives `{ signal }`, which aborts when the request is superseded. A client whose own first
-parameter is an options bag can be **attached directly**; one that takes query params spreads it:
+### Declaring a collection
+
+Each fetch receives `{ signal }`, which aborts when the request is superseded. A client whose own
+first parameter is an options bag can be **attached directly**; one that takes query params spreads
+it:
 
 ```ts
-list: api.listSurveys,                                        // (options) => …
-list: (options) => api.listSurveys({ status: "draft", ...options }),
+collections: {
+  all: api.listSurveys,                                          // (options) => …
+  drafts: (options) => api.listSurveys({ status: "draft", ...options }),
+}
 ```
 
-`store.list` is a `LazyObservableArray<M>` that loads when first observed in a reactive context. For
-imperative access, `await store.list.getOrLoad()`.
+Each is a `LazyObservableArray<M>` that loads when first observed in a reactive context. For
+imperative access, `await store.drafts.getOrLoad()`.
 
-`listOptions` passes lazy options through — throttled dependency tracking, caching, polling:
+The verbose form adds that collection's own options — every lazy option, plus `invalidateOn` and
+`sort`:
 
 ```ts
 createStore(SurveyModel, {
-  list: api.listSurveys,
-  listOptions: { reloadEvery: 30_000, keepOnUnobserved: { for: 10_000 } },
+  collections: {
+    all: { fetch: api.listSurveys, reloadEvery: 30_000, keepOnUnobserved: { for: 10_000 } },
+  },
 });
 ```
 
-### More than one list on a store
+### Options a collection inherits
 
-`collection()` builds another, handling the transform and joining the store's mutation handling. Call
-it in a subclass field initializer — which is also how a list gets reactive parameters:
+Three options are declared on the store and overridden per collection, since the same answer usually
+applies to every list over a resource. Each resolves the same way — the collection's own value, else
+the store's, else the built-in default:
+
+| Option             | Store-level default | What a collection can say                       |
+| ------------------ | ------------------- | ----------------------------------------------- |
+| `sort`             | unsorted            | its own comparator, or `false` for server order |
+| `invalidateOn`     | `["created"]`       | its own event list, or `[]` to never refetch    |
+| `optimisticCreate` | `false`             | `true` to show a created record before it lands |
+
+Everything else on the store config applies to it as a whole.
+
+### `sort`
+
+Ordering is usually the one thing standing between an API client and being attached directly, and the
+same order almost always applies to every list over a resource — so declare it once on the store. It
+runs over **model instances**, on every load:
+
+```ts
+createStore(SurveyModel, {
+  sort: (a, b) => a.title.localeCompare(b.title),
+  collections: { all: api.listSurveys, drafts: api.listDraftSurveys },
+});
+```
+
+A single collection overrides it, or opts out with `sort: false` to keep server order — for a
+relevance-ranked search, say:
+
+```ts
+class SurveySearch extends makeStore(SurveyModel, { sort: byTitle }) {
+  results = this.collection(api.searchSurveys, { sort: false }); // server ranking wins
+  recent = this.collection(api.recentSurveys, { sort: (a, b) => b.updatedAt - a.updatedAt });
+}
+```
+
+When a list opts into `optimisticCreate`, a record from `create()` is inserted where the sort puts it
+rather than at the top, so it doesn't visibly jump when the list next loads.
+
+### `optimisticCreate`
+
+Off by default: `create()` announces itself, every list that cares marks itself stale, and the row
+appears when the refetch confirms it. Only the server knows whether a new record belongs in a given
+list, so inserting into a filtered or searched collection would flash a row that doesn't belong
+there.
+
+Turn it on for the lists a new record certainly joins — store-wide, or per collection:
+
+```ts
+createStore(SurveyModel, {
+  collections: {
+    all: { fetch: api.listSurveys, optimisticCreate: true }, // a new survey is always in `all`
+    drafts: api.listDraftSurveys, // …but only sometimes a draft
+  },
+});
+```
+
+Identity means the refetch reuses the same instance, so an optimistically inserted row moves into
+place rather than flickering out and back.
+
+### Collections on a subclass
+
+`collection()` builds one, turning payloads into models and joining the store's mutation handling.
+Call it in a field initializer — which is also how a list gets reactive parameters:
 
 ```ts
 class SurveySearch extends makeStore(SurveyModel) {
@@ -386,39 +488,27 @@ class SurveySearch extends makeStore(SurveyModel) {
 ```
 
 Reading `this.query` inside the fetch is what makes it refetch; the throttle folds a burst of
-keystrokes into one request, and the signal aborts what it supersedes. `list` is itself built with
-`collection()`, so the two behave identically.
-
-### `transform`
-
-Only for constructing something other than the model class — a subclass, say:
-
-```ts
-createStore(UserModel, {
-  transform(data) {
-    return Admin.instantiate(data);
-  },
-  list: api.listUsers,
-});
-```
+keystrokes into one request, and the signal aborts what it supersedes. `createStore`'s `collections`
+are built with the same `collection()`, so the two behave identically.
 
 ### Store methods and properties
 
-| Name                          | Description                                                            |
-| ----------------------------- | ---------------------------------------------------------------------- |
-| `list`                        | `LazyObservableArray<M>` — present when `list` is configured           |
-| `collection(fetch, options?)` | Build another list on this store                                       |
-| `get(...args)`                | Delegates to `Model.get`                                               |
-| `create(...args)`             | Delegates to `Model.create` and prepends the row to `list`             |
-| `remove(model)`               | Drops a model from every list on this store, without deleting anything |
-| `onModelEvent(type, model)`   | The mutation handler — override to extend it                           |
+| Name                          | Description                                                             |
+| ----------------------------- | ----------------------------------------------------------------------- |
+| _your collection names_       | `LazyObservableArray<M>` — one per entry in `collections`, or per field |
+| `collection(fetch, options?)` | Build another list on this store                                        |
+| `get(...args)`                | Delegates to `Model.get`                                                |
+| `create(...args)`             | Delegates to `Model.create`; inserts into lists with `optimisticCreate` |
+| `remove(model)`               | Drops a model from every list on this store, without deleting anything  |
+| `onModelEvent(type, model)`   | The mutation handler — override to extend it                            |
 
 `get` and `create` exist only when the model declares them.
 
 Extending `onModelEvent` is how anything else on the store joins in:
 
 ```ts
-class SurveysWithCounts extends makeStore(SurveyModel, { list: api.listSurveys }) {
+class SurveysWithCounts extends makeStore(SurveyModel) {
+  all = this.collection(api.listSurveys);
   counts = lazyObservable(api.surveyCounts);
 
   override onModelEvent(type: ModelEventType, model: SurveyInstance) {
@@ -433,8 +523,8 @@ class SurveysWithCounts extends makeStore(SurveyModel, { list: api.listSurveys }
 - **Accumulating lists** ("load more") don't fit a lazy: its fetch returns the whole value, so
   `reload()` and "next page" would be the same operation. Build those as a plain
   `observable.array` plus a `loadMore()` action, and implement `ModelListener` to stay in step.
-- **Paginated envelopes** — `list` must resolve to `R[]`, so a `{ items, total }` response needs the
-  extra fields written out of the fetch as a side effect.
+- **Paginated envelopes** — a collection's fetch must resolve to `R[]`, so a `{ items, total }`
+  response needs the extra fields written out of the fetch as a side effect.
 
 ### Full example
 
@@ -457,11 +547,14 @@ const UserModel = makeModel(UserSchema, {
 });
 
 export const userStore = createStore(UserModel, {
-  list: (options) => api.get("/users", options),
+  sort: (a, b) => a.name.localeCompare(b.name),
+  collections: {
+    all: (options) => api.get("/users", options),
+  },
 });
 
 // In a component (observer):
-const users = userStore.list.value; // loads on first observation
+const users = userStore.all.value; // loads on first observation
 
 // Imperatively:
 const user = await userStore.get({ id: 42 });
@@ -481,12 +574,17 @@ import type {
   UnionModelConstructor, // the class returned by makeUnionModel
   ModelListener, // what a store exposes to hear about mutations
   ModelEventType, // "created" | "updated" | "deleted"
-  ModelIdentity, // the identity-map statics on a generated model class
-  StoreConfig, // config object passed to makeStore / createStore
-  CollectionOptions, // options for collection() — lazy options plus invalidateOn
+  ModelIdentity, // the identity-map statics — only on a model that declared identity
+  ModelEvents, // the mutation fan-out statics, on every model class
+  KeySpec, // what `keys` accepts: the field tuple, or false
+  StoreConfig, // config object passed to makeStore
+  CreateStoreConfig, // StoreConfig plus the `collections` createStore requires
+  CollectionSpec, // a collections entry: a fetch, or a fetch plus that list's options
+  CollectionOptions, // options for collection() — lazy options, invalidateOn, sort, optimisticCreate
+  Comparator, // (a: M, b: M) => number, what `sort` takes
   AnyModelClass, // a model class accepted as makeStore's first argument
   StoreConstructor, // the class returned by makeStore
-  LazyObservableArray, // the type of store.list
+  LazyObservableArray, // the type of each collection
   AnnotationsMap, // re-export from mobx, for getMobxAnnotations return type
 } from "@jayalfredprufrock/mobx-toolbox/model";
 ```
@@ -495,19 +593,19 @@ import type {
 
 ## Agent notes
 
-**`buildParams` returns `undefined` when `keys` is empty.** All internal method implementations branch on `params === undefined` to decide whether to prepend the params argument. If you override `buildParams()` and return `undefined`, the methods behave as if no keys were configured.
+**`buildParams` returns `undefined` for `keys: []` and `keys: false`.** All internal method implementations branch on `params === undefined` to decide whether to prepend the params argument. If you override `buildParams()` and return `undefined`, the methods behave as if no keys were configured.
 
 **A model holds no reference to a store.** Mutations travel by event to listeners registered on the model _class_, held in a `WeakRef` set. So there is no ownership, no ordering to get wrong, and every store over the resource is notified — not just whichever one loaded the record first.
 
 **Loads never emit events; only mutations do.** `create`, `update`, `delete`, and custom `actions` notify. `reload`, `get`, and list loads do not — which is why no suppression is needed when a 50k-row list refreshes.
 
-**`transform` is optional.** It defaults to `Model.instantiate(data)` — or `new Model(data)` if the model has no `keys` to identity-map on. When provided, the model type is its return type. `this` inside it is the store.
+**Models are built by the store from the class you pass it** — `Model.instantiate(data)`, or `new Model(data)` when the model declared `keys: false` and so has no identity to map through. To get a subclass in a list, pass the subclass: `createStore(Admin, …)`.
 
 **`makeStore` requires a model class.** The schema form is gone: `makeModel(schema)` is the one extra line, and having a single source for the schema, keys, identity, and endpoints is what keeps the store's type surface from being inference-derived.
 
-**`store.list` is only present when `list` is configured.** `collection()` is always available, so a store with no `list` can still declare lists in a subclass.
+**A store's collections are whatever you named them.** `createStore` requires `collections` and puts each one on the instance under its own name; `makeStore` takes none, and a subclass declares each as a field built with `this.collection(...)`. Both go through the same code path, so a store never mixes the two.
 
-**`create` prepends to `list.value` — it does not append.** It also marks the list stale via the `created` event, so the server still decides position and membership; identity means the refetch reuses that instance, so the row moves rather than flickering. With an identity-mapped model it checks first: a record the list already holds is not inserted twice.
+**`create` inserts nothing unless a list set `optimisticCreate`.** It always marks lists stale via the `created` event, so the server decides position and membership. Where a list does opt in, the row is placed by that list's `sort` if it has one and prepended otherwise, and a record the list already holds is never inserted twice.
 
 **`remove(model)` drops the model from every list on the store but keeps its identity.** Removing from a list is not the same as the record ceasing to exist, so a later payload for that key still updates the same instance. `model.delete()` forgets identity, because there the record really is gone.
 

@@ -45,7 +45,9 @@ const setup = () => {
     delete: api.deleteUser,
     actions: { activate: api.activateUser },
   });
-  const UserStore = makeStore(UserModel, { list: api.listUsers });
+  const UserStore = class extends makeStore(UserModel) {
+    list = this.collection(api.listUsers, { optimisticCreate: true });
+  };
   return { api, UserModel, UserStore };
 };
 

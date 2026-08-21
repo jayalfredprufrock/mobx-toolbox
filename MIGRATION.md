@@ -1,4 +1,4 @@
-# Upgrade prompt: mobx-toolbox `model` / `lazy-observable` / `table` / `util`
+# Upgrade prompt: mobx-toolbox `model` / `lazy-observable` / `table` / `util` / `router`
 
 Hand this file to a coding agent working in your repository. It describes a release with
 breaking changes to `@jayalfredprufrock/mobx-toolbox`, plus new capabilities that let a fair
@@ -30,6 +30,54 @@ these are right.
 ---
 
 ## Breaking changes
+
+### router
+
+No API changed here — one default did.
+
+⚠️ **Redirects now replace the history entry instead of pushing one.** This applies to every
+redirect: a `[REDIRECT]` leaf and a `redirect()` thrown from a guard or loader.
+`router.navigate()` and `<Link>` are unaffected — those are ordinary navigations and still push.
+
+The old behaviour left the redirecting URL in history, which traps the Back button: going back
+re-matches the redirect and throws the user forward again, so they can never reach the page they
+came from. Replacing is what you want in almost every case, which is why it is now the default.
+
+If a specific redirect should stay in history, say so explicitly:
+
+```ts
+// route table
+old: { [REDIRECT]: { to: "/new", replace: false } },
+
+// thrown from a guard
+throw redirect({ to: "/login", replace: false });
+
+```
+
+Existing `replace: true` on a redirect is now redundant but harmless — it can be deleted.
+
+**`<Navigate>` is removed.** It was a fourth way to spell a redirect, and every use it had is
+already covered by the route table — which is where a redirect belongs, since the router can then
+see it during matching. Replace it:
+
+| `<Navigate>` decided from | Use instead                           |
+| ------------------------- | ------------------------------------- |
+| nothing / params          | `[REDIRECT]` on the route             |
+| a synchronous check       | `[GUARD]` that throws `redirect(...)` |
+| loaded data               | `[LOAD]` that throws `redirect(...)`  |
+
+If it was reacting to store state changing while the page was already on screen, that is an
+autorun, not a render-time navigation:
+
+```tsx
+useAutorun(() => {
+  if (!auth.isLoggedIn) router.navigate({ to: "/login" });
+});
+```
+
+Related fix: a `redirect()` thrown from a `[LOAD]` no longer marks the outlet `error` on its way
+out, so the generic "A route loader or lazy component failed." text no longer flashes before the
+new route lands. If you avoided loader redirects because of that flash, they are now clean.
 
 ### lazy-observable
 
@@ -73,10 +121,28 @@ Also check React dependency arrays (`useEffect(…, [rows.value])`) and any `===
 and **`set()` now beats an in-flight fetch** instead of being overwritten by it. Both are bug fixes;
 code that relied on the old behaviour to deduplicate should use `getOrLoad()`, which still joins.
 
-**Keyed collections.** If you used `lazyObservableArrayMap` to hold one list per key, the replacement
-is one named collection (or one lazy) per list — see _Several lists, or several stores_. If the keys were genuinely
-dynamic (a page number, a search term), drive a single lazy from observable params instead, with
-`trackDependencies`.
+⚠️ **A lazy constructed inside an `observer()` render now loads.** It previously never did — the
+constructor's own read of its array spent mobx's single `onBecomeObserved` transition before the
+hooks were attached, so the lazy was watched, never learned it, and sat at `"init"` forever. Code
+that compiled and quietly fetched nothing will start fetching. A workaround that called `getOrLoad()`
+by hand is safe to leave in place: it joins the load rather than starting a second one.
+
+**Keyed collections.** If you used `lazyObservableArrayMap` to hold one list per key over a single
+resource, the replacement is `collectionMap` on a store — one list per key, built on first use, each
+one an ordinary collection with the store's mutation handling:
+
+```ts
+class Surveys extends makeStore(SurveyModel) {
+  byOrg = this.collectionMap(["orgId"], ({ orgId }, options) =>
+    api.listSurveys({ orgId, ...options }),
+  );
+}
+```
+
+Where the keys were few and fixed, one named collection per list is still simpler — see _Several
+lists, or several stores_. Where they were really a component's own state (a search term, a page),
+drive a single collection from that state instead: `trackDependencies` on a subclass field, or
+`useCollection` with `params` in the component.
 
 ### model
 
@@ -126,6 +192,10 @@ class SurveySearch extends makeStore(SurveyModel) {
   });
 }
 ```
+
+Two further places a list can live, for parameters the store can't know when it is written:
+`collectionMap` builds one list per key on a subclass, and `useCollection` builds one that belongs to
+a single component. The README's _Where a list should live_ table says which fits.
 
 `createStore` now requires `collections`; `makeStore` takes no collections at all and every one of its
 options is optional. A collection's own options go in the verbose form —
@@ -284,6 +354,24 @@ often become two or three named collections. Use `createStore` with `collections
 case, `makeStore` + a subclass when a list needs reactive parameters or the store needs state. Split
 into separate stores when the lists have genuinely different lifetimes.
 
+**`collectionMap` instead of a map of stores.** A resource fetched per tenant, per parent record, or
+per page no longer needs a `Map<id, Store>` and the bookkeeping around it. Key fields are declared
+against the schema and typed from it, and each key's list joins the store's mutation handling like
+any other. Unobserved keys drop their rows on their own; `forget(key)` and `clear()` cover a key that
+is finished with — a logout, an organization the user left.
+
+**`useCollection` instead of per-component fetch glue.** Where a list's parameters are a component's
+own state, the old shape was `useState` plus `useEffect` plus a fetch plus more `useState` for
+loading and error, with models built by hand. That is one call now: params are plain React values,
+the result is a `LazyObservableArray`, and records go through the model's identity map — so an edit
+made anywhere in the app shows up in it, and nothing needs disposing. Reach for it instead of putting
+a component's filter state on a shared store, which is what stops the store being shared.
+
+**`useObservableBox` instead of a hand-rolled React-to-MobX bridge.** Any `useRef(observable.box(…))`
+plus an effect that writes props or `useState` into it — feeding a `reaction`, a `computed`, or
+`trackDependencies` — is that hook, including the shallow comparison that stops an object rebuilt
+every render retriggering everything reading it.
+
 **Subclass statics are typed through the subclass.** `Admin.get(…)` and `Admin.create(…)` now return
 `Admin`, as `Admin.instantiate(…)` already did. Any cast or `as Admin` around those results can go.
 
@@ -292,6 +380,10 @@ into separate stores when the lists have genuinely different lifetimes.
 ## Code that can now be deleted (Phase 2 — propose first)
 
 - `Map`/`WeakMap` model caches, and any `instantiate`-like helper of your own.
+- `Map<key, Store>` or `Map<key, lazy>` caches keyed by tenant or parent id — `collectionMap` covers them.
+- Per-component `useState`/`useEffect` fetch blocks, their loading and error flags, and the model
+  instances built by hand inside them.
+- Hand-rolled `observable.box` bridges mirroring props or `useState` into MobX.
 - `store.getAll()` convenience wrappers.
 - `transform` config functions — pass the subclass to the store instead: `createStore(Admin, …)`.
 - `.sort()` calls and order-only `computed` getters over a store's lists — `sort` covers them.

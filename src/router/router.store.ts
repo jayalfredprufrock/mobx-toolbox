@@ -407,7 +407,11 @@ export class RouterStore {
 
       if (thrown instanceof Redirect) {
         try {
-          this.navigate(thrown.options);
+          // a redirect replaces by default. The URL that redirected renders
+          // nothing of its own, so leaving it in history traps Back: it
+          // resolves to the same redirect and throws the user forward again.
+          // An explicit `replace: false` on the redirect still wins.
+          this.navigate({ ...thrown.options, replace: thrown.options.replace ?? true });
           return;
         } catch (cause) {
           // a redirect that can't be carried out — most often a `to` whose

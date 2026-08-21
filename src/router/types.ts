@@ -239,6 +239,14 @@ export type WithToAndParams<P extends RoutePath, T = {}> =
 
 export type NavigateOptions<P = string> = {
   to: P;
+  /**
+   * Replace the current history entry instead of pushing a new one.
+   *
+   * Defaults to `false` for a direct `navigate()` or `<Link>`, and to `true`
+   * everywhere the navigation is a *redirect* — a `[REDIRECT]` leaf or a
+   * `redirect()` thrown from a guard or loader — where the origin URL
+   * renders nothing and would trap Back if it stayed in history.
+   */
   replace?: boolean;
   state?: unknown;
   search?: Record<string, string> | URLSearchParams;

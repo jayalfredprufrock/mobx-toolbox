@@ -159,10 +159,13 @@ export class Outlet {
       })
       .catch((e) => {
         clearTimeout(preloadingTimer);
-        this.setState("error");
-        // a Redirect thrown by a loader propagates so the router
-        // navigates; everything else renders in-slot error UI
+        // a Redirect thrown by a loader is control flow, not a failure: it
+        // propagates so the router navigates. Leaving the slot in `loading`
+        // keeps the [LOADING] component on screen until the new route lands
+        // — marking it `error` here flashed the generic load-failure text,
+        // with no error recorded to explain it.
         if (e instanceof Redirect) throw e;
+        this.setState("error");
         this.setError(e instanceof RouterError ? e : new RouterError("LOAD", { cause: e }));
       });
 

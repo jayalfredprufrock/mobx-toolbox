@@ -365,11 +365,13 @@ Return either spelling — a path you have already substituted, as above, or a `
 [REDIRECT]: (route) => ({
   to: "/org/:orgId/overview",
   params: { orgId: route.params.orgId },
-  replace: true,
+  search: { from: "org" },
 }),
 ```
 
-The options form is what you want when the redirect needs `replace`, `search` or `state`; otherwise the bare path reads better.
+The options form is what you want when the redirect needs `search`, `state` or an explicit `replace`; otherwise the bare path reads better.
+
+**A redirect replaces by default.** Every redirect — a `[REDIRECT]` leaf and a `redirect()` thrown from a guard or loader — replaces the history entry instead of pushing one, so `replace` is a thing you turn _off_, not on. The URL that redirected renders nothing of its own: leaving it in history traps Back, because going back re-matches the redirect and throws the user forward again. Pass `replace: false` for the rare redirect that should stay in history.
 
 `route` is the route the redirect itself matched. It runs during matching — before guards and loaders — so `route.data` is empty; `params`, `context` and `path` are what it has to work with. Anything needing loaded data or an async check is a `[GUARD]`, not a redirect.
 
@@ -496,9 +498,21 @@ Error routes never run ancestor `[LOAD]` loaders — wrappers render without `ro
 Prefer redirecting over a 404 page? `[ERROR]` components render with full router context, so:
 
 ```tsx
+const RedirectHome = () => {
+  const router = useRouter();
+  // an error route has already committed, so no guard or loader will run
+  // again — this is the one redirect that has to happen from render.
+  // `useMountEffect` keeps it to once, and redirects replace by default.
+  useMountEffect(() => router.navigate({ to: "/" }));
+  return null;
+};
+
 const AppError = ({ error }: ErrorComponentProps) =>
-  error.type === "NOT_FOUND" ? <Navigate to="/" replace /> : <SomethingWentWrong error={error} />;
+  error.type === "NOT_FOUND" ? <RedirectHome /> : <SomethingWentWrong error={error} />;
 ```
+
+This is the only place a render-time redirect is the right tool. Everywhere else the route table
+gets there first — see [Redirecting](#redirecting).
 
 ### Errors thrown by a loader
 
@@ -518,7 +532,7 @@ Choose where to throw based on the UI you want:
 
 So `throw new RouterError("NOT_FOUND")` from a loader gives you a 404 _in the slot_; move the existence check into a guard if you want the whole page replaced.
 
-**Prefer guards for redirects.** `throw redirect(...)` from a loader does navigate, but the outlet is marked `error` before the redirect resolves — with no error recorded, so a generic "A route loader or lazy component failed." message can flash before the new route lands. Guards have no such window.
+**A redirect thrown from a loader is control flow, not a failure.** The slot stays in its loading state and the `[LOADING]` component stays on screen until the new route lands — no error UI flashes in between. Use a loader redirect when the decision needs loaded data, and a `[GUARD]` when it doesn't; neither has a flash window.
 
 ### What is deliberately NOT caught
 
@@ -823,17 +837,40 @@ router.navigate({ to: "/search", search: { q: "hello" }, preserveSearch: true })
 router.navigate({ to: "/login", replace: true }); // replace history entry
 ```
 
-### `<Navigate>` component
+### Redirecting
+
+There is no redirect _component_. A redirect belongs to the route, not to the render, and the route
+table has three spellings depending on what the decision needs to read:
+
+| The decision needs                      | Use                                              |
+| --------------------------------------- | ------------------------------------------------ |
+| Nothing — the path always moves         | `[REDIRECT]` (see [below](#redirect--redirects)) |
+| Params, context, or a synchronous check | `[REDIRECT]` as a function, or a `[GUARD]`       |
+| Loaded data                             | `throw redirect(...)` from a `[LOAD]`            |
 
 ```tsx
-import { Navigate } from "@mobx-toolbox/router";
-
-// Triggers navigation in useLayoutEffect — useful for conditional redirects in render
-function RequireAuth({ children }) {
-  const auth = useAuthStore();
-  if (!auth.isLoggedIn) return <Navigate to="/login" />;
-  return children;
+// decided from loaded data — the loader is the only place that has it
+survey: {
+  [LOAD]: async (route) => {
+    const survey = await api.getSurvey(route.params.id);
+    if (survey.status === "draft") throw redirect({ to: "/surveys" });
+    return survey;
+  },
+  index: SurveyPage,
 }
+```
+
+All three replace the history entry rather than pushing one — see
+[a redirect replaces by default](#redirecting-to-a-dynamic-path).
+
+For the rare case where a redirect is driven by store state changing _while the page is already on
+screen_ — no guard or loader re-runs at that point — reach for an autorun rather than a render-time
+navigation:
+
+```tsx
+useAutorun(() => {
+  if (!auth.isLoggedIn) router.navigate({ to: "/login" });
+});
 ```
 
 ### Links — `makeLinkComponent`
@@ -978,7 +1015,7 @@ throw redirect({ to: "/login" });
 throw new Redirect({ to: "/login" });
 ```
 
-Both forms are caught by the router after a guard throws; the router then calls `navigate()` with the provided options.
+Both forms are caught by the router after a guard throws; the router then calls `navigate()` with the provided options, defaulting `replace` to `true` — see [redirects replace by default](#redirecting-to-a-dynamic-path). Pass `replace: false` to push instead.
 
 ## Key types
 

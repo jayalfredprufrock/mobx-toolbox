@@ -1233,6 +1233,114 @@ describe("error handling", () => {
       expect(history.location.pathname).toBe("/org/7/home");
       expect(router.activeRoute?.error).toBeUndefined();
     });
+
+    test("a [REDIRECT] replaces its own entry, so Back leaves the redirect behind", async () => {
+      const routes = makeRoutes()({
+        about: PageB,
+        org: {
+          $orgId: {
+            index: {
+              [REDIRECT]: (route) => ({
+                to: "/org/:orgId/home",
+                params: { orgId: route.params.orgId },
+              }),
+            },
+            home: PageA,
+          },
+        },
+      });
+      const history = createMemoryHistory({ initialEntries: ["/about"] });
+      const router = new RouterStore({ history });
+      router.initialize(routes);
+      await vi.waitFor(() => expect(router.activeRoute?.path).toBe("about"));
+
+      router.navigate({ to: "/org/:orgId" as any, params: { orgId: "7" } } as any);
+      await vi.waitFor(() => expect(router.activeRoute?.path).toBe("org/7/home"));
+
+      // /org/7 renders nothing of its own — it must not hold an entry, or
+      // Back would land on it and be thrown forward to /org/7/home again
+      expect(history.index).toBe(1);
+      history.back();
+      await vi.waitFor(() => expect(router.activeRoute?.path).toBe("about"));
+    });
+
+    test("a redirect thrown from a guard replaces its entry too", async () => {
+      const routes = makeRoutes()({
+        about: PageB,
+        admin: {
+          [GUARD]: () => {
+            throw redirect({ to: "/login" as any });
+          },
+          index: PageA,
+        },
+        login: PageC,
+      });
+      const history = createMemoryHistory({ initialEntries: ["/about"] });
+      const router = new RouterStore({ history });
+      router.initialize(routes);
+      await vi.waitFor(() => expect(router.activeRoute?.path).toBe("about"));
+
+      router.navigate({ to: "/admin" as any });
+      await vi.waitFor(() => expect(router.activeRoute?.path).toBe("login"));
+
+      expect(history.index).toBe(1);
+      history.back();
+      await vi.waitFor(() => expect(router.activeRoute?.path).toBe("about"));
+    });
+
+    test("a redirect thrown from a loader never marks the outlet errored", async () => {
+      // the outlet used to flip to `error` on its way out, so the generic
+      // load-failure text flashed with no error recorded to explain it
+      const seen: (string | undefined)[] = [];
+      const routes = makeRoutes()({
+        [ERROR]: RootErrorPage,
+        surveys: PageB,
+        survey: {
+          [LOAD]: async () => {
+            throw redirect({ to: "/surveys" as any });
+          },
+          index: PageA,
+        },
+      });
+      const history = createMemoryHistory({ initialEntries: ["/"] });
+      const router = new RouterStore({ history });
+      router.initialize(routes);
+
+      // the outlet that loads belongs to pendingRoute — activeRoute still
+      // holds the previous page until the swap
+      const stop = autorun(() => {
+        for (const route of [router.pendingRoute, router.activeRoute]) {
+          for (const outlet of route?.outlets ?? []) seen.push(outlet.state);
+        }
+      });
+      router.navigate({ to: "/survey" as any });
+      await vi.waitFor(() => expect(router.activeRoute?.path).toBe("surveys"));
+      stop();
+
+      expect(seen).not.toContain("error");
+      expect(router.activeRoute?.error).toBeUndefined();
+      // and it replaced the entry it was navigated to, like any other
+      // redirect — /survey is gone, so Back reaches / rather than bouncing
+      expect(history.index).toBe(1);
+      history.back();
+      await vi.waitFor(() => expect(history.location.pathname).toBe("/"));
+    });
+
+    test("an explicit `replace: false` still pushes", async () => {
+      const routes = makeRoutes()({
+        about: PageB,
+        old: { [REDIRECT]: { to: "/about", replace: false } },
+      });
+      const history = createMemoryHistory({ initialEntries: ["/"] });
+      const router = new RouterStore({ history });
+      router.initialize(routes);
+
+      router.navigate({ to: "/old" as any });
+      await vi.waitFor(() => expect(router.activeRoute?.path).toBe("about"));
+
+      // one entry for /old, one for /about
+      expect(history.index).toBe(2);
+    });
   });
 
   describe("loader failures", () => {

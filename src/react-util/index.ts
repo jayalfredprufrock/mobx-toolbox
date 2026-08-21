@@ -5,3 +5,4 @@ export * from "./useDebouncedEffect";
 export * from "./useMountEffect";
 export * from "./useMountedState";
 export * from "./useResize";
+export * from "./useStable";

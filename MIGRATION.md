@@ -1,4 +1,4 @@
-# Upgrade prompt: mobx-toolbox `model` / `lazy-observable` / `table` / `util` / `router`
+# Upgrade prompt: mobx-toolbox `model` / `lazy-observable` / `table` / `util` / `router` / `react-util`
 
 Hand this file to a coding agent working in your repository. It describes a release with
 breaking changes to `@jayalfredprufrock/mobx-toolbox`, plus new capabilities that let a fair
@@ -366,6 +366,51 @@ loading and error, with models built by hand. That is one call now: params are p
 the result is a `LazyObservableArray`, and records go through the model's identity map — so an edit
 made anywhere in the app shows up in it, and nothing needs disposing. Reach for it instead of putting
 a component's filter state on a shared store, which is what stops the store being shared.
+
+**`useLazy` instead of `useMemo(() => lazyObservable(…))` for a details page.** Loading one record
+in a component had no first-class shape, so the pattern was:
+
+```tsx
+// before
+const study = useMemo(() => lazyObservable(() => StudyModel.get({ id: studyId })), [studyId]);
+
+// after
+const study = useLazy((options) => StudyModel.get({ id: studyId }, options), [studyId]);
+```
+
+Two things that fixes beyond the noise. `useMemo` is a performance hint React is allowed to discard
+and recompute — which would rebuild the lazy and silently drop what it had loaded; `useLazy` holds it
+through `useStable`, which does not. And passing the fetch options through gives you abort-on-supersede,
+so navigating quickly between records cancels the request you no longer want. `useLazyArray` is the
+same for a list-shaped value.
+
+**`Model.peek` / `Model.reload`, and `cache` on a model.** Three ways to reach a record, so nothing
+needs a per-call cache flag:
+
+```ts
+StudyModel.peek({ id }); // sync — the loaded record or undefined, never fetches
+StudyModel.get({ id }); // honors the model's `cache` config
+StudyModel.reload({ id }); // always calls the API
+```
+
+`cache: true | { for: ms }` on the model config lets `get` answer from the identity map instead of the
+API — the identity map is already a cache of records, and this decides whether `get` may use it. It
+defaults to `false`, so nothing changes until you opt in. `optimistic: true` additionally hands back a
+stale record immediately and refreshes it in the background.
+
+⚠️ **Only turn `cache` on where the payload is the same shape wherever it is loaded from.** If a list
+endpoint returns a projection and the detail endpoint returns the whole record, those are two models,
+not one cached model — `setData` is a full replace, so a cached record would serve list-shaped data to
+a detail page with its extra fields permanently `undefined`. This is the existing "payload shapes must
+agree" rule, and `cache` is where it starts to bite.
+
+A failed background refresh under `optimistic` is **not** a new error source to handle: it is logged
+and clears the record's load stamp, so the next `get` goes to the API and reports failure through the
+normal path.
+
+**`useStable` instead of `useMemo` for anything holding state.** Not model-specific — reach for it
+wherever a `useMemo` is holding a controller, a subscription, or any object whose identity carries
+state rather than caching a computation.
 
 **`useObservableBox` instead of a hand-rolled React-to-MobX bridge.** Any `useRef(observable.box(…))`
 plus an effect that writes props or `useState` into it — feeding a `reaction`, a `computed`, or

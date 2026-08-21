@@ -99,6 +99,8 @@ Two consequences worth knowing:
 
 - **`reload()` is derived from `get`**, so the endpoint is declared once instead of appearing as both
   `get` and `reload`. There is no separate `reload` slot, and no `reload()` on a model without `get`.
+  The same endpoint also backs the static `Model.reload(params)` — see
+  [Caching a record](#caching-a-record).
 - **No store is required.** A route loader can call `SurveyModel.get({ id })` directly. A model holds
   no reference to any store; stores listen to the _model class_, so a record fetched before any store
   existed is still removed from every list when it is deleted.
@@ -169,6 +171,92 @@ class TenantUser extends UserModel {
   every field. If a list endpoint returns a projection and the detail endpoint returns the whole
   record, a list refresh would wipe the detail-only fields — use separate models/stores for shapes
   that genuinely differ.
+
+### Caching a record
+
+The identity map is already a cache of records — `cache` decides whether `get` is allowed to answer
+from it instead of calling the API.
+
+```ts
+export const StudyModel = makeModel(StudySchema, {
+  keys: ["id"],
+  get: api.getStudy,
+  cache: { for: 30_000 },
+  optimistic: true,
+});
+```
+
+| `cache`           | `Model.get(params)`                       |
+| ----------------- | ----------------------------------------- |
+| `false` (default) | always calls the API                      |
+| `true`            | reuses a loaded record indefinitely       |
+| `{ for: ms }`     | reuses a record loaded within that window |
+
+There is no second store of records and nothing to invalidate: the record `get` hands back is the
+same instance every list, loader and other `get` holds, so a cache hit and a fresh fetch are
+indistinguishable to everything downstream.
+
+`cache` only ever applies to a model that declared `keys`. Without identity there is nothing to reuse,
+and the setting is ignored.
+
+**Three ways to reach a record**, so nothing needs a per-call cache flag:
+
+```ts
+StudyModel.peek({ id }); // sync — the loaded record or undefined, never fetches
+StudyModel.get({ id }); // honors `cache`
+StudyModel.reload({ id }); // always calls the API
+```
+
+`peek` reports _presence, not freshness_: a record `cache` would consider stale still comes back. It
+is the one to use during render, or to decide whether a fetch is needed at all. `reload` is the
+static mirror of `instance.reload()` — same endpoint, params passed in rather than read off a record
+you already hold — and it re-freshens the record, so the next `get` is cached again.
+
+#### `optimistic`
+
+With `optimistic: true`, a `get` whose record has gone stale hands the record back **now** and
+refreshes it in the background, instead of making the caller wait:
+
+```ts
+const study = await StudyModel.get({ id }); // resolves immediately with the stale record
+// …fields update in place when the refresh lands
+```
+
+The refreshed fields land on that same instance, so anything observing it re-renders. It only fires
+when there is something cached to answer with — a record that was never loaded is always awaited.
+
+**A failed background refresh introduces no new error source.** The promise has already resolved, so
+there is nowhere to throw. Instead the failure is logged and the record's load stamp is cleared, which
+means the _next_ `get` goes to the API and reports its failure through the normal path. Repeated
+failures simply degrade to `cache: false`. Clearing the stamp overrides even `cache: true` — a record
+that could not be refreshed is never treated as fresh again.
+
+#### When _not_ to turn `cache` on
+
+Only when this model's payload is the same shape wherever it is loaded from. If a list endpoint
+returns a projection and a detail endpoint returns the whole record, those are two models, not one
+cached model — [`setData` replaces, it does not merge](#setdata-replaces-it-does-not-merge), so a
+cached record could serve list-shaped data to a detail page with its extra fields permanently
+`undefined`.
+
+Compose the schemas and declare a second model instead:
+
+```ts
+const StudyDetailSchema = T.Composite([
+  StudySchema,
+  T.Object({ sections: T.Array(SectionSchema) }),
+]);
+
+export const StudyDetailModel = makeModel(StudyDetailSchema, {
+  keys: ["id"],
+  get: api.getStudyDetail,
+  cache: { for: 60_000 },
+});
+```
+
+The two have separate identity maps, so they are separate instances of one record — an `update`
+through one does not show in the other without wiring
+[`addListener`](#mutations-travel-by-event).
 
 ### Built-in instance methods
 
@@ -603,6 +691,47 @@ per record and mutations still fan out, so an edit here shows up in the app-wide
 Nothing needs disposing either — the model holds its listeners weakly, so the store and its list are
 garbage the moment the component unmounts.
 
+### A single record in a component — `useLazy`
+
+A detail page loads one record, not a list, so there is no collection to build. `useLazy` gives that
+fetch the same lazy the rest of the library uses:
+
+```tsx
+const StudyPage = observer(({ studyId }: { studyId: string }) => {
+  const study = useLazy((options) => StudyModel.get({ id: studyId }, options), [studyId]);
+
+  return (
+    <LazyObserver observe={study} placeholder={<Spinner />}>
+      {(s) => <StudyDetail study={s} />}
+    </LazyObserver>
+  );
+});
+```
+
+`useLazy` lives in [`@mobx-toolbox/lazy-observable`](../lazy-observable/README.md) and knows nothing
+about models — it is `lazyObservable` with a React lifetime, so it fits any async read whose inputs
+are the component's own. `useLazyArray` is the same for a list-shaped value.
+
+Nothing reading one can tell it came from a hook: it loads when observed, keeps its value while it
+reloads, and aborts a request it supersedes, exactly as one built in a store does.
+
+**`deps` say _which_ lazy this is.** Changing them builds a new one — the value starts empty and
+loads again — which is what you want for a record: showing the study you navigated away from while
+the next loads would be a lie. That is the difference from `useCollection`'s `params`, and it is the
+difference between the two questions being asked:
+
+|                                | means                   | on change                                 |
+| ------------------------------ | ----------------------- | ----------------------------------------- |
+| `useLazy(fetch, deps)`         | _which_ record this is  | new lazy — value starts empty             |
+| `useCollection(…, { params })` | filters over _one_ list | same lazy — refetches, rows stay readable |
+
+A study id changing makes it a different record. A search term changing does not make it a different
+list.
+
+**Pair it with `cache`.** With [`cache`](#caching-a-record) on the model, navigating back to a record
+you have already seen resolves from the identity map and paints without a request — the hook rebuilds
+its lazy, and the lazy's first load is answered synchronously.
+
 ### Where a list should live
 
 | The parameters are…                          | Put the list…                                                 |
@@ -611,6 +740,9 @@ garbage the moment the component unmounts.
 | global observable state (the current tenant) | on a shared store, read in the fetch with `trackDependencies` |
 | varying per caller, and spellable as a key   | on a shared store — `collectionMap`                           |
 | the component's own React state              | in the component — `useCollection`                            |
+
+And for a value that is one record rather than a list, `useLazy` in the component — see
+[above](#a-single-record-in-a-component--uselazy).
 
 `collection()` has no `params` option on purpose. A store always has somewhere observable to read
 from — `this`, or module state — so reading it inside the fetch _is_ the feature. React state is the

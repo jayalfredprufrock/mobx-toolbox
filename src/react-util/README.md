@@ -117,6 +117,27 @@ useMountEffect(() => {
 });
 ```
 
+## `useStable`
+
+Builds a value once and keeps it until `deps` change — the guarantee `useMemo` does not make.
+
+```ts
+import { useStable } from "@jayalfredprufrock/mobx-toolbox/react-util";
+
+const controller = useStable(() => new AbortController(), [requestId]);
+```
+
+`useMemo` is documented as a _performance hint_: React may throw a cached value away and recompute it
+whenever it likes. That is harmless for a derived number and quietly wrong for anything that holds
+state, which would be rebuilt mid-life — a lazy observable dropping what it loaded, a store losing its
+subscriptions. Reach for `useStable` whenever the value **is** the state rather than a view of it.
+
+`deps` are compared with `Object.is`, exactly as React compares its own, and a change in the list's
+length counts.
+
+It backs [`useLazy`](../lazy-observable/README.md#uselazy--uselazyarray) and
+[`useCollection`](../model/README.md#component-scoped-collections--usecollection).
+
 ## `useResize`
 
 Tracks the **content-box** size of a DOM element using `ResizeObserver` (with a `window.resize` fallback for environments that don't support it).

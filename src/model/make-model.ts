@@ -37,6 +37,17 @@ export type ModelSchema = T.TObject | T.TUnion<T.TObject[]>;
 export const serializeKey = (values: readonly unknown[]): string | number =>
   values.length === 1 ? (values[0] as string | number) : values.map(String).join("\u0000");
 
+/**
+ * @internal When a record's fields were last replaced. Stamped by `setData`, so every path that
+ * loads a record — `instantiate` from a list, `get`, `reload`, `update`, a custom action — refreshes
+ * it through one choke point.
+ *
+ * A symbol so it never collides with a schema field and never reaches `toJSON`, and deliberately
+ * *not* observable: it is metadata read imperatively by `get`, and making it observable would
+ * re-render every consumer of a record on each load for nothing.
+ */
+export const LOADED_AT = Symbol("loadedAt");
+
 /** The registry key a singleton (`keys: []`) maps to. Prefixed so no real id can collide with it. */
 const SINGLETON_KEY = "\u0000singleton";
 
@@ -124,6 +135,17 @@ type ActionsConfig<S extends ModelSchema, K> = {
   [name: string]: KeyedFn<S, K, Resource<S>>;
 } & { [Key in ReservedActionKey]?: never };
 
+/**
+ * How long a loaded record stays usable without going back to the API. `false` (the default) always
+ * fetches, `true` reuses a loaded record indefinitely, and `{ for: ms }` reuses one loaded within
+ * that window.
+ *
+ * The identity map is the cache — there is no second store of records — so this is purely a policy
+ * over what is already there. It only ever applies to a model that declared `keys`; without identity
+ * there is nothing to reuse.
+ */
+export type CacheSpec = boolean | { for: number };
+
 export interface ModelConfig<S extends ModelSchema, K> {
   /**
    * The schema fields that identify one record, or `false` for a model with no identity. `[]` marks
@@ -135,6 +157,29 @@ export interface ModelConfig<S extends ModelSchema, K> {
    * instance, and used to derive the instance's `reload()` — so the endpoint is declared once.
    */
   get?: KeyedFn<S, K, Resource<S>>;
+  /**
+   * Whether `Model.get` may answer from the identity map instead of the API, and for how long.
+   * Defaults to `false`.
+   *
+   * Only turn this on when this model's payload is the *same shape* wherever it is loaded from. A
+   * list endpoint returning a projection and a detail endpoint returning the whole record are two
+   * different models, not one cached model — see the note on `setData` being a full replace.
+   *
+   * `Model.reload()` ignores this and always goes to the API; `Model.peek()` reads the map without
+   * one.
+   */
+  cache?: CacheSpec;
+  /**
+   * When `cache` has expired but the record is still in the identity map, hand back the record now
+   * and refresh it in the background rather than making the caller wait. Defaults to `false`.
+   *
+   * The refreshed fields land on the same instance, so anything observing it re-renders when they
+   * do. Only meaningful alongside `cache`: with nothing cached there is nothing to answer with.
+   *
+   * A background refresh that fails is logged and clears the record's load stamp, so the *next*
+   * `get()` goes to the API and reports its failure through the normal path. Nothing new to catch.
+   */
+  optimistic?: boolean;
   /**
    * Create a record. Exposed as the static `Model.create(body)`.
    *
@@ -197,8 +242,16 @@ export interface ModelEvents<I extends object> {
  * The identity-map statics. Present only on a model that declared identity — `keys: false`, and the
  * config-less `makeModel(schema)` that means the same thing, leave these off the class type.
  */
-export interface ModelIdentity<S extends ModelSchema, I extends object> {
+export interface ModelIdentity<S extends ModelSchema, K, I extends object> {
   readonly identityCache: WeakRefMap<string | number, I>;
+  /**
+   * The record for these params if it is already in the identity map, without ever fetching.
+   * Synchronous, so it can answer during render.
+   *
+   * Presence, not freshness: a record `cache` would consider stale still comes back. Use it to
+   * decide whether a fetch is needed at all, or to reach a record you know is loaded.
+   */
+  peek(params: KeyShape<S, K>): I | undefined;
   /** The registry key for a payload or model. Override on a subclass to scope identity. */
   identityKey(source: Resource<S> | I): string | number;
   /**
@@ -224,7 +277,20 @@ export interface ModelIdentity<S extends ModelSchema, I extends object> {
  */
 type ModelStatics<Cfg> = (Cfg extends { get: (...args: infer A) => any }
   ? {
+      /**
+       * Fetch this record, or hand back the one in the identity map when `cache` allows — see the
+       * `cache` and `optimistic` config.
+       */
       get<This extends new (...args: any[]) => any>(
+        this: This,
+        ...args: A
+      ): Promise<InstanceType<This>>;
+      /**
+       * Fetch this record from the API, whatever `cache` says, and apply it to the identity-mapped
+       * instance. The static mirror of `instance.reload()`: same endpoint, params passed in rather
+       * than read off a record you already hold.
+       */
+      reload<This extends new (...args: any[]) => any>(
         this: This,
         ...args: A
       ): Promise<InstanceType<This>>;
@@ -245,7 +311,7 @@ export type ModelConstructor<S extends ModelSchema, K, Cfg> = {
   /** Exactly what was declared, so `Model.keys` reads back the tuple — or `false`. */
   readonly keys: K;
 } & ModelEvents<ModelInstance<S, K, Cfg>> &
-  (HasIdentity<K> extends true ? ModelIdentity<S, ModelInstance<S, K, Cfg>> : {}) &
+  (HasIdentity<K> extends true ? ModelIdentity<S, K, ModelInstance<S, K, Cfg>> : {}) &
   ModelStatics<Cfg>;
 
 // -----------------------------------------------------------------------------
@@ -317,6 +383,14 @@ function createModelClass(schema: ModelSchema, config?: ModelConfig<any, any>): 
     }
 
     /**
+     * The instance already registered for these params, or `undefined`. Never fetches, so it is
+     * safe to call during render.
+     */
+    static peek(params?: any): any {
+      return this.identityCache.get(this.identityKey(params));
+    }
+
+    /**
      * Drop a record's registry entry, so the next `instantiate` builds a fresh instance rather
      * than reviving this one. Called automatically by `delete()`.
      */
@@ -372,6 +446,16 @@ function createModelClass(schema: ModelSchema, config?: ModelConfig<any, any>): 
         annotations[key] = observable.ref;
       }
 
+      // The constructor populates fields directly rather than through `setData`, so it carries its
+      // own stamp — a record built from a payload is loaded as of now, however it was built.
+      // Non-enumerable so it never rides along in a spread of the instance.
+      Object.defineProperty(this, LOADED_AT, {
+        value: Date.now(),
+        writable: true,
+        configurable: true,
+        enumerable: false,
+      });
+
       makeObservable(this, {
         ...annotations,
         setData: action,
@@ -389,6 +473,9 @@ function createModelClass(schema: ModelSchema, config?: ModelConfig<any, any>): 
       for (const key of propertyNames) {
         (this as any)[key] = (data as any)[key];
       }
+      // Refresh the stamp: every load of an *existing* record lands here, as the constructor does
+      // for a new one.
+      (this as any)[LOADED_AT] = Date.now();
     }
 
     /**
@@ -422,12 +509,54 @@ function createModelClass(schema: ModelSchema, config?: ModelConfig<any, any>): 
 
   if (config?.get) {
     const get = config.get as (...args: any[]) => Promise<any>;
-    (BaseModel as any).get = function (this: any, ...args: any[]) {
+    const cache = config.cache ?? false;
+    const optimistic = config.optimistic ?? false;
+    // Cache is a policy over the identity map, so a model without one can never answer from it.
+    const cacheable = hasIdentity && cache !== false;
+
+    /**
+     * Whether a record may be answered with as it stands. An absent stamp always means no — that is
+     * how a failed background refresh forces the next `get` back to the API even under `cache: true`.
+     */
+    const isFresh = (model: any): boolean => {
+      const loadedAt = model[LOADED_AT];
+      if (loadedAt === undefined) return false;
+      if (cache === true) return true;
+      return Date.now() - loadedAt < (cache as { for: number }).for;
+    };
+
+    (BaseModel as any).reload = function (this: any, ...args: any[]) {
       // Without identity there is nothing to map through, and the opt-out was explicit — so hand
       // back a detached instance rather than throwing.
       return get(...args).then((data: any) =>
         hasIdentity ? this.instantiate(data) : new this(data),
       );
+    };
+
+    (BaseModel as any).get = function (this: any, ...args: any[]) {
+      if (cacheable) {
+        // A keyed model is called as `get(params, ...rest)`; a singleton has no params, so every
+        // argument is rest. `identityKey` ignores its source for a singleton either way.
+        const rest = keys.length === 0 ? args : args.slice(1);
+        const existing = this.peek(args[0]);
+
+        if (existing) {
+          if (isFresh(existing)) return Promise.resolve(existing);
+
+          if (optimistic) {
+            // Answer now, refresh behind. A failure has nowhere to surface — this promise has
+            // already resolved — so it clears the stamp instead, which sends the next `get` to the
+            // API where the error can be reported normally.
+            void existing.reload(...rest).catch((cause: unknown) => {
+              console.error(cause);
+              existing[LOADED_AT] = undefined;
+            });
+            return Promise.resolve(existing);
+          }
+        }
+      }
+
+      return this.reload(...args);
     };
   }
 
@@ -562,7 +691,7 @@ export type UnionModelConstructor<S extends UnionSchema, D extends keyof Resourc
   readonly discriminator: D;
   readonly keys: K;
 } & ModelEvents<UnionModelInstance<S, D, K, Cfg>> &
-  (HasIdentity<K> extends true ? ModelIdentity<S, UnionModelInstance<S, D, K, Cfg>> : {}) &
+  (HasIdentity<K> extends true ? ModelIdentity<S, K, UnionModelInstance<S, D, K, Cfg>> : {}) &
   ModelStatics<Cfg>;
 
 export function makeUnionModel<S extends UnionSchema, D extends keyof Resource<S> & string>(

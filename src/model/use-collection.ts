@@ -1,5 +1,5 @@
-import { useRef } from "react";
 import { useObservableBox } from "../util/use-observable-box";
+import { useStable } from "../react-util/useStable";
 import type * as T from "typebox";
 import type {
   LazyFetch,
@@ -80,20 +80,24 @@ export function useCollection(model: AnyModelClass, fetch: any, options?: any): 
 
   // Built once per component and garbage the moment it unmounts: the model holds its listeners
   // weakly, so a component-scoped store needs no disposal.
-  const storeRef = useRef<any>(undefined);
-  const store = (storeRef.current ??= new (storeClassFor(model))());
+  const store = useStable(() => new (storeClassFor(model))(), []);
   const box = useObservableBox(params);
 
-  const ref = useRef<LazyObservableArray<any>>(undefined);
-  return (ref.current ??= store.collection(
-    hasParams
-      ? (fetchOptions: LazyFetchOptions) => fetch(box.get(), fetchOptions)
-      : (fetchOptions: LazyFetchOptions) => fetch(fetchOptions),
-    {
-      // Reading the box is what makes a param change refetch, so tracking has to be on. Without
-      // params there is nothing to track and `collection()`'s own default stands.
-      ...(hasParams ? { trackDependencies: true } : {}),
-      ...collectionOptions,
-    },
-  ));
+  // No deps: a collection's params are inputs to this one list, read through the box, so a change
+  // refetches rather than building a different list.
+  return useStable(
+    () =>
+      store.collection(
+        hasParams
+          ? (fetchOptions: LazyFetchOptions) => fetch(box.get(), fetchOptions)
+          : (fetchOptions: LazyFetchOptions) => fetch(fetchOptions),
+        {
+          // Reading the box is what makes a param change refetch, so tracking has to be on. Without
+          // params there is nothing to track and `collection()`'s own default stands.
+          ...(hasParams ? { trackDependencies: true } : {}),
+          ...collectionOptions,
+        },
+      ),
+    [],
+  );
 }

@@ -267,6 +267,49 @@ reaction(
 );
 ```
 
+## `useLazy` / `useLazyArray`
+
+A lazy that belongs to one component, for an async read whose inputs are the component's own — a
+route param, a prop, a piece of local state.
+
+```tsx
+import { useLazy } from "@jayalfredprufrock/mobx-toolbox/lazy-observable";
+
+const StudyPage = observer(({ studyId }: { studyId: string }) => {
+  const study = useLazy((options) => api.getStudy({ id: studyId }, options), [studyId]);
+
+  return (
+    <LazyObserver observe={study} placeholder={<Spinner />}>
+      {(s) => <StudyDetail study={s} />}
+    </LazyObserver>
+  );
+});
+```
+
+What comes back is an ordinary `lazyObservable` — nothing reading one can tell whether it came from a
+hook, a store, or a hand-rolled construction. It loads when observed, keeps its value while it
+reloads, and aborts what it supersedes. Passing the fetch options through, as above, is what gives
+you that abort.
+
+`useLazyArray` is the same for a list-shaped value, and returns a `lazyObservableArray`.
+
+**`deps` say _which_ lazy this is.** Changing them builds a new one, exactly as constructing a second
+lazy by hand would: the value starts empty and loads again. For a single record that is the point —
+showing the study you navigated away from while the next one loads would be a lie.
+
+The same applies to `useLazyArray`: the array identity a lazy owns is
+[for that lazy's lifetime](#lazyobservablearray), and a `deps` change ends it. Anything watching
+identity as a change signal should watch `loadedAt` instead — the same caveat that applies to a
+hand-built array lazy.
+
+When the inputs are _filters over one list_ rather than a different list, the other shape is
+[`useCollection`](../model/README.md#component-scoped-collections--usecollection): one lazy that
+refetches, with rows readable throughout.
+
+**Held through `useStable`, not `useMemo`.** `useMemo` is a performance hint React may discard and
+recompute, which would rebuild the lazy and silently drop what it had loaded. See
+[`useStable`](../react-util/README.md#usestable).
+
 ## `LazyObserver` component
 
 Renders nothing (or a `placeholder`) while observables are loading, and renders children once all are loaded. Re-throws any observable error so it propagates to an error boundary.
@@ -291,8 +334,8 @@ import { LazyObserver } from "@jayalfredprufrock/mobx-toolbox/lazy-observable";
 
 ```ts
 import type {
-  LazyObservable, // the object returned by lazyObservable()
-  LazyObservableArray, // the object returned by lazyObservableArray()
+  LazyObservable, // the object returned by lazyObservable() and useLazy()
+  LazyObservableArray, // the object returned by lazyObservableArray() and useLazyArray()
   LazyObservableOptions, // options for lazyObservable()
   LazyInvalidateOptions, // options for invalidate()
   LazyFetch, // ({ signal }: LazyFetchOptions) => Promise<T>

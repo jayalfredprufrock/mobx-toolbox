@@ -2,12 +2,13 @@ import * as T from "typebox";
 import {
   lazyObservableArray,
   type LazyFetch,
+  type LazyFetchOptions,
   type LazyInvalidateOptions,
   type LazyObservableArray,
   type LazyObservableOptions,
 } from "../lazy-observable/lazy-observable";
 import { action, makeObservable, runInAction } from "mobx";
-import type { ModelEventType, ModelSchema } from "./make-model";
+import { serializeKey, type ModelEventType, type ModelSchema } from "./make-model";
 
 // -----------------------------------------------------------------------------
 // Type plumbing
@@ -89,8 +90,52 @@ export type CollectionSpec<R, M> =
   | LazyFetch<R[]>
   | ({ fetch: LazyFetch<R[]> } & CollectionOptions<M>);
 
+/**
+ * A family of collections, one per key — the same list fetched separately per tenant, per parent
+ * record, per page. Call it to get that key's list, building it on first use.
+ */
+export interface CollectionMap<K, M> {
+  (key: K): LazyObservableArray<M>;
+  /**
+   * Drop one key's list, unregistering it from the store's mutation handling. For a key that is
+   * gone for good — an organization the user just left — so the map doesn't hold a list nothing
+   * will ask for again. The next call for that key builds a fresh one.
+   */
+  forget(key: K): boolean;
+  /** Drop every list this map has built. For teardown: a logout, a tenant switch. */
+  clear(): void;
+}
+
+/** Options for the free-form form of `collectionMap`, whose key is whatever you say it is. */
+export interface CollectionMapOptions<K, M> extends CollectionOptions<M> {
+  /**
+   * Spell a key as something a map can hold. Only needed for a key that isn't already a string or
+   * a number — a filter object, a params tuple. The declared-fields form has no use for it: those
+   * serialize exactly as the identity map does.
+   */
+  keyOf?: (key: K) => string | number;
+}
+
+/** The payload a store's collections resolve to arrays of, read off the model class's schema. */
+type StoreResource<MC> = MC extends { schema: infer S extends ModelSchema } ? T.Static<S> : never;
+
+/**
+ * The fields a collection may be keyed by: those holding something that can be a map key on its
+ * own. Anything else has no obvious spelling, so it belongs in the free-form form with a `keyOf`.
+ */
+type ScalarField<R> = {
+  [P in keyof R]-?: NonNullable<R[P]> extends string | number ? P : never;
+}[keyof R];
+
 /** Names a collection may not take, since each is already a member of the store. */
-type ReservedCollectionName = "remove" | "collection" | "onModelEvent" | "get" | "create";
+export type ReservedCollectionName =
+  | "remove"
+  | "collection"
+  | "collectionMap"
+  | "invalidateCollections"
+  | "onModelEvent"
+  | "get"
+  | "create";
 
 /**
  * `createStore` config: everything `makeStore` takes, plus the collections themselves. They live in
@@ -107,7 +152,7 @@ export interface CreateStoreConfig<R, M> extends StoreConfig<M> {
 // is keyed off the *class* rather than off an inferred config object. Each slot is declared as a
 // method rather than a function-valued property, so a subclass can override it with a method —
 // which TypeScript forbids when the base declares a property.
-type StoreInstance<M, MC, Cfg> = {
+export type StoreInstance<M, MC, Cfg> = {
   remove(model: M): void;
   /**
    * Mark every collection on this store stale, for a change no model event describes — a tenant
@@ -137,6 +182,53 @@ type StoreInstance<M, MC, Cfg> = {
     fetch: LazyFetch<MC extends { schema: infer S extends ModelSchema } ? T.Static<S>[] : never[]>,
     options?: CollectionOptions<M>,
   ): LazyObservableArray<M>;
+  /**
+   * Build a *family* of lists on this store, one per key, for a resource that has to be fetched
+   * separately per tenant, per parent record, or per page — keys you can't enumerate in advance.
+   * Each list is built on first use and behaves exactly as a `collection()` does from then on.
+   *
+   * Name the fields that select a list and the fetch's params are typed from the schema, the same
+   * way a model's `keys` type its statics:
+   *
+   * ```ts
+   * class Surveys extends makeStore(SurveyModel) {
+   *   byOrg = this.collectionMap(["orgId"], ({ orgId }, options) =>
+   *     api.listSurveys({ orgId, ...options }),
+   *   );
+   * }
+   *
+   * surveys.byOrg({ orgId }).getOrLoad();
+   * ```
+   *
+   * Reach for the free-form form below when the key isn't a field on the resource — a page number,
+   * a filter of your own.
+   */
+  collectionMap<F extends ScalarField<StoreResource<MC>>>(
+    keys: readonly [F, ...F[]],
+    fetch: (
+      params: Pick<StoreResource<MC>, F>,
+      options: LazyFetchOptions,
+    ) => Promise<StoreResource<MC>[]>,
+    options?: CollectionOptions<M>,
+  ): CollectionMap<Pick<StoreResource<MC>, F>, M>;
+  /**
+   * Keyed by something that isn't a field on the resource:
+   *
+   * ```ts
+   * pages = this.collectionMap((page: number, options) =>
+   *   api.listSurveys({ page, ...options }),
+   * );
+   * ```
+   */
+  collectionMap<K extends string | number>(
+    fetch: (key: K, options: LazyFetchOptions) => Promise<StoreResource<MC>[]>,
+    options?: CollectionOptions<M>,
+  ): CollectionMap<K, M>;
+  /** Keyed by a value a map can't hold as it stands, so `keyOf` says how to spell it. */
+  collectionMap<K>(
+    fetch: (key: K, options: LazyFetchOptions) => Promise<StoreResource<MC>[]>,
+    options: CollectionMapOptions<K, M> & { keyOf: (key: K) => string | number },
+  ): CollectionMap<K, M>;
 } & (MC extends { get: (...args: infer A) => any } ? { get(...args: A): Promise<M> } : {}) &
   (Cfg extends { collections: infer C } ? { [N in keyof C]: LazyObservableArray<M> } : {}) &
   (MC extends { create: (...args: infer A) => any } ? { create(...args: A): Promise<M> } : {});
@@ -190,8 +282,9 @@ export function makeStore(
     }[] = [];
 
     constructor() {
-      makeObservable<this, "_collections">(this, {
+      makeObservable<this, "_collections" | "unregister">(this, {
         _collections: false,
+        unregister: false,
         remove: action,
         invalidateCollections: action,
         onModelEvent: action,
@@ -237,6 +330,75 @@ export function makeStore(
         discardOnInvalidate: discardOnInvalidate ?? config?.discardOnInvalidate ?? false,
       });
       return lazy;
+    }
+
+    /**
+     * Build a family of lists, one per key, each built on first use and registered exactly as a
+     * `collection()` is — so every key's list joins this store's mutation handling, is marked
+     * stale by `invalidateCollections()`, and drops a deleted model like any other list.
+     *
+     * The two forms differ only in how a key is spelled: declared fields serialize through the
+     * same `serializeKey` the identity map uses, and a free-form key is used as-is unless `keyOf`
+     * says otherwise.
+     */
+    collectionMap(
+      keysOrFetch: readonly string[] | ((key: any, options: any) => Promise<R[]>),
+      fetchOrOptions?: any,
+      maybeOptions?: CollectionOptions<any>,
+    ): any {
+      const fields = Array.isArray(keysOrFetch) ? (keysOrFetch as readonly string[]) : undefined;
+      const fetch = (fields ? fetchOrOptions : keysOrFetch) as (
+        key: any,
+        options: any,
+      ) => Promise<R[]>;
+      // `keyOf` is ours, not a lazy option — it must not travel on to `collection()`.
+      const { keyOf, ...options } = ((fields ? maybeOptions : fetchOrOptions) ??
+        {}) as CollectionMapOptions<any, any>;
+
+      const serialize = fields
+        ? (params: any) => serializeKey(fields.map((field) => params[field]))
+        : (keyOf ?? ((key: any) => key as string | number));
+
+      const byKey = new Map<string | number, LazyObservableArray<any>>();
+
+      const map = (key: any): LazyObservableArray<any> => {
+        const id = serialize(key);
+        const existing = byKey.get(id);
+        if (existing) return existing;
+        // Only the declared fields reach the fetch, so selecting a list with a whole record is the
+        // same call as selecting it with the fields alone — and whatever else the first caller
+        // happened to pass can't leak into a list every later caller shares.
+        const params = fields
+          ? Object.fromEntries(fields.map((field) => [field, key[field]]))
+          : key;
+        const lazy = this.collection((fetchOptions) => fetch(params, fetchOptions), options);
+        byKey.set(id, lazy);
+        return lazy;
+      };
+
+      return Object.assign(map, {
+        forget: (key: any): boolean => {
+          const id = serialize(key);
+          const lazy = byKey.get(id);
+          if (!lazy) return false;
+          this.unregister(lazy);
+          return byKey.delete(id);
+        },
+        clear: (): void => {
+          for (const lazy of byKey.values()) this.unregister(lazy);
+          byKey.clear();
+        },
+      });
+    }
+
+    /**
+     * Take a list back out of this store's mutation handling. Only a keyed collection is ever
+     * dropped — a field collection lives as long as the store does, so there is nothing to
+     * unregister and no public method for it.
+     */
+    private unregister(lazy: LazyObservableArray<any>): void {
+      const at = this._collections.findIndex((entry) => entry.lazy === lazy);
+      if (at !== -1) this._collections.splice(at, 1);
     }
 
     /** Drop a model from every list on this store, without implying the record is gone. */

@@ -21,12 +21,12 @@ Each module is its own entry point — import from `@jayalfredprufrock/mobx-tool
 | [`dialog`](#dialog)                   | Dialog/modal stack with state transitions for enter/exit animations           | `mobx`, `mobx-react-lite`, `react`            |
 | [`form`](#form)                       | Schema-driven form state with TypeBox validation and submit lifecycle         | `mobx`, `mobx-react-lite`, `react`, `typebox` |
 | [`lazy-observable`](#lazy-observable) | Observables that fetch on first observation and reset when unobserved         | `mobx`, `mobx-react-lite`, `react`            |
-| [`model`](#model)                     | Observable model classes and collection stores from TypeBox schemas           | `mobx`, `typebox`                             |
+| [`model`](#model)                     | Observable model classes and collection stores from TypeBox schemas           | `mobx`, `react`, `typebox`                    |
 | [`react-util`](#react-util)           | General-purpose React hooks: async state, debouncing, resize, mount lifecycle | `react`                                       |
 | [`router`](#router)                   | Client-side router with symbol-keyed guards, loaders and layouts              | `mobx`, `mobx-react-lite`, `react`, `history` |
 | [`table`](#table)                     | Headless, virtualized data table                                              | `mobx`, `mobx-react-lite`, `react`            |
 | [`uploader`](#uploader)               | Headless multipart upload engine with progress, retries and a form value      | `mobx`, `mobx-react-lite`, `react`            |
-| [`util`](#util)                       | Small MobX + React utilities — `mutable`, `useAutorun`                        | `mobx`, `react`                               |
+| [`util`](#util)                       | Small MobX + React utilities — `mutable`, `useAutorun`, `useObservableBox`    | `mobx`, `react`                               |
 
 ### [`dialog`](src/dialog/README.md)
 
@@ -115,6 +115,21 @@ export const users = createStore(UserModel, {
 
 await users.all.getOrLoad(); // → User[], loaded once and cached
 await users.all.value[0].delete(); // removed from every list over this model
+```
+
+Lists whose parameters aren't known up front are keyed on the store, or scoped to a component:
+
+```tsx
+class Users extends makeStore(UserModel) {
+  byOrg = this.collectionMap(["orgId"], ({ orgId }, options) =>
+    api.get("/users", { orgId, ...options }),
+  );
+}
+
+// ...or, for parameters that are a component's own React state:
+const list = useCollection(UserModel, ({ q }, options) => api.get("/users", { q, ...options }), {
+  params: { q: query },
+});
 ```
 
 → [Full docs](src/model/README.md)
@@ -248,19 +263,22 @@ function DocumentUpload({ value, onChange }) {
 
 Small MobX + React utilities.
 
-```ts
-import { mutable, useAutorun } from "@jayalfredprufrock/mobx-toolbox/util";
+```tsx
+import { mutable, useAutorun, useObservableBox } from "@jayalfredprufrock/mobx-toolbox/util";
 
 // Class accessor decorator — makes a field reactive without makeObservable
 class Store {
   @mutable accessor theme = "light";
 }
 
-// MobX autorun that disposes on unmount
-function MyComponent() {
+function MyComponent({ orgId }: { orgId: string }) {
+  // MobX autorun that disposes on unmount
   useAutorun(() => {
     document.title = store.pageTitle;
   });
+
+  // A React value MobX can watch — for a reaction, a computed, or trackDependencies
+  const params = useObservableBox({ orgId });
 }
 ```
 

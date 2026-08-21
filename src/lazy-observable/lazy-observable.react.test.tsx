@@ -1,7 +1,7 @@
 // @vitest-environment happy-dom
 import { configure } from "mobx";
 import { Observer, observer } from "mobx-react-lite";
-import { act } from "react";
+import { act, useRef } from "react";
 import { createRoot } from "react-dom/client";
 import { describe, expect, it, vi } from "vite-plus/test";
 import { lazyObservable, lazyObservableArray } from "./lazy-observable";
@@ -97,6 +97,29 @@ describe("lazyObservable + react rendering", () => {
     expect(fetchA).toHaveBeenCalledTimes(1);
     expect(fetchB).toHaveBeenCalledTimes(1);
     expect(fetchItems).toHaveBeenCalledTimes(1);
+    expect(container.textContent).toBe("3");
+  });
+
+  // A lazy built inside a component — by a hook, or in a ref — is constructed while mobx is
+  // tracking that render. Two things there are easy to get wrong: the constructor must not read
+  // its own array (mobx fires `onBecomeObserved` from the first tracked read, once, and a read
+  // before the hooks are attached spends that transition on nobody), and the gate reaction must
+  // register its dependency on `observed` immediately (the enclosing batch defers a first
+  // evaluation past the render, by which point `observed` is already true and no longer changing).
+  // Get either wrong and the lazy is observed but never loads — silently, forever.
+  it("loads when constructed during a tracked render", async () => {
+    const fetch = vi.fn(async () => [1, 2, 3]);
+
+    const Page = observer(() => {
+      const ref = useRef<ReturnType<typeof lazyObservableArray<number>>>(undefined);
+      ref.current ??= lazyObservableArray(fetch);
+      return <div>{ref.current.value.length}</div>;
+    });
+
+    const { container } = await mount(<Page />);
+    await flush();
+
+    expect(fetch).toHaveBeenCalledTimes(1);
     expect(container.textContent).toBe("3");
   });
 });

@@ -26,6 +26,17 @@ export interface ModelListener {
  */
 export type ModelSchema = T.TObject | T.TUnion<T.TObject[]>;
 
+/**
+ * Fold several values into one map key. A lone value is handed back as it stands, so a numeric id
+ * stays a number; several are joined on `\u0000`, which no real id contains — so no two different
+ * combinations can spell the same key.
+ *
+ * Shared by the identity map and by a store's keyed collections, which is the point: a record and
+ * the params that select it serialize the same way.
+ */
+export const serializeKey = (values: readonly unknown[]): string | number =>
+  values.length === 1 ? (values[0] as string | number) : values.map(String).join("\u0000");
+
 /** The registry key a singleton (`keys: []`) maps to. Prefixed so no real id can collide with it. */
 const SINGLETON_KEY = "\u0000singleton";
 
@@ -287,9 +298,7 @@ function createModelClass(schema: ModelSchema, config?: ModelConfig<any, any>): 
       }
       // A singleton has no identifying fields to read, and only ever occupies this one entry.
       if (isSingleton) return SINGLETON_KEY;
-      return keys.length === 1
-        ? source[keys[0] as keyof typeof source]
-        : keys.map((key) => String(source[key as keyof typeof source])).join("\u0000");
+      return serializeKey(keys.map((key) => source[key as keyof typeof source]));
     }
 
     /**

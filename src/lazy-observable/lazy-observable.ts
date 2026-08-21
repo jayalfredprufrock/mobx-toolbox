@@ -7,6 +7,7 @@ import {
   observable,
   onBecomeObserved,
   onBecomeUnobserved,
+  untracked,
 } from "mobx";
 
 /** Options for `invalidate()`. */
@@ -173,7 +174,12 @@ export function lazyObservable<T>(
   const ownedArray = isObservableArray(options?.initialValue)
     ? (options.initialValue as unknown as IObservableArray<unknown>)
     : undefined;
-  const initialItems = ownedArray ? [...ownedArray] : undefined;
+  // Untracked: mobx fires `onBecomeObserved` synchronously from the *first* read of an atom inside
+  // a tracking context, and only that once. Constructing a lazy during an `observer()` render puts
+  // this snapshot inside that context, so a tracked read here would spend the array's one
+  // transition before the hooks below are attached — leaving a lazy that is watched, never learns
+  // it, and so never loads.
+  const initialItems = ownedArray ? untracked(() => [...ownedArray]) : undefined;
   const box = ownedArray
     ? undefined
     : observable.box<T>(options?.initialValue, { deep: options?.deep ?? true });
@@ -429,6 +435,13 @@ export function lazyObservable<T>(
     (shouldLoad) => {
       if (shouldLoad) scheduleLoad();
     },
+    // Fired immediately so the dependency on `observed` is registered here rather than at the end
+    // of the enclosing batch. Constructing a lazy during an `observer()` render puts that batch
+    // around the render, so a deferred first evaluation would not read `observed` until *after*
+    // the render had already set it — leaving the reaction to treat `true` as its initial value
+    // and never fire. The immediate run itself is always a no-op: nothing can observe a lazy that
+    // does not exist yet.
+    { fireImmediately: true },
   );
 
   /**

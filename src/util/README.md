@@ -61,6 +61,43 @@ Equivalent to:
 useEffect(() => autorun(func, options), []);
 ```
 
+## `useObservableBox`
+
+Mirrors a plain React value into an observable box, so MobX code can react to it.
+
+React state isn't observable, which leaves a gap wherever the two meet: a `reaction`, an `autorun`, a
+`computed`, or a lazy observable's `trackDependencies` can't see a value that lives in `useState` or
+arrives as a prop.
+
+```tsx
+import { useObservableBox, useAutorun } from "@jayalfredprufrock/mobx-toolbox/util";
+
+function Surveys({ orgId }: { orgId: string }) {
+  const [query, setQuery] = useState("");
+  const params = useObservableBox({ orgId, query });
+
+  useAutorun(() => console.log(params.get().query));
+  return null;
+}
+```
+
+The box is created once and kept for the component's lifetime, so a reaction holding it stays valid
+across renders. Two details it settles that are easy to get wrong by hand:
+
+- **The write happens in an effect**, not during render, so the render itself stays free of side
+  effects.
+- **Values are compared, not assigned blindly**, so the object literal you rebuild every render
+  doesn't retrigger every reaction reading it. The default is `comparer.shallow`, which is what makes
+  `{ orgId, query }` count as unchanged while its fields are. Pass `comparer.structural` for values
+  nested deeper than a field, or `comparer.default` for plain referential equality:
+
+```ts
+const filter = useObservableBox(value, { equals: comparer.structural });
+```
+
+The flow is one-way: the box mirrors the value, so writing to it from MobX's side holds only until
+the next render whose value disagrees. Keep the value where React already keeps it.
+
 ## `WeakRefMap`
 
 A map with strong keys and weak values: entries disappear on their own once nothing else references

@@ -515,17 +515,119 @@ Reading `this.query` inside the fetch is what makes it refetch; the throttle fol
 keystrokes into one request, and the signal aborts what it supersedes. `createStore`'s `collections`
 are built with the same `collection()`, so the two behave identically.
 
+### Keyed collections — `collectionMap`
+
+Some resources have to be fetched separately per tenant, per parent record, per page — keys you can't
+enumerate when the store is written. `collectionMap` builds one list per key, on first use:
+
+```ts
+class Surveys extends makeStore(SurveyModel) {
+  byOrg = this.collectionMap(["orgId"], ({ orgId }, options) =>
+    api.listSurveys({ orgId, ...options }),
+  );
+}
+
+surveys.byOrg({ orgId }).getOrLoad();
+```
+
+Name the fields that select a list and the fetch's params are typed from the schema, the same way a
+model's `keys` type its statics. Key fields must hold a string or a number, and they serialize
+through the same `serializeKey` the identity map uses — so only the declared fields reach the fetch,
+and a whole record works as the key:
+
+```ts
+surveys.byOrg(survey); // the same list as surveys.byOrg({ orgId: survey.orgId })
+```
+
+Each list is an ordinary collection from the moment it exists: it joins the store's mutation
+handling, `invalidateCollections()` reaches it, and a deletion drops the model from it.
+
+When the key isn't a field on the resource — a page number, a filter of your own — pass the fetch
+alone. A key that isn't already a string or a number needs a `keyOf` to say how it is spelled:
+
+```ts
+pages = this.collectionMap((page: number, options) => api.listSurveys({ page, ...options }));
+
+byFilter = this.collectionMap((f: Filter) => api.listSurveys(f), {
+  keyOf: (f) => `${f.orgId}/${f.status}`,
+});
+```
+
+`collectionMap` is a subclass-only method; `createStore`'s config has no form for it.
+
+**On growth.** The map never evicts on its own, but a key costs very little: `keepOnUnobserved`
+defaults to `false`, so a list nobody is watching has already dropped its rows, and what stays behind
+is an empty shell. When you know a key is finished with — an organization the user just left, a
+logout — `forget(key)` drops that list and unregisters it from the store, and `clear()` drops them
+all.
+
+### Component-scoped collections — `useCollection`
+
+When a list's parameters are the component's own — a filter, a search box, a route param — a shared
+store is the wrong home for them, since putting them on the store is what stops the store being
+shared. `useCollection` builds a collection that belongs to one component instead:
+
+```tsx
+const list = useCollection(SurveyModel, (options) => api.listSurveys(options));
+```
+
+Pass `params` and they arrive as the fetch's first argument, ahead of the lazy's own options — the
+same params-first shape `collectionMap` uses. They are plain React values, and their type is inferred
+from what you pass:
+
+```tsx
+const Surveys = observer(({ orgId }: { orgId: string }) => {
+  const [query, setQuery] = useState("");
+
+  const list = useCollection(
+    SurveyModel,
+    ({ orgId, query }, options) => api.listSurveys({ orgId, q: query, ...options }),
+    { params: { orgId, query }, trackDependencies: { throttle: 300 } },
+  );
+
+  return (
+    <LazyObserver observe={list} placeholder={<Spinner />}>
+      {(rows) => rows.map((s) => <SurveyRow key={s.id} survey={s} />)}
+    </LazyObserver>
+  );
+});
+```
+
+The hook keeps the params in an observable box the fetch reads through, so `useState` stays where it
+is and a change refetches — leaving the current rows readable while the next set loads, and aborting
+the request it supersedes. Params are compared shallowly, so rebuilding the object every render costs
+nothing.
+
+Being component-scoped costs nothing global: the model's identity map still hands out one instance
+per record and mutations still fan out, so an edit here shows up in the app-wide store and vice versa.
+Nothing needs disposing either — the model holds its listeners weakly, so the store and its list are
+garbage the moment the component unmounts.
+
+### Where a list should live
+
+| The parameters are…                          | Put the list…                                                 |
+| -------------------------------------------- | ------------------------------------------------------------- |
+| fixed                                        | on a shared store — `collections`, or a field                 |
+| global observable state (the current tenant) | on a shared store, read in the fetch with `trackDependencies` |
+| varying per caller, and spellable as a key   | on a shared store — `collectionMap`                           |
+| the component's own React state              | in the component — `useCollection`                            |
+
+`collection()` has no `params` option on purpose. A store always has somewhere observable to read
+from — `this`, or module state — so reading it inside the fetch _is_ the feature. React state is the
+one place that isn't true, which is why `params` is a hook-only option.
+
 ### Store methods and properties
 
-| Name                           | Description                                                             |
-| ------------------------------ | ----------------------------------------------------------------------- |
-| _your collection names_        | `LazyObservableArray<M>` — one per entry in `collections`, or per field |
-| `collection(fetch, options?)`  | Build another list on this store                                        |
-| `get(...args)`                 | Delegates to `Model.get`                                                |
-| `create(...args)`              | Delegates to `Model.create`; inserts into lists with `optimisticCreate` |
-| `invalidateCollections(opts?)` | Marks every collection stale, ignoring `invalidateOn`                   |
-| `remove(model)`                | Drops a model from every list on this store, without deleting anything  |
-| `onModelEvent(type, model)`    | The mutation handler — override to extend it                            |
+| Name                                    | Description                                                             |
+| --------------------------------------- | ----------------------------------------------------------------------- |
+| _your collection names_                 | `LazyObservableArray<M>` — one per entry in `collections`, or per field |
+| `collection(fetch, options?)`           | Build another list on this store                                        |
+| `collectionMap(keys?, fetch, options?)` | Build a family of lists, one per key                                    |
+| `get(...args)`                          | Delegates to `Model.get`                                                |
+| `create(...args)`                       | Delegates to `Model.create`; inserts into lists with `optimisticCreate` |
+| `invalidateCollections(opts?)`          | Marks every collection stale, ignoring `invalidateOn`                   |
+| `remove(model)`                         | Drops a model from every list on this store, without deleting anything  |
+| `onModelEvent(type, model)`             | The mutation handler — override to extend it                            |
 
 `get` and `create` exist only when the model declares them.
 
@@ -606,6 +708,9 @@ import type {
   CreateStoreConfig, // StoreConfig plus the `collections` createStore requires
   CollectionSpec, // a collections entry: a fetch, or a fetch plus that list's options
   CollectionOptions, // options for collection() — lazy options, invalidateOn, sort, optimisticCreate
+  CollectionMap, // what collectionMap returns: call it with a key, plus forget/clear
+  CollectionMapOptions, // CollectionOptions plus keyOf, for a free-form collectionMap key
+  UseCollectionOptions, // CollectionOptions plus the params useCollection feeds the fetch
   Comparator, // (a: M, b: M) => number, what `sort` takes
   AnyModelClass, // a model class accepted as makeStore's first argument
   StoreConstructor, // the class returned by makeStore
@@ -629,6 +734,16 @@ import type {
 **`makeStore` requires a model class.** The schema form is gone: `makeModel(schema)` is the one extra line, and having a single source for the schema, keys, identity, and endpoints is what keeps the store's type surface from being inference-derived.
 
 **A store's collections are whatever you named them.** `createStore` requires `collections` and puts each one on the instance under its own name; `makeStore` takes none, and a subclass declares each as a field built with `this.collection(...)`. Both go through the same code path, so a store never mixes the two.
+
+**A keyed collection is registered exactly like any other, which `optimisticCreate` does not know about.** With `optimisticCreate` on, a created record is spliced into every list that opted in — including the lists of _other_ keys, which it does not belong to. It is `false` by default, so this is opt-in breakage rather than a trap, but leave it off on a store that uses `collectionMap`, or restrict it to the collections a new record certainly joins.
+
+**`serializeKey` is shared by the identity map and by keyed collections, deliberately.** One value passes through as it stands, so a numeric id stays a number; several join on `\u0000`, which no real id contains. That is what lets a record and the params that select its list spell the same key.
+
+**`collectionMap`'s declared-fields form rebuilds the params from the declared fields.** The fetch closure captures those, not the object the first caller happened to pass — so selecting a list with a whole model is the same call as selecting it with the fields alone, and no stray field leaks into a list every later caller shares.
+
+**`useCollection` builds one store per component, and one store _class_ per model.** `makeStore` builds a class, so the class is cached in a `WeakMap` keyed by the model and every component instantiates it. Nothing needs disposing: the model holds its listeners weakly, so an unmounted component's store is garbage.
+
+**`useCollection` reads `model` and the fetch once.** Both are captured on the first render, as `useState`'s initial value is. `params` is the reactive channel — everything else about the collection is fixed for the component's lifetime.
 
 **`create` inserts nothing unless a list set `optimisticCreate`.** It always marks lists stale via the `created` event, so the server decides position and membership. Where a list does opt in, the row is placed by that list's `sort` if it has one and prepended otherwise, and a record the list already holds is never inserted twice.
 

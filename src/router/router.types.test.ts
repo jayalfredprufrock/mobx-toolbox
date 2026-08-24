@@ -56,6 +56,60 @@ declare module ${JSON.stringify(join(routerDir, "types"))} {
 ${body}
 `;
 
+/**
+ * A second fixture for the path-parameterised props. The tree above is deliberately minimal; typed
+ * `data` and `context` need loaders, a group, and a level that carries a `[WRAPPER]` while
+ * addressing no page of its own.
+ */
+const propsFixture = (body: string) => `
+import { makeRoutes, CONTEXT, LOAD, PAGE, WRAPPER } from ${JSON.stringify(join(routerDir, "index"))};
+import type {
+  PageComponentProps,
+  RouteContextAt,
+  RouteDataAt,
+  RoutePrefix,
+  WrapperComponentProps,
+} from ${JSON.stringify(join(routerDir, "index"))};
+
+const C = () => null;
+
+export const routes = makeRoutes()({
+  index: { [PAGE]: C },
+  login: { [PAGE]: C },
+  org: {
+    [CONTEXT]: { tenant: "" as string },
+    [WRAPPER]: C,
+    [LOAD]: async () => ({ orgs: [{ id: "1" }] }),
+    $orgId: {
+      [LOAD]: async () => ({ org: { id: "1", name: "Acme" } }),
+      [WRAPPER]: C,
+      settings: { [PAGE]: C, [LOAD]: async () => ({ prefs: { theme: "dark" } }) },
+      studies: {
+        [LOAD]: async () => ({ studies: [{ id: 1 }] }),
+        index: { [PAGE]: C },
+        $studyId: { [PAGE]: C, [LOAD]: async () => ({ study: { id: 1, title: "x" } }) },
+      },
+      _reports: {
+        [LOAD]: async () => ({ quota: 10 }),
+        [CONTEXT]: { section: "reports" as const },
+        exports: { [PAGE]: C, [LOAD]: async () => ({ exports: ["a"] }) },
+      },
+    },
+  },
+});
+
+declare module ${JSON.stringify(join(routerDir, "types"))} {
+  interface MobxRouter {
+    routes: typeof routes;
+  }
+}
+
+const assignable = <Expected,>(_v: Expected): void => {};
+void assignable;
+
+${body}
+`;
+
 const tsconfig = JSON.stringify({
   compilerOptions: {
     lib: ["es2022", "DOM", "DOM.Iterable"],
@@ -73,10 +127,10 @@ const tsconfig = JSON.stringify({
   include: ["fixture.ts"],
 });
 
-/** Compiles the fixture in its own program and returns tsc's diagnostics. */
-const typecheck = (entries: string, body?: string): string => {
+/** Compiles a fixture in its own program and returns tsc's diagnostics. */
+const compile = (source: string): string => {
   const dir = mkdtempSync(join(tmpdir(), "mobx-router-types-"));
-  writeFileSync(join(dir, "fixture.ts"), fixture(entries, body));
+  writeFileSync(join(dir, "fixture.ts"), source);
   writeFileSync(join(dir, "tsconfig.json"), tsconfig);
 
   try {
@@ -87,6 +141,9 @@ const typecheck = (entries: string, body?: string): string => {
     return String((e as { stdout?: string }).stdout ?? e);
   }
 };
+
+const typecheck = (entries: string, body?: string): string => compile(fixture(entries, body));
+const typecheckProps = (body: string): string => compile(propsFixture(body));
 
 describe.skipIf(!existsSync(tsc))(
   "route definitions under an augmented MobxRouter",
@@ -150,6 +207,144 @@ describe.skipIf(!existsSync(tsc))(
       // an unsatisfied @ts-expect-error reports too, so this fails in both
       // directions: paths going unchecked, and valid paths being rejected
       expect(diagnostics).toBe("");
+    });
+  },
+  120_000,
+);
+
+describe.skipIf(!existsSync(tsc))(
+  "path-parameterised route props",
+  () => {
+    test("params come from the path", () => {
+      expect(
+        typecheckProps(`
+      export const page = (props: PageComponentProps<"/org/:orgId/studies/:studyId">) => {
+        assignable<string>(props.route.params.orgId);
+        assignable<string>(props.route.params.studyId);
+        // @ts-expect-error — not a param on this path
+        props.route.params.nope;
+      };
+    `),
+      ).toBe("");
+    });
+
+    test("data merges every loader at and above the path, and no others", () => {
+      expect(
+        typecheckProps(`
+      export const page = (props: PageComponentProps<"/org/:orgId/studies/:studyId">) => {
+        assignable<{ id: number; title: string }>(props.route.data.study);   // own level
+        assignable<{ id: number }[]>(props.route.data.studies);              // parent
+        assignable<{ id: string; name: string }>(props.route.data.org);      // grandparent
+        assignable<{ id: string }[]>(props.route.data.orgs);                 // above that
+        // @ts-expect-error — a sibling branch's loader is not in force here
+        props.route.data.prefs;
+      };
+    `),
+      ).toBe("");
+    });
+
+    test("an index page picks up its own level's loader, not its children's", () => {
+      expect(
+        typecheckProps(`
+      export const page = (props: PageComponentProps<"/org/:orgId/studies">) => {
+        assignable<{ id: number }[]>(props.route.data.studies);
+        assignable<{ id: string; name: string }>(props.route.data.org);
+        // @ts-expect-error — the $studyId child is a descendant, not an ancestor
+        props.route.data.study;
+      };
+    `),
+      ).toBe("");
+    });
+
+    test("a group contributes config without contributing a segment", () => {
+      expect(
+        typecheckProps(`
+      export const page = (props: PageComponentProps<"/org/:orgId/exports">) => {
+        assignable<string[]>(props.route.data.exports);                  // the page's own
+        assignable<number>(props.route.data.quota);                      // the group's
+        assignable<{ id: string; name: string }>(props.route.data.org);  // above the group
+        assignable<"reports">(props.route.context.section);
+      };
+    `),
+      ).toBe("");
+    });
+
+    test("context accumulates the same way data does", () => {
+      expect(
+        typecheckProps(`
+      export const page = (props: PageComponentProps<"/org/:orgId/settings">) => {
+        assignable<string>(props.route.context.tenant);
+        assignable<{ theme: string }>(props.route.data.prefs);
+      };
+      export type Ctx = RouteContextAt<"/org/:orgId/settings">;
+      export type Data = RouteDataAt<"/org/:orgId/settings">;
+    `),
+      ).toBe("");
+    });
+
+    test("a path with no loaders above it has no data", () => {
+      expect(
+        typecheckProps(`
+      export const page = (props: PageComponentProps<"/login">) => {
+        // @ts-expect-error — nothing is loaded anywhere on this path
+        props.route.data.anything;
+      };
+    `),
+      ).toBe("");
+    });
+
+    test("a wrapper sits on a prefix, and sees only what is guaranteed there", () => {
+      expect(
+        typecheckProps(`
+      export const wrapper = (props: WrapperComponentProps<"/org/:orgId">) => {
+        assignable<string>(props.route.params.orgId);
+        assignable<{ id: string; name: string }>(props.route.data.org);
+        assignable<{ id: string }[]>(props.route.data.orgs);
+        // @ts-expect-error — a descendant's loader is not guaranteed at a prefix
+        props.route.data.studies;
+      };
+      export const prefix: RoutePrefix = "/org/:orgId";
+    `),
+      ).toBe("");
+    });
+
+    test("a prefix that addresses no page is rejected as a page path", () => {
+      expect(
+        typecheckProps(`
+      // @ts-expect-error — /org/:orgId addresses no page, so it is not a RoutePath
+      export const page = (_p: PageComponentProps<"/org/:orgId">) => {};
+    `),
+      ).toBe("");
+    });
+
+    test("mistyped paths are compile errors", () => {
+      expect(
+        typecheckProps(`
+      // @ts-expect-error — typo in a segment
+      export const a = (_p: PageComponentProps<"/org/:orgId/studys/:studyId">) => {};
+      // @ts-expect-error — wrong param name
+      export const b = (_p: PageComponentProps<"/org/:orgId/studies/:id">) => {};
+      // @ts-expect-error — not a path in this tree at all
+      export const c = (_p: PageComponentProps<"/nope">) => {};
+      // @ts-expect-error — a wrapper prefix must still be a real prefix
+      export const d = (_p: WrapperComponentProps<"/org/:orgId/nope">) => {};
+    `),
+      ).toBe("");
+    });
+
+    test("omitting the path keeps the untyped Route, so existing code is unaffected", () => {
+      expect(
+        typecheckProps(`
+      export const page = (props: PageComponentProps) => {
+        assignable<Record<string, any>>(props.route.params);
+        assignable<Record<string, any>>(props.route.data);
+      };
+      export const wrapper = (props: WrapperComponentProps) => {
+        assignable<Record<string, any>>(props.route.data);
+        assignable<React.ReactNode>(props.children);
+      };
+    `),
+      ).toBe("");
     });
   },
   120_000,

@@ -94,6 +94,73 @@ describe("binding a table to a lazy observable array", () => {
     stop();
   });
 
+  // The documented way to tell "no data" from "filtered to nothing" inside <Table.Empty>. It rests
+  // on `rows` being the pre-filter dataset, so these pin that it stays true through a first load
+  // and a discard — the two states this release introduced.
+  describe("telling no-data from filtered-to-nothing", () => {
+    test("data present but filtered away reads as filtered, not as no-data", async () => {
+      const { lazy } = makeLazy();
+      const table = new TableModel({ rows: lazy });
+      const stop = render(table);
+      await tick(20);
+
+      table.setFilter({ predicate: () => false });
+
+      expect(table.isEmpty).toBe(true); // the slot renders
+      expect(table.rows.length).toBeGreaterThan(0); // ...and says "No matches"
+      expect(table.displayRows).toHaveLength(0);
+      stop();
+    });
+
+    test("a genuinely empty result reads as no-data", async () => {
+      const { lazy } = makeLazy(() => Promise.resolve([]));
+      const table = new TableModel({ rows: lazy });
+      const stop = render(table);
+      await tick(20);
+
+      expect(table.isEmpty).toBe(true);
+      expect(table.rows).toHaveLength(0); // ...and says "No users yet"
+      stop();
+    });
+
+    test("a first load never reaches the slot, so the idiom is never consulted early", async () => {
+      let release!: (rows: { id: number; name: string }[]) => void;
+      const gate = new Promise<{ id: number; name: string }[]>((resolve) => {
+        release = resolve;
+      });
+      const { lazy } = makeLazy(() => gate);
+      const table = new TableModel({ rows: lazy });
+      const stop = render(table);
+      await tick(0);
+
+      // `rows` is empty here and would read as "no data" — `isEmpty` being false is what stops
+      // the slot rendering at all
+      expect(table.rows).toHaveLength(0);
+      expect(table.isEmpty).toBe(false);
+
+      release([{ id: 1, name: "alpha" }]);
+      await tick(20);
+      expect(table.isEmpty).toBe(false);
+      stop();
+    });
+
+    test("a discard doesn't make the slot claim there is no data", async () => {
+      const { lazy } = makeLazy();
+      const table = new TableModel({ rows: lazy });
+      const stop = render(table);
+      await tick(20);
+
+      lazy.invalidate({ discard: true });
+
+      // rows are gone, but `loading` keeps the empty slot out of the way rather than letting it
+      // announce "No users yet" over a list that is simply being refetched
+      expect(table.rows).toHaveLength(0);
+      expect(table.loading).toBe(true);
+      expect(table.isEmpty).toBe(false);
+      stop();
+    });
+  });
+
   test("a settled load with no rows is empty, not loading", async () => {
     const { lazy } = makeLazy(() => Promise.resolve([]));
     const table = new TableModel({ rows: lazy });

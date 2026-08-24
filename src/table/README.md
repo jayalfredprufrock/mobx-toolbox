@@ -134,6 +134,9 @@ That produces a new array on each load, so `setRows` re-applies the dataset — 
 `getRowId` selection is intersected rather than cleared. It carries no loading information, though,
 so `table.loading` stays `false`.
 
+(`table.loading` and `table.refreshing` are the table's own state, unrelated to any property on a
+lazy — the table reads `value` and `fetching` off the source and derives the rest.)
+
 Whichever you pick, **configure `getRowId`**. Without it row ids are positions, and any re-applied
 dataset clears selection and expansion.
 
@@ -447,6 +450,23 @@ Both gate themselves. Render them after `<Table.Body>` and they appear only when
 The library decides **when**; you decide **what**. That split is the point: the gate can't know
 whether "empty" means no data or a filter that matched nothing, so that distinction lives in the
 children — where it costs no API.
+
+**Telling "no data" from "filtered to nothing"** is `rows` versus `displayRows`. `rows` is the
+dataset _before_ filtering, and inside `<Table.Empty>` there is nothing on screen by definition — so
+any rows at all mean the filter is what emptied it:
+
+| `rows.length` | means                                       |
+| ------------- | ------------------------------------------- |
+| `0`           | there is no data                            |
+| `> 0`         | there is data, and the filter hid all of it |
+
+There is no `isFiltered` flag on purpose. It would have to pick between "a filter is configured" and
+"a filter is currently excluding rows", and only the second is the question being asked here —
+which `rows.length` already answers exactly, without the ambiguity.
+
+One case it can't answer: if your filtering happens **server-side**, the rows never arrive in the
+first place, so `rows.length` is `0` and the slot reads as "no data". Track the query yourself
+there — the table only knows about the filters it was given.
 
 `<Table.Empty>` shows only when `table.isEmpty`, so it stays out of the way during a first load.
 `<Table.Loading>` shows only when `table.loading`, and only once the wait has lasted long enough to

@@ -84,4 +84,11 @@ void scalar.status;
 // @ts-expect-error renamed to `fetchedAt`, which tracks the fetch rather than the value
 void scalar.loadedAt;
 
+// @ts-expect-error removed — too easily confused with `fetching`, and the obvious use for it
+// mishandled a failed first load. Spell it: `!loaded && fetching`.
+void scalar.loading;
+
+// what replaced it, and the two facts it was made of
+void (!scalar.loaded && scalar.fetching);
+
 export {};

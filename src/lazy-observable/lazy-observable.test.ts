@@ -27,8 +27,8 @@ describe("lazyObservable", () => {
     expect(lazy.loaded).toBe(false);
     expect(lazy.fetching).toBe(false);
     expect(lazy.value).toBeUndefined();
-    expect(lazy.loading).toBe(false);
     expect(lazy.loaded).toBe(false);
+    expect(lazy.fetching).toBe(false);
   });
 
   test("uses provided initialValue before loading", () => {
@@ -48,13 +48,12 @@ describe("lazyObservable", () => {
     // still untouched in the synchronous turn that observed it
     expect(lazy.loaded).toBe(false);
     expect(lazy.fetching).toBe(false);
-    expect(lazy.loading).toBe(false);
     expect(fetchFn).not.toHaveBeenCalled();
 
     await Promise.resolve();
 
-    expect(lazy.loading).toBe(true);
-    expect(lazy.loading).toBe(true);
+    expect(lazy.loaded).toBe(false);
+    expect(lazy.fetching).toBe(true);
     expect(fetchFn).toHaveBeenCalledOnce();
   });
 
@@ -80,7 +79,8 @@ describe("lazyObservable", () => {
     observe(() => void lazy.value);
     // imperative calls are never in a render pass, so they are not deferred
     const promise = lazy.getOrLoad();
-    expect(lazy.loading).toBe(true);
+    expect(lazy.loaded).toBe(false);
+    expect(lazy.fetching).toBe(true);
     expect(fetchFn).toHaveBeenCalledOnce();
 
     await promise;
@@ -100,7 +100,7 @@ describe("lazyObservable", () => {
     expect(lazy.value).toBe(42);
     expect(lazy.loaded).toBe(true);
     expect(lazy.loaded).toBe(true);
-    expect(lazy.loading).toBe(false);
+    expect(lazy.fetching).toBe(false);
   });
 
   test("only calls fetch once for multiple observers", async () => {
@@ -655,7 +655,8 @@ describe("abort", () => {
 
     expect(signals[0]!.aborted).toBe(true);
     expect(lazy.error).toBeUndefined();
-    expect(lazy.loading).toBe(true);
+    expect(lazy.loaded).toBe(false);
+    expect(lazy.fetching).toBe(true);
   });
 
   test("a successful request leaves its signal unaborted", async () => {
@@ -747,13 +748,11 @@ describe("fetching", () => {
     const promise = lazy.getOrLoad();
 
     expect(lazy.fetching).toBe(true);
-    expect(lazy.loading).toBe(true);
     expect(lazy.loaded).toBe(false);
 
     resolveFetch(42);
     await promise;
     expect(lazy.fetching).toBe(false);
-    expect(lazy.loading).toBe(false);
   });
 
   test("a refresh keeps the value readable and only sets fetching", async () => {
@@ -769,11 +768,11 @@ describe("fetching", () => {
     lazy.invalidate();
     await vi.waitUntil(() => lazy.fetching);
 
-    // the old rows stay on screen while the new ones are in flight
+    // the old value stays readable while the new one is in flight — `loaded` and `fetching` are
+    // both true, which is exactly the state a single enum could never describe
     expect(lazy.value).toBe(1);
     expect(lazy.loaded).toBe(true);
-    expect(lazy.loaded).toBe(true);
-    expect(lazy.loading).toBe(false);
+    expect(lazy.fetching).toBe(true);
 
     resolveFetch(2);
     await vi.waitUntil(() => lazy.value === 2);
@@ -841,7 +840,7 @@ describe("fetching", () => {
     await vi.waitUntil(() => lazy.loaded);
 
     lazy.invalidate({ discard: true });
-    await vi.waitUntil(() => lazy.loading);
+    await vi.waitUntil(() => !lazy.loaded && lazy.fetching);
 
     expect(lazy.value).toBeUndefined();
     expect(lazy.loaded).toBe(false);

@@ -83,11 +83,15 @@ describe("api client passthrough", () => {
     const store = new UserStore();
 
     const all = await store.list.getOrLoad();
+    expect(all).toHaveLength(1);
+
     const created = await store.create({ name: "Bo", email: "b@e.com", password: "pw" });
 
     expect(api.listUsers).toHaveBeenCalledOnce();
-    expect(all).toHaveLength(1);
     expect(store.list.value![0]).toBe(created);
+    // `getOrLoad` hands back the collection's own array, not a copy of it, so a reference taken
+    // before a mutation still reflects the list afterwards
+    expect(all).toBe(store.list.value);
   });
 
   test("delete goes through the client and leaves the collection", async () => {

@@ -805,11 +805,11 @@ Cold loads don't transition: there's no previous page to animate away from, and 
 `[LOAD]` blocks the swap until data is in, which is what makes pages render complete. When you'd rather paint the shell immediately and fill regions in — per-section skeletons, independently refreshing panels — skip `[LOAD]` and drive it from an observable:
 
 ```tsx
-import { lazyObservable, LazyObserver } from "@jayalfredprufrock/mobx-toolbox/lazy-observable";
+import { useLazy, LazyObserver } from "@jayalfredprufrock/mobx-toolbox/lazy-observable";
 
 const UserDetailPage = observer(() => {
   const { id } = useRouter().pathParams;
-  const user = useMemo(() => lazyObservable(() => api.getUser(id)), [id]);
+  const user = useLazy((options) => api.getUser(id, options), [id]);
 
   return (
     <UserLayout>
@@ -821,7 +821,63 @@ const UserDetailPage = observer(() => {
 });
 ```
 
-`LazyObserver` re-throws load failures, so they hit the router's error boundary and render your nearest `[ERROR]` with `type: "RENDER"` — you keep `[ERROR]` either way. The trade-off is a serial waterfall on lazy routes: the chunk must download and mount before the fetch starts, where `[LOAD]` overlaps the two. Reach for it when you want progressive rendering, not as the default.
+`LazyObserver` re-throws load failures that leave nothing to render, so they hit the router's error boundary and render your nearest `[ERROR]` with `type: "RENDER"` — you keep `[ERROR]` either way. The trade-off is a serial waterfall on lazy routes: the chunk must download and mount before the fetch starts, where `[LOAD]` overlaps the two. Reach for it when you want progressive rendering, not as the default.
+
+## Typed props from a path
+
+If you do keep loading in the route file, name the path a component sits on and its `route` is typed
+against the route tree:
+
+```tsx
+import type { PageComponentProps } from "@jayalfredprufrock/mobx-toolbox/router";
+
+const StudyPage = ({ route }: PageComponentProps<"/org/:orgId/studies/:studyId">) => {
+  route.params.studyId; // string — from the path
+  route.data.study; // whatever that level's [LOAD] resolves to
+  route.data.org; // ...and every ancestor's, merged in
+  route.context.tenant; // from [CONTEXT] at or above this path
+};
+```
+
+The path is written out rather than inferred because the component cannot import the route tree that
+imports it. A mistyped path is a compile error, and the path argument autocompletes.
+
+**Omitting it changes nothing.** `PageComponentProps` with no argument is the untyped `Route` it has
+always been, so existing components need no edit and pay nothing — an app that never names a path
+costs about a dozen extra type instantiations for the feature existing at all.
+
+### What `data` resolves to
+
+Every `[LOAD]` **at that path and above it**, merged, with the deeper one winning — which is what
+`route.data` actually holds at runtime (`Object.assign` over the outlet chain). Descendants are
+excluded: which of them matched is not knowable from the path, so only what is _guaranteed_ present
+is typed.
+
+`[CONTEXT]` accumulates the same way. Groups (`_list`) contribute their config without contributing a
+segment, exactly as they do at runtime.
+
+### Wrappers sit on prefixes
+
+A `[WRAPPER]` usually lives on a nesting level that addresses no page of its own, so its path is not
+in `RoutePath`. `WrapperComponentProps` takes a `RoutePrefix` instead — any prefix of any route path:
+
+```tsx
+const OrgShell = ({ route, children }: WrapperComponentProps<"/org/:orgId">) => {
+  route.data.org; // guaranteed here
+  // route.data.studies — not typed: a descendant's loader, and this wrapper renders for siblings too
+};
+```
+
+That asymmetry is the point: `PageComponentProps` rejects a path with no page, `WrapperComponentProps`
+accepts the levels wrappers actually live on.
+
+### Why `[ERROR]` and `[LOADING]` are not path-typed
+
+Neither is guaranteed the data a path implies. **Error routes never run ancestor `[LOAD]` loaders**,
+so a typed `route.data` on an `[ERROR]` component would name fields that are reliably absent — and a
+`[LOADING]` component renders precisely while the loaders it would describe are still in flight.
+Typing them would be a lie in both cases, so `ErrorComponentProps` and `LoadingComponentProps` keep
+the untyped `Route`.
 
 ## Navigation
 

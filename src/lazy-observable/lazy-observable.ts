@@ -36,13 +36,13 @@ export interface LazyObservableApi<T> {
    */
   error: unknown;
   /**
-   * `true` when there is nothing to show yet and a request is in flight — that is,
-   * `!loaded && fetching`. The state a first-load spinner belongs to.
-   */
-  loading: boolean;
-  /**
    * `true` whenever a request is in flight, including a background refresh that is still showing
-   * its previous value. `loading` is the subset of this with nothing to show yet.
+   * its previous value.
+   *
+   * Orthogonal to `loaded`, deliberately: the two together describe every state without overlapping.
+   * A first load is `!loaded && fetching`; a refresh is `loaded && fetching`. There is no third
+   * property combining them, because the one that used to exist was the easiest thing here to
+   * confuse with this one — and the obvious use for it silently mishandled a failed first load.
    */
   fetching: boolean;
   /**
@@ -54,7 +54,7 @@ export interface LazyObservableApi<T> {
    */
   fetchedAt: number | undefined;
   /**
-   * `true` while at least one reaction is observing `value`, `loaded`, `loading` or `error`.
+   * `true` while at least one reaction is observing `value`, `loaded` or `error`.
    * Observable, so it can be read reactively — reading it does not itself count as observing the
    * value, so it never triggers a load.
    */
@@ -412,7 +412,11 @@ function createLazy<T>(
         settledAt.set(Date.now());
         fetching.set(false);
       });
-      deferred?.resolve(result.value);
+      // Resolve with what `value` now holds, not with the raw payload. For a list lazy those are
+      // different objects — the payload is a plain array, `value` is the observable one the lazy
+      // owns — and handing back the payload would give an awaiting caller a detached snapshot that
+      // never updates and isn't the array everything else is looking at.
+      deferred?.resolve(readValue() as T);
     }
   };
 
@@ -606,9 +610,6 @@ function createLazy<T>(
     get error() {
       return error.get();
     },
-    get loading() {
-      return !hasValue.get() && fetching.get();
-    },
     get loaded() {
       return hasValue.get();
     },
@@ -656,7 +657,8 @@ function createLazy<T>(
         fetching.set(false);
       });
 
-      deferred?.resolve(newValue);
+      // Same as in `settle`: hand back what is held, which for a list is the owned array.
+      deferred?.resolve(readValue() as T);
     },
     invalidate(invalidateOptions?: LazyInvalidateOptions) {
       drop(invalidateOptions?.discard ?? false);

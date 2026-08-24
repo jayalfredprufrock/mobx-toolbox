@@ -123,7 +123,7 @@ describe("useCollection", () => {
     // Mid-flight: still showing acme's rows, reporting a request in flight rather than a load.
     expect(view.container.textContent).toBe("Alpha");
     expect(lazy.fetching).toBe(true);
-    expect(lazy.loading).toBe(false);
+    expect(lazy.loaded).toBe(true); // rows still there, so this is a refresh rather than a load
     expect(lazy.loaded).toBe(true);
 
     await act(async () => release([{ id: 2, orgId: "globex", title: "Gamma" }]));

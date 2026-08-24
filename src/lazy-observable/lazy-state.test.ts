@@ -38,7 +38,7 @@ describe("value presence, request, and outcome are independent", () => {
     expect(lazy.loaded).toBe(true);
     expect(lazy.value).toBe("good data");
     expect(lazy.error).toBeInstanceOf(Error);
-    expect(lazy.loading).toBe(false);
+    expect(lazy.fetching).toBe(false);
     stop();
   });
 
@@ -68,7 +68,7 @@ describe("value presence, request, and outcome are independent", () => {
     const refreshing = lazy.reload();
     // a request is running, but there is something on screen — so this is a refresh, not a load
     expect(lazy.fetching).toBe(true);
-    expect(lazy.loading).toBe(false);
+    expect(lazy.loaded).toBe(true); // a refresh, not a load — there is something on screen
     expect(lazy.value).toBe("first");
 
     gate.resolve("second");
@@ -82,12 +82,13 @@ describe("value presence, request, and outcome are independent", () => {
     const lazy = lazyObservable(() => gate.promise);
 
     const pending = lazy.getOrLoad();
-    expect(lazy.loading).toBe(true);
-    expect(lazy.loaded).toBe(false);
+    expect(lazy.loaded).toBe(false); // nothing to show...
+    expect(lazy.fetching).toBe(true); // ...and working on it
 
     gate.resolve("here");
     await pending;
-    expect(lazy.loading).toBe(false);
+    expect(lazy.loaded).toBe(true);
+    expect(lazy.fetching).toBe(false);
   });
 
   test("a new request clears the previous failure", async () => {
@@ -189,6 +190,29 @@ describe("getOrLoad answers staleness, not just presence", () => {
     await lazy.getOrLoad();
 
     expect(n).toBe(1);
+  });
+
+  test("getOrLoad resolves with what `value` holds, not the raw payload", async () => {
+    // For a list lazy these are different objects: the fetch returns a plain array, while `value`
+    // is the observable one the lazy owns. Resolving with the payload would hand an awaiting
+    // caller a detached snapshot that never updates.
+    const lazy = lazyObservableArray(async () => [1, 2]);
+    const resolved = await lazy.getOrLoad();
+
+    expect(resolved).toBe(lazy.value);
+
+    // and it stays live
+    lazy.set([3, 4]);
+    expect(resolved.slice()).toEqual([3, 4]);
+  });
+
+  test("set() resolves an awaiting caller with the held value too", async () => {
+    const lazy = lazyObservableArray<number>(() => new Promise(() => {}));
+    const pending = lazy.getOrLoad();
+
+    lazy.set([7]);
+
+    expect(await pending).toBe(lazy.value);
   });
 
   test("set() makes a value authoritative — no fetch is owed", async () => {

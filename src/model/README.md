@@ -711,14 +711,13 @@ per record and mutations still fan out, so an edit here shows up in the app-wide
 Nothing needs disposing either — the model holds its listeners weakly, so the store and its list are
 garbage the moment the component unmounts.
 
-### A single record in a component — `useLazy`
+### A single record in a component — `useModel`
 
-A detail page loads one record, not a list, so there is no collection to build. `useLazy` gives that
-fetch the same lazy the rest of the library uses:
+A detail page loads one record, not a list, so there is no collection to build:
 
 ```tsx
 const StudyPage = observer(({ studyId }: { studyId: string }) => {
-  const study = useLazy((options) => StudyModel.get({ id: studyId }, options), [studyId]);
+  const study = useModel(StudyModel, { id: studyId });
 
   return (
     <LazyObserver observe={study} placeholder={<Spinner />}>
@@ -728,29 +727,48 @@ const StudyPage = observer(({ studyId }: { studyId: string }) => {
 });
 ```
 
-`useLazy` lives in [`@mobx-toolbox/lazy-observable`](../lazy-observable/README.md) and knows nothing
-about models — it is `lazyObservable` with a React lifetime, so it fits any async read whose inputs
-are the component's own. `useLazyArray` is the same for a list-shaped value.
+What comes back is an ordinary `lazyObservable` over the model's own `get`. It loads when something
+observes it, honours whatever the model declared for [`cache`](#caching-a-record), aborts a request
+it supersedes, and hands back the identity-mapped instance — so an edit made anywhere else in the app
+shows up here.
 
-Nothing reading one can tell it came from a hook: it loads when observed, keeps its value while it
-reloads, and aborts a request it supersedes, exactly as one built in a store does.
+**The params are the dependencies.** There is no dependency array to keep in step with them, which is
+the whole reason this exists rather than reaching for `useLazy`:
 
-**`deps` say _which_ lazy this is.** Changing them builds a new one — the value starts empty and
-loads again — which is what you want for a record: showing the study you navigated away from while
-the next loads would be a lie. That is the difference from `useCollection`'s `params`, and it is the
-difference between the two questions being asked:
+```tsx
+useLazy((o) => StudyModel.get({ id, orgId }, o), [id]); // `orgId` forgotten — silently stale
+useModel(StudyModel, { id, orgId }); // can't desync
+```
+
+They are typed from the model's `keys`, compared shallowly (so rebuilding the object every render
+costs nothing), and key order is not a change. A model with no key params takes `undefined`.
+
+**A param change builds a new lazy**, so the value starts empty and loads again — which is what you
+want for a record: showing the study you navigated away from while the next one loads would be a lie.
+That is the difference from `useCollection`'s `params`, and it is the difference between the two
+questions being asked:
 
 |                                | means                   | on change                                 |
 | ------------------------------ | ----------------------- | ----------------------------------------- |
-| `useLazy(fetch, deps)`         | _which_ record this is  | new lazy — value starts empty             |
+| `useModel(Model, params)`      | _which_ record this is  | new lazy — value starts empty             |
 | `useCollection(…, { params })` | filters over _one_ list | same lazy — refetches, rows stay readable |
 
 A study id changing makes it a different record. A search term changing does not make it a different
 list.
 
 **Pair it with `cache`.** With [`cache`](#caching-a-record) on the model, navigating back to a record
-you have already seen resolves from the identity map and paints without a request — the hook rebuilds
-its lazy, and the lazy's first load is answered synchronously.
+you have already seen resolves from the identity map and paints without a request.
+
+#### When you'd still reach for `useLazy`
+
+`useModel` covers a record fetched through the model's `get`, which is the case an app hits over and
+over. For anything else — a count, a summary, an endpoint that isn't a model at all — reach past it
+to [`useLazy`](../lazy-observable/README.md#uselazy--uselazyarray), which knows nothing about models
+and takes an explicit `deps` array:
+
+```tsx
+const stats = useLazy((o) => api.getStudyStats({ id: studyId }, o), [studyId]);
+```
 
 ### Where a list should live
 
@@ -761,8 +779,8 @@ its lazy, and the lazy's first load is answered synchronously.
 | varying per caller, and spellable as a key   | on a shared store — `collectionMap`                           |
 | the component's own React state              | in the component — `useCollection`                            |
 
-And for a value that is one record rather than a list, `useLazy` in the component — see
-[above](#a-single-record-in-a-component--uselazy).
+And for a value that is one record rather than a list, `useModel` in the component — see
+[above](#a-single-record-in-a-component--usemodel).
 
 `collection()` has no `params` option on purpose. A store always has somewhere observable to read
 from — `this`, or module state — so reading it inside the fetch _is_ the feature. React state is the

@@ -14,21 +14,24 @@ The fetch function runs the first time the observable is accessed inside a react
 
 ### Properties
 
-| Property    | Type                  | Description                                                           |
-| ----------- | --------------------- | --------------------------------------------------------------------- |
-| `value`     | `T \| undefined`      | The value, or `undefined` when there isn't one                        |
-| `loaded`    | `boolean`             | Whether there is a value — **narrows `value`**                        |
-| `loading`   | `boolean`             | Nothing to show yet _and_ a request in flight (`!loaded && fetching`) |
-| `fetching`  | `boolean`             | A request is in flight, refreshes included                            |
-| `error`     | `unknown`             | How the last request ended; `undefined` if it succeeded               |
-| `fetchedAt` | `number \| undefined` | When a request last succeeded                                         |
-| `observed`  | `boolean`             | `true` while something is observing this lazy                         |
+| Property    | Type                  | Description                                             |
+| ----------- | --------------------- | ------------------------------------------------------- |
+| `value`     | `T \| undefined`      | The value, or `undefined` when there isn't one          |
+| `loaded`    | `boolean`             | Whether there is a value — **narrows `value`**          |
+| `fetching`  | `boolean`             | A request is in flight, refreshes included              |
+| `error`     | `unknown`             | How the last request ended; `undefined` if it succeeded |
+| `fetchedAt` | `number \| undefined` | When a request last succeeded                           |
+| `observed`  | `boolean`             | `true` while something is observing this lazy           |
 
 Three facts vary independently here, and none is derivable from the others:
 
 - **`loaded`** — is there a value? Decides what renders.
 - **`fetching`** — is a request running?
 - **`error`** — how did the last request end?
+
+There is deliberately no fourth property combining them. A first load is `!loaded && fetching`; a
+refresh is `loaded && fetching`. Spell whichever you mean — it is shorter than looking up which of
+two similar names meant which, and it can't be confused with the other.
 
 A refresh that fails while data is on screen is `loaded: true` _and_ has an `error`. Both are true
 statements, and there is no single enum value that says so — which is why there isn't one.
@@ -68,15 +71,15 @@ const SurveyList = observer(() => {
 });
 ```
 
-| situation                  | `value`     | `loaded` | `loading` | `fetching` | `error` |
-| -------------------------- | ----------- | -------- | --------- | ---------- | ------- |
-| nothing yet                | `undefined` | `false`  | `false`   | `false`    | —       |
-| first load                 | `undefined` | `false`  | `true`    | `true`     | —       |
-| first load failed          | `undefined` | `false`  | `false`   | `false`    | set     |
-| loaded, idle               | value       | `true`   | `false`   | `false`    | —       |
-| refreshing (default)       | value       | `true`   | `false`   | `true`     | —       |
-| refreshing after `discard` | `undefined` | `false`  | `true`    | `true`     | —       |
-| **refresh failed**         | **value**   | **true** | `false`   | `false`    | **set** |
+| situation                  | `value`     | `loaded` | `fetching` | `error` |
+| -------------------------- | ----------- | -------- | ---------- | ------- |
+| nothing yet                | `undefined` | `false`  | `false`    | —       |
+| first load                 | `undefined` | `false`  | `true`     | —       |
+| first load failed          | `undefined` | `false`  | `false`    | set     |
+| loaded, idle               | value       | `true`   | `false`    | —       |
+| refreshing (default)       | value       | `true`   | `true`     | —       |
+| refreshing after `discard` | `undefined` | `false`  | `true`     | —       |
+| **refresh failed**         | **value**   | **true** | `false`    | **set** |
 
 That last row is the one worth reading twice. A failed refresh keeps the previous value readable and
 records the error — so `error` alone never means "there is nothing to show". Check `loaded` for that.
@@ -315,7 +318,7 @@ rows.value; // [] — "there are none"
 ```
 
 An empty array as the starting value would be a claim about the data that nothing had checked, and
-it is the reason table empty-states used to need `list.loading ? undefined : <Empty/>` wired by hand.
+it is the reason table empty-states used to need the loading case wired in by hand.
 If you want that behaviour on purpose, ask for it — and it means what it says:
 
 ```ts
@@ -345,6 +348,11 @@ What comes back is an ordinary `lazyObservable` — nothing reading one can tell
 hook, a store, or a hand-rolled construction. It loads when observed, keeps its value while it
 reloads, and aborts what it supersedes. Passing the fetch options through, as above, is what gives
 you that abort.
+
+> **Fetching one record through a model?** Reach for
+> [`useModel`](../model/README.md#a-single-record-in-a-component--usemodel) instead — the params
+> double as the dependency list, so there is no array to keep in step with them. `useLazy` is for
+> everything else: a count, a summary, an endpoint with no model behind it.
 
 `useLazyArray` is the same for a list-shaped value, and returns a `lazyObservableArray`.
 

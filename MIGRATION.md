@@ -79,7 +79,10 @@ Related fix: a `redirect()` thrown from a `[LOAD]` no longer marks the outlet `e
 out, so the generic "A route loader or lazy component failed." text no longer flashes before the
 new route lands. If you avoided loader redirects because of that flash, they are now clean.
 
-### lazy-observable — state model
+### lazy-observable — the state model
+
+> Read this before the options-and-methods section below: several of those notes describe
+> behaviour in terms of the properties this section replaces.
 
 Every change in this section is the same correction: **`status` answered three questions at once**,
 and they contradict each other at the edges. A failed refresh kept its value but reported
@@ -97,10 +100,29 @@ There are three independent facts, and now three properties for them:
 | before                      | after                                           |
 | --------------------------- | ----------------------------------------------- |
 | `lazy.status === "loaded"`  | `lazy.loaded`                                   |
-| `lazy.status === "loading"` | `lazy.loading`                                  |
+| `lazy.status === "loading"` | `!lazy.loaded && lazy.fetching`                 |
 | `lazy.status === "error"`   | `lazy.error !== undefined`                      |
 | `lazy.status === "init"`    | `!lazy.loaded && !lazy.fetching && !lazy.error` |
+| `lazy.loading`              | `!lazy.loaded && lazy.fetching`                 |
 | `lazy.loadedAt`             | `lazy.fetchedAt`                                |
+
+⚠️ **`lazy.loading` is removed too.** It was `!loaded && fetching`, which made it the one name here
+easy to mistake for `fetching` — and the obvious use for it was wrong:
+
+```tsx
+if (list.loading) return <Spinner />;
+return <List items={list.value} />; // 💥 after a failed first load
+```
+
+A failed first load is `loaded: false, fetching: false, error: set`, so `loading` is `false` and that
+renders with no value. Gate on `loaded` instead, which has no such hole — and check `error` first,
+which is what `LazyObserver` does for you.
+
+For a spinner, `!list.loaded` is almost always what you meant. Where you genuinely need "nothing yet
+_and_ working", spell it: `!list.loaded && list.fetching`.
+
+`table.loading` and `table.refreshing` are **unaffected** — different object, and the table exposes no
+`fetching` for them to be confused with.
 
 `status` is **removed** rather than deprecated: it cannot be reproduced faithfully, because its
 `"error"` value was the bug. Any shim would have to pick a meaning and still be wrong at the edge
@@ -159,6 +181,19 @@ distinct from `set()`, which marks a value authoritative and owes no fetch:
 | `lazyObservable(f, { initialValue })` | loaded + stale | a starting point, still owed a fetch |
 | `lazy.set(value)`                     | loaded + fresh | authoritative; no fetch              |
 
+⚠️ **`getOrLoad()` and `reload()` on a list lazy now resolve with the lazy's own array.** They used
+to resolve with the raw fetched payload — a different, plain array that never updated. So a
+reference taken from an `await` was a detached snapshot:
+
+```ts
+const rows = await store.all.getOrLoad();
+await store.create({ … });
+rows.length; // before: still the old count. after: reflects the list, because it *is* the list
+```
+
+This only differs for list lazies; for a scalar the payload and the value were always the same
+object. If you were relying on the snapshot, copy it explicitly: `(await lazy.getOrLoad()).slice()`.
+
 ⚠️ **`LazyObserver` no longer throws on a failed refresh.** It re-throws only when there is nothing
 to render (`error` with `!loaded`). A refresh that fails while data is on screen keeps that screen —
 the previous behaviour destroyed a working page over a background request. The error is still
@@ -172,7 +207,9 @@ the old behaviour per call site.
 
 ---
 
-### lazy-observable
+### lazy-observable — options and methods
+
+These are the API renames, separate from the state-model rework above.
 
 | before                                        | after                                                    |
 | --------------------------------------------- | -------------------------------------------------------- |
@@ -191,8 +228,13 @@ depended on the list going empty while it refetched, use `invalidate({ discard: 
 the next observation loads. This is intended; just don't expect a request from an invalidate on an
 off-screen lazy.
 
-⚠️ **`lazyObservableArray().value` is now the same array for the lazy's lifetime** — loads replace its
-_contents_. Anything watching the array _identity_ as a change signal will stop firing:
+A caller's own demand counts as well, though: `getOrLoad()` respects staleness, so
+`invalidate()` followed by an `await` fetches whether or not anything is watching. (It previously
+returned the value it had just been told to replace — see the state-model section.)
+
+⚠️ **`lazyObservableArray().value` is the same array from the first load onward** — later loads
+replace its _contents_ rather than the array. Anything watching the array _identity_ as a change
+signal fires once, when the first load fills it in, and never again:
 
 ```ts
 // before: fired on every load, because the array was a new one each time
@@ -202,11 +244,15 @@ reaction(
 );
 // after: observe when data landed, or read the contents
 reaction(
-  () => rows.loadedAt,
+  () => rows.fetchedAt,
   () => persist(rows.value),
 );
-autorun(() => render(rows.value.slice()));
+autorun(() => render(rows.value?.slice()));
 ```
+
+Before the first load — and after an `invalidate({ discard: true })` — `value` is `undefined` rather
+than the array, so read it through `?.` as above. The array itself is never replaced, so a reference
+taken earlier is still valid once the next load fills it back in.
 
 Also check React dependency arrays (`useEffect(…, [rows.value])`) and any `=== previousArray` checks.
 
@@ -216,7 +262,7 @@ code that relied on the old behaviour to deduplicate should use `getOrLoad()`, w
 
 ⚠️ **A lazy constructed inside an `observer()` render now loads.** It previously never did — the
 constructor's own read of its array spent mobx's single `onBecomeObserved` transition before the
-hooks were attached, so the lazy was watched, never learned it, and sat at `"init"` forever. Code
+hooks were attached, so the lazy was watched, never learned it, and never loaded at all. Code
 that compiled and quietly fetched nothing will start fetching. A workaround that called `getOrLoad()`
 by hand is safe to leave in place: it joins the load rather than starting a second one.
 
@@ -437,9 +483,9 @@ fetch and it refetches on change, coalescing bursts and aborting superseded requ
 **`{ signal }` instead of manual `AbortController` plumbing.** Every fetch receives one that fires when
 its request is superseded.
 
-**`fetching` vs `loading`.** `loading` means "nothing to show yet"; `fetching` means "a request is in
-flight". A refresh keeps the old rows visible with `fetching` true, so `if (!loaded) return <Spinner/>`
-no longer blanks the table on every poll.
+**`loaded` vs `fetching`.** `loaded` means "there is a value"; `fetching` means "a request is in
+flight". They are independent, so a refresh keeps the old rows visible with both true, and
+`if (!loaded) return <Spinner/>` no longer blanks the table on every poll.
 
 **Several lists, or several stores.** Separate queries behave as one because identity lives on the
 model — so a single store with client-side filtering, or a store with branching fetch logic, can
@@ -459,6 +505,38 @@ loading and error, with models built by hand. That is one call now: params are p
 the result is a `LazyObservableArray`, and records go through the model's identity map — so an edit
 made anywhere in the app shows up in it, and nothing needs disposing. Reach for it instead of putting
 a component's filter state on a shared store, which is what stops the store being shared.
+
+**Typed route props, if loading lives in the route file.** `PageComponentProps` and
+`WrapperComponentProps` now take an optional path, and resolve `route` against the augmented route
+tree:
+
+```tsx
+const StudyPage = ({ route }: PageComponentProps<"/org/:orgId/studies/:studyId">) => {
+  route.params.studyId; // string
+  route.data.study; // that level's [LOAD] payload
+  route.data.org; // ...and every ancestor's, merged
+  route.context.tenant; // [CONTEXT] at or above the path
+};
+```
+
+`data` is every `[LOAD]` at and above the path, deeper winning — which is what `route.data` holds at
+runtime. Descendants are excluded, since which one matched isn't knowable from the path. Groups
+(`_list`) contribute config without contributing a segment.
+
+Wrappers take a `RoutePrefix` rather than a `RoutePath`, because the level a wrapper sits on usually
+addresses no page and so never appears in `RoutePath`:
+
+```tsx
+const OrgShell = ({ route, children }: WrapperComponentProps<"/org/:orgId">) => route.data.org;
+```
+
+**Nothing to migrate.** Both types keep working with no argument — that is still the untyped `Route`.
+An app that never names a path pays about a dozen extra type instantiations for the feature existing;
+each component that does costs ~460, independent of how big the route tree is.
+
+`[ERROR]` and `[LOADING]` components deliberately have no path form: error routes never run ancestor
+loaders and loading components render while loaders are still in flight, so a typed `route.data`
+would name fields that aren't there.
 
 **`useSlowLoading` instead of hand-rolled skeleton timing.** The threshold-plus-floor behaviour that
 `[LOADING]` routes have always had is now public and used by `LazyObserver` and `<Table.Loading>`, so
@@ -482,8 +560,18 @@ useTable({ rows: () => store.all.value.slice(), getRowId });
 useTable({ rows: store.all, getRowId });
 ```
 
-The table tracks contents itself, so the `.slice()` footgun is gone. More importantly it can now
-distinguish a first load from an empty result, which is what removes this workaround:
+The table tracks contents itself, so the `.slice()` footgun is gone — and it applies the dataset
+once rather than copying every row on every load.
+
+Keeping a getter is still right when the rows are _derived_ rather than handed over, but `value` can
+now be `undefined`, so it needs a guard and it carries no loading information:
+
+```tsx
+useTable({ rows: () => store.all.value?.filter(isActive) ?? [], getRowId });
+```
+
+More importantly, the row-source form can distinguish a first load from an empty result, which is
+what removes this workaround:
 
 ```tsx
 // before — or the table claims "no results" during the first fetch
@@ -502,7 +590,41 @@ scroll position, column arrangement and selection all survive it.
 (`{cond && <Table.Empty>}`) still works and is simply redundant. `table` still takes no dependency on
 `lazy-observable` — `RowSource` is a structural shape it declares itself.
 
-**`useLazy` instead of `useMemo(() => lazyObservable(…))` for a details page.** Loading one record
+**`useModel` for a details page — the last place an app had to reach for `lazyObservable`.** Loading
+one record in a component had no first-class shape. Both of these work; the third is the one to
+write now:
+
+```tsx
+// before
+const study = useMemo(() => lazyObservable(() => StudyModel.get({ id: studyId })), [studyId]);
+
+// intermediate — correct, but the deps array restates what the fetch already closes over
+const study = useLazy((o) => StudyModel.get({ id: studyId }, o), [studyId]);
+
+// now
+const study = useModel(StudyModel, { id: studyId });
+```
+
+**The params are the dependencies**, so there is no array to keep in step with them — which is a real
+bug class, not just noise:
+
+```tsx
+useLazy((o) => StudyModel.get({ id, orgId }, o), [id]); // `orgId` forgotten — silently stale
+useModel(StudyModel, { id, orgId }); // can't desync
+```
+
+Params are typed from the model's `keys`, compared shallowly, and key order is not a change. The
+result is an ordinary `lazyObservable` over the model's `get`, so it honours the model's `cache`,
+aborts superseded requests, and hands back the identity-mapped instance. A model with no key params
+takes `undefined`.
+
+`useCollection` is unchanged and keeps its name — `useModel` / `useCollection` reads as singular and
+plural, and both take a model as their first argument.
+
+Reach past it to `useLazy` only for something that isn't a model record — a count, a summary, an
+endpoint with no model behind it.
+
+**`useLazy` instead of `useMemo(() => lazyObservable(…))` for anything else.** Loading one record
 in a component had no first-class shape, so the pattern was:
 
 ```tsx
@@ -576,6 +698,15 @@ every render retriggering everything reading it.
 - Post-mutation `reload()` calls that `invalidateOn` now covers.
 - Code compensating for a model belonging to only one store.
 - Selection-restoring hacks around table refreshes (`getRowId` plus the intersect behaviour covers it).
+- `empty={list.loading ? undefined : …}` gating around a table's empty state — both slots gate
+  themselves now.
+- `.slice()` in a table `rows` getter, where the rows are handed over rather than derived.
+- Hand-rolled skeleton delay/minimum-duration timers — `useSlowLoading` is the same behaviour the
+  router's `[LOADING]` has always had.
+- `useMemo(() => lazyObservable(() => Model.get(…)), [id])` blocks on detail pages — `useModel`.
+- `{ deep: false }` on a lazy over models. It was never required (MobX leaves an already-observable
+  value alone) and `store.collection` sets it for you; keep it only where you measured it.
+- Redirect call sites passing `replace: true` — that is the default now.
 - Hand-written column lists that only exist because configuring one column lost the rest — `columns`
   plus `autoColumns` now compose.
 - Custom sorting of a column array to force a column first or last — `order`, or `pinned` for an edge.

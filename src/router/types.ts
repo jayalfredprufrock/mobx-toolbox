@@ -55,16 +55,36 @@ export interface RouteLevel {
  * The props every `[WRAPPER]` component receives. Unlike `[LOADING]` and
  * `[ERROR]`, a wrapper does receive `children` — it wraps the rest of the
  * chain below it.
+ *
+ * Name the path it sits on to get `route` typed — see {@link PageComponentProps}. A wrapper's path
+ * is a {@link RoutePrefix} rather than a `RoutePath`, because the level it wraps often addresses no
+ * page of its own.
  */
-export interface WrapperComponentProps {
-  route: Route;
+export interface WrapperComponentProps<P extends RoutePrefix | undefined = undefined> {
+  route: [P] extends [undefined] ? Route : RouteAt<P & string>;
   level: RouteLevel;
   children?: React.ReactNode;
 }
 
-/** The props every `[PAGE]` component receives. */
-export interface PageComponentProps {
-  route: Route;
+/**
+ * The props every `[PAGE]` component receives.
+ *
+ * Name the path the page sits on and `route` is typed against the route tree — `params` from the
+ * path, `data` from every `[LOAD]` at or above it, `context` from every `[CONTEXT]`:
+ *
+ * ```tsx
+ * const StudyPage = ({ route }: PageComponentProps<"/org/:orgId/studies/:studyId">) => {
+ *   route.params.studyId; // string
+ *   route.data.study; // whatever that level's [LOAD] resolves to
+ *   route.data.org; // ...and the ancestor's, merged in
+ * };
+ * ```
+ *
+ * The path is given rather than inferred because the component cannot import the route tree that
+ * imports it. A mistyped one is a compile error; leaving it off keeps the untyped `Route`.
+ */
+export interface PageComponentProps<P extends RoutePath | undefined = undefined> {
+  route: [P] extends [undefined] ? Route : RouteAt<P & string>;
   level: RouteLevel;
 }
 
@@ -315,3 +335,133 @@ export type ExtractPaths<R> = {
 }[keyof R];
 
 export type NormalizeRootPath<P> = P extends "" ? "/" : P;
+
+/* Typed route props */
+/********************************************************************************* */
+
+/**
+ * Whether the app has augmented `MobxRouter` with its route tree. Without it there is nothing to
+ * resolve against, so the typed props degrade to the untyped ones rather than producing nonsense
+ * out of `Routes`' index signature.
+ */
+type HasRoutes = MobxRouter extends { routes: any } ? true : false;
+
+/**
+ * Merge two loader payloads with the **deeper one winning**, which is what happens at runtime:
+ * `route.data` is `Object.assign({}, ...outlets)`, so a key a child loader also returns overwrites
+ * its ancestor's. An intersection would type such a key as `A & B`, which nothing ever holds.
+ */
+type MergeDeeper<A, B> = keyof A extends never
+  ? B
+  : keyof B extends never
+    ? A
+    : Omit<A, keyof B> & B;
+
+type LoadData<N> = N extends { [LOAD]: (...args: any[]) => Promise<infer D> }
+  ? D extends object
+    ? D
+    : {}
+  : {};
+
+type ContextData<N> = N extends { [CONTEXT]: infer C } ? (C extends object ? C : {}) : {};
+
+/** Group keys (`_list`) contribute no path segment, so the walk passes through them. */
+type GroupKeys<N> = Extract<keyof N, `_${string}`>;
+
+/**
+ * The definition key that spells path segment `S`. A `:param` segment is written `$param` as an
+ * object key, or quoted as `":param"` — the second spelling is `S` itself, so it needs no branch.
+ */
+type SegmentKey<N, S extends string> = S extends keyof N
+  ? S
+  : S extends `:${infer Param}`
+    ? `$${Param}` extends keyof N
+      ? `$${Param}`
+      : never
+    : never;
+
+/** `/org/:orgId/studies` → `["org", ":orgId", "studies"]`; `/` → `[]`. */
+type Segments<P extends string> = P extends `/${infer Rest}`
+  ? Segments<Rest>
+  : P extends `${infer Head}/${infer Tail}`
+    ? [Head, ...Segments<Tail>]
+    : P extends ""
+      ? []
+      : [P];
+
+/** An `index` key addresses its parent's path, so it is part of that path's chain. */
+type IndexTail<N> = N extends { index: infer I } ? [I] : [];
+
+/** Guards the spread: a failed branch is `never`, which must not be spread into a tuple. */
+type Prepend<H, T> = T extends readonly unknown[] ? [H, ...T] : never;
+
+/**
+ * Every definition node passed through on the way to path `P`, in order — which is exactly the set
+ * whose `[LOAD]` and `[CONTEXT]` are in force there.
+ *
+ * Branches that cannot consume the next segment resolve to `never` and drop out of the union, so a
+ * well-formed tree leaves exactly one chain.
+ */
+type Chain<N, Segs extends readonly string[]> = Segs extends readonly [
+  infer S extends string,
+  ...infer Rest extends readonly string[],
+]
+  ? Prepend<N, Step<N, S, Rest>>
+  : [N, ...IndexTail<N>];
+
+type Step<N, S extends string, Rest extends readonly string[]> =
+  | (SegmentKey<N, S> extends infer K ? (K extends keyof N ? Chain<N[K], Rest> : never) : never)
+  // descending into a group consumes no segment, but does pick up its config
+  | { [G in GroupKeys<N>]: Chain<N[G], [S, ...Rest]> }[GroupKeys<N>];
+
+type FoldData<C> = C extends readonly [infer H, ...infer T]
+  ? MergeDeeper<LoadData<H>, FoldData<T>>
+  : {};
+
+type FoldContext<C> = C extends readonly [infer H, ...infer T]
+  ? MergeDeeper<ContextData<H>, FoldContext<T>>
+  : {};
+
+/**
+ * What `route.data` holds at path `P`: every `[LOAD]` at that path and above it, merged, with the
+ * deeper one winning.
+ *
+ * Ancestors are included because `route.data` is chain-wide at runtime. Descendants are not — which
+ * of them matched is not knowable from `P`, so only what is *guaranteed* present is typed. That is
+ * also why this is correct for a `[WRAPPER]`, which renders for many descendant paths.
+ */
+export type RouteDataAt<P extends string> = HasRoutes extends true
+  ? FoldData<Chain<MobxRouterRoutes, Segments<P>>>
+  : Obj;
+
+/** What `route.context` holds at path `P` — every `[CONTEXT]` at or above it, deeper winning. */
+export type RouteContextAt<P extends string> = HasRoutes extends true
+  ? FoldContext<Chain<MobxRouterRoutes, Segments<P>>>
+  : Obj;
+
+/**
+ * The `Route` a component at path `P` receives, with `params`, `data` and `context` resolved
+ * against the route tree instead of left as `Obj`.
+ */
+export type RouteAt<P extends string> = Omit<Route, "params" | "data" | "context"> & {
+  params: ExtractParams<P>;
+  data: RouteDataAt<P>;
+  context: RouteContextAt<P>;
+};
+
+/**
+ * Every prefix of every route path, including the ones that address no page of their own.
+ *
+ * The leading empty segment is normalized here rather than excluded afterwards, so the root comes
+ * out as `/` and the union needs no second pass.
+ */
+type PrefixesOf<P extends string> = P extends `${infer Head}/${infer Tail}`
+  ? NormalizeRootPath<Head> | `${Head}/${PrefixesOf<Tail>}`
+  : P;
+
+/**
+ * Where a `[WRAPPER]` or `[LAYOUT]` can sit: any *prefix* of a route path, not just the navigable
+ * ones. A nesting level with no `index` addresses no page, so it never appears in `RoutePath` — but
+ * it is exactly where wrappers live.
+ */
+export type RoutePrefix = string extends RoutePath ? string : PrefixesOf<RoutePath>;

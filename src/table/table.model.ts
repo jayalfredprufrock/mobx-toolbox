@@ -82,11 +82,18 @@ export class TableModel {
   private rowsReactionDisposer: IReactionDisposer | undefined;
 
   /**
-   * The `RowSource` form of `config.rows`, if that is what was given. Held so `loading` and
-   * `refreshing` can read it: an array or a getter says nothing about whether more is coming, and
-   * only a source can distinguish "no rows yet" from "no rows".
+   * The `RowSource` form of `rows`, if that is what was given. Held so `loading` and `refreshing`
+   * can read it: an array or a getter says nothing about whether more is coming, and only a source
+   * can distinguish "no rows yet" from "no rows".
+   *
+   * Held here rather than read off `config` because it can be replaced — a keyed collection hands
+   * out a *different* lazy per key, so `store.byOrg({ orgId })` is a new source whenever `orgId`
+   * changes. See {@link setRowSource}.
    */
   private rowSource: RowSource<RowData> | undefined;
+
+  /** The live `rows` binding: whichever source or getter is currently driving the dataset. */
+  private rowsBinding: RowSource<RowData> | (() => RowData[]) | undefined;
 
   // Re-derives factory columns once data exists; see activate().
   private columnsReactionDisposer: IReactionDisposer | undefined;
@@ -433,7 +440,12 @@ export class TableModel {
 
     makeObservable<
       this,
-      "syncColumns" | "configuredDefs" | "runtimeDefs" | "suppressedKeys" | "rowSource"
+      | "syncColumns"
+      | "configuredDefs"
+      | "runtimeDefs"
+      | "suppressedKeys"
+      | "rowSource"
+      | "rowsBinding"
     >(this, {
       rows: observable.ref,
       columns: observable,
@@ -465,9 +477,10 @@ export class TableModel {
       unpinnedRenderedColumns: computed,
       leftPinnedRenderedColumns: computed,
       rightPinnedRenderedColumns: computed,
-      // Someone else's observable object, held by reference — mobx must not convert it, and its
-      // own identity never changes, so there is nothing here to observe.
+      // Someone else's observable object, held by reference — mobx must not convert it, and the
+      // reaction is re-armed on replacement rather than tracked, so there is nothing to observe.
       rowSource: false,
+      rowsBinding: false,
 
       filteredRows: computed,
       loading: computed,
@@ -497,6 +510,7 @@ export class TableModel {
       removeColumn: action.bound,
       moveColumn: action.bound,
       setRows: action.bound,
+      setRowSource: action.bound,
       appendRows: action.bound,
       setScroll: action.bound,
       scrollToRow: action.bound,
@@ -521,8 +535,9 @@ export class TableModel {
     // the getter and row-source forms are applied by their reaction in activate(), below
     if (Array.isArray(config?.rows)) {
       this.setRows(config.rows);
-    } else if (isRowSource<RowData>(config?.rows)) {
-      this.rowSource = config.rows;
+    } else if (config?.rows) {
+      this.rowsBinding = config.rows;
+      if (isRowSource<RowData>(config.rows)) this.rowSource = config.rows;
     }
     // registered after initial config so construction itself never fires; structural equality
     // suppresses echoes from unrelated observable churn
@@ -539,7 +554,7 @@ export class TableModel {
     // A getter `rows` is tracked here rather than read once in the constructor: the model follows
     // whatever observables the getter touches. Ordered before the state reaction so the columns
     // this first materializes are part of that reaction's baseline rather than a change to report.
-    const rows = this.config?.rows;
+    const rows = this.rowsBinding;
     // A source is tracked by the *identity* of its `value`, not a copy of its contents. That is
     // what lets a `LazyObservableArray` — which keeps one array for its lifetime and replaces the
     // contents on each load — be applied exactly once: later loads reach the table's computeds
@@ -579,6 +594,30 @@ export class TableModel {
         equals: comparer.structural,
       });
     }
+  }
+
+  /**
+   * Point the table at a different dataset binding — another `RowSource` or getter.
+   *
+   * A keyed collection hands out a *different* lazy per key, so `store.byOrg({ orgId })` is a new
+   * object whenever `orgId` changes, and the table has to follow it rather than keep reading the
+   * one it was built with. `useTable` calls this for you; a model driven directly needs it when the
+   * binding it was constructed with is no longer the right one.
+   *
+   * Row-keyed state is not cleared: `setRows` intersects, so with `getRowId` configured a row
+   * present in both datasets keeps its selection and expansion.
+   */
+  setRowSource(rows: RowSource<RowData> | (() => RowData[])): void {
+    if (rows === this.rowsBinding) return;
+
+    this.rowsBinding = rows;
+    this.rowSource = isRowSource<RowData>(rows) ? rows : undefined;
+
+    // Re-arm against the new binding. Dropping the old reaction first matters: it closes over the
+    // previous source, and left running it would keep writing that one's rows over these.
+    this.rowsReactionDisposer?.();
+    this.rowsReactionDisposer = undefined;
+    this.activate();
   }
 
   /** Drop the model's reactions. Pairs with `activate`. */

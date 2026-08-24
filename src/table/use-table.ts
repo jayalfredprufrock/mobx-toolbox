@@ -1,6 +1,7 @@
 import { useEffect, useRef } from "react";
 import { TableModel } from "./table.model";
-import type { RowData, TableConfig } from "./table.types";
+import type { RowData, RowSource, TableConfig } from "./table.types";
+import { isRowSource } from "./util";
 
 /**
  * Creates a `TableModel` that lives as long as the component.
@@ -13,7 +14,9 @@ import type { RowData, TableConfig } from "./table.types";
  * matters — see {@link TableConfig.rows}. An **array** is re-applied when its identity changes, so
  * it must be referentially stable (a MobX `computed` or `useMemo`) or every parent render reads as
  * a new dataset and clears selection with it. A **getter** is tracked by MobX instead, and must
- * read observables — a getter over props or React state is never re-run.
+ * read observables — a getter over props or React state is never re-run. A **row source** is
+ * re-pointed when you hand over a different one, which is what makes a keyed collection work:
+ * `rows={store.byOrg({ orgId })}` is a new lazy each time `orgId` changes.
  *
  * Everything else (`columns`, `getRowId`, `onStateChange`, `filter`) is captured at construction;
  * change them through the model (`setColumns`/`addColumn`/`removeColumn`, `setFilter`, `applyState`)
@@ -32,9 +35,17 @@ export const useTable = <T>(config?: TableConfig<T>): TableModel => {
 
   const rows = config?.rows;
   useEffect(() => {
-    // the getter form maintains itself through the model's own reaction
-    if (typeof rows === "function" || rows === appliedRows.current) return;
+    if (rows === appliedRows.current) return;
     appliedRows.current = rows;
+
+    // A getter or a row source is a *binding*, not a dataset: handing either to `setRows` would
+    // store the function or the lazy itself where rows are expected. Re-point the model at it and
+    // let its own reaction read through.
+    if (typeof rows === "function" || isRowSource<RowData>(rows)) {
+      table.setRowSource(rows as RowSource<RowData> | (() => RowData[]));
+      return;
+    }
+
     table.setRows((rows ?? []) as RowData[]);
   }, [table, rows]);
 

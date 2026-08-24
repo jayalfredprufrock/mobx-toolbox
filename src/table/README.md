@@ -142,6 +142,47 @@ dataset clears selection and expansion.
 
 `src/table/lazy-binding.test.ts` pins these behaviours.
 
+### Rows that take parameters
+
+Two shapes, and which you want depends on where the parameters live.
+
+**Component state — a filter, a search box:** `useCollection` with `params`. One lazy for the
+component's lifetime; a param change refetches _inside_ it, so the table keeps the same source and
+simply follows its contents:
+
+```tsx
+const rows = useCollection(
+  SurveyModel,
+  ({ orgId }, options) => api.listSurveys({ orgId, ...options }),
+  {
+    params: { orgId },
+  },
+);
+const table = useTable({ rows, getRowId: (s) => s.id });
+```
+
+**A shared store, keyed — per tenant, per parent record:** `collectionMap`. Each key is its own
+lazy, so `store.byOrg({ orgId })` hands over a **different** object when `orgId` changes, and the
+table re-points at it:
+
+```tsx
+const table = useTable({ rows: store.byOrg({ orgId }), getRowId: (s) => s.id });
+```
+
+Both work through `useTable` without a `useMemo` — passing it in render is fine, because a source is
+compared by identity and the keyed map returns the same lazy for the same key.
+
+Two behaviours worth expecting from the keyed form:
+
+- **Returning to a key refetches.** `keepOnUnobserved` defaults to `false`, so a key's list drops its
+  rows the moment the table stops reading it. Pass `keepOnUnobserved` on the collection to hold them.
+- **Selection is intersected, not carried.** With `getRowId`, an id that still resolves to a row
+  survives the switch and one that does not is dropped — so a selection never points at a row from
+  the previous key.
+
+Driving a `TableModel` directly rather than through `useTable`? `setRowSource(rows)` is the same
+re-pointing, for when the binding it was constructed with is no longer the right one.
+
 ### Loading and empty states
 
 Given a row source, the table distinguishes four states — and the one that used to need hand-wiring

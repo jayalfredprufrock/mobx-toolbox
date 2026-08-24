@@ -61,7 +61,7 @@ export interface RouteLevel {
  * page of its own.
  */
 export interface WrapperProps<P extends RoutePrefix | undefined = undefined> {
-  route: [P] extends [undefined] ? Route : RouteAt<P & string>;
+  route: [P] extends [undefined] ? Route : RouteAtPrefix<P & string>;
   level: RouteLevel;
   children?: React.ReactNode;
 }
@@ -73,7 +73,7 @@ export interface WrapperProps<P extends RoutePrefix | undefined = undefined> {
  * path, `data` from every `[LOAD]` at or above it, `context` from every `[CONTEXT]`:
  *
  * ```tsx
- * const StudyPage = ({ route }: PageProps<"/org/:orgId/studies/:studyId">) => {
+ * export const StudyPage: FC<PageProps<"/org/:orgId/studies/:studyId">> = ({ route }) => {
  *   route.params.studyId; // string
  *   route.data.study; // whatever that level's [LOAD] resolves to
  *   route.data.org; // ...and the ancestor's, merged in
@@ -82,6 +82,11 @@ export interface WrapperProps<P extends RoutePrefix | undefined = undefined> {
  *
  * The path is given rather than inferred because the component cannot import the route tree that
  * imports it. A mistyped one is a compile error; leaving it off keeps the untyped `Route`.
+ *
+ * **Annotate the const, not the parameter.** `({ route }: PageProps<…>) => …` puts the component's
+ * *inferred* type on the path that resolves through `MobxRouter["routes"]` and closes the cycle —
+ * the route tree imports the component, the component's type reads the route tree. It can compile
+ * in isolation and collapse the whole tree to `any` (TS7022) once several components use it.
  */
 export interface PageProps<P extends RoutePath | undefined = undefined> {
   route: [P] extends [undefined] ? Route : RouteAt<P & string>;
@@ -473,11 +478,68 @@ export type RouteContextAt<P extends string> = HasRoutes extends true
   : Obj;
 
 /**
+ * The definition node addressed by `P` — the same walk as {@link Chain}, but returning where it
+ * lands rather than everything passed through, and without following `index`: what is wanted here
+ * is the level itself, so its children are still reachable.
+ */
+type NodeAt<N, Segs extends readonly string[]> = Segs extends readonly [
+  infer S extends string,
+  ...infer Rest extends readonly string[],
+]
+  ?
+      | (SegmentKey<N, S> extends infer K
+          ? K extends keyof N
+            ? NodeAt<N[K], Rest>
+            : never
+          : never)
+      | { [G in GroupKeys<N>]: NodeAt<N[G], [S, ...Rest]> }[GroupKeys<N>]
+  : N;
+
+/**
+ * Every `:param` name anywhere in the subtree below a node, in either key spelling.
+ *
+ * Components are skipped rather than recursed into: a function type's own keys (`call`, `apply`,
+ * `prototype`) are not route segments, and walking them would be both wrong and unbounded.
+ */
+type ParamNamesIn<N> = N extends (...args: any[]) => any
+  ? never
+  : {
+      [K in Extract<keyof N, string>]: K extends `$${infer Param}`
+        ? Param | ParamNamesIn<N[K]>
+        : K extends `:${infer Param}`
+          ? Param | ParamNamesIn<N[K]>
+          : ParamNamesIn<N[K]>;
+    }[Extract<keyof N, string>];
+
+/**
  * The `Route` a component at path `P` receives, with `params`, `data` and `context` resolved
  * against the route tree instead of left as `Obj`.
  */
 export type RouteAt<P extends string> = Omit<Route, "params" | "data" | "context"> & {
   params: ExtractParams<P>;
+  data: RouteDataAt<P>;
+  context: RouteContextAt<P>;
+};
+
+/**
+ * {@link RouteAt} for a level that renders over its descendants — a `[WRAPPER]` or `[LAYOUT]`.
+ *
+ * Identical except for `params`, which also carries every `:param` a descendant could contribute,
+ * as optional. That is sound where the same treatment of `data` would not be: params are strings
+ * and the set of them is knowable from the tree, so `string | undefined` is exactly true at this
+ * level — whereas two sibling loaders can both define `data.thing` with different types, and no
+ * merge of them describes what actually arrives.
+ *
+ * It is also what a wrapper needs in practice: a shell on `/org/:orgId/segments` that renders over
+ * `:segmentId` and reads it to highlight a row would otherwise have to assert the type by hand.
+ */
+export type RouteAtPrefix<P extends string> = Omit<Route, "params" | "data" | "context"> & {
+  params: ExtractParams<P> & {
+    [K in Exclude<
+      ParamNamesIn<NodeAt<MobxRouterRoutes, Segments<P>>>,
+      keyof ExtractParams<P>
+    >]?: string;
+  };
   data: RouteDataAt<P>;
   context: RouteContextAt<P>;
 };

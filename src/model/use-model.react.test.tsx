@@ -178,13 +178,18 @@ describe("useModel", () => {
   });
 
   test("passes fetch options through, so a superseded request aborts", async () => {
-    const aborted: boolean[] = [];
+    const aborted: number[] = [];
+    const release: Array<() => void> = [];
+
+    // The request never settles on its own. Resolving it on a timer races the re-render: if the
+    // first one lands before the params change there is nothing left to abort, so the test passes
+    // or fails on scheduling rather than on behaviour.
     const StudyModel = makeModel(StudySchema, {
       keys: ["id"],
       get: ({ id }: { id: number }, options?: { signal: AbortSignal }) =>
         new Promise<any>((resolve) => {
-          options?.signal.addEventListener("abort", () => aborted.push(true));
-          setTimeout(() => resolve({ id, orgId: "acme", title: `study ${id}` }), 0);
+          options?.signal.addEventListener("abort", () => aborted.push(id));
+          release.push(() => resolve({ id, orgId: "acme", title: `study ${id}` }));
         }),
     });
 
@@ -197,10 +202,15 @@ describe("useModel", () => {
     });
 
     await mount(<Probe />);
-    await act(async () => setId(2));
-    await act(async () => {});
+    expect(aborted).toHaveLength(0); // still in flight, so there is something to supersede
 
-    expect(aborted.length).toBeGreaterThan(0);
+    await act(async () => setId(2));
+
+    // exactly the superseded one, not merely "something aborted"
+    expect(aborted).toEqual([1]);
+
+    for (const settle of release) settle();
+    await act(async () => {});
   });
 
   test("honours the model's cache, so returning to a record costs no request", async () => {

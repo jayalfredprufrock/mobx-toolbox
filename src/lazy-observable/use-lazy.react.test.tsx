@@ -199,9 +199,13 @@ describe("useLazy", () => {
   });
 
   test("passes fetch options through, so a superseded request aborts", async () => {
-    const aborted: boolean[] = [];
+    const aborted: number[] = [];
+    const release: Array<() => void> = [];
     let setId: (n: number) => void = () => {};
 
+    // Never settles on its own: resolving on a timer races the re-render, and a first request that
+    // lands before the deps change leaves nothing to abort — which passes or fails on scheduling
+    // rather than on behaviour.
     const Probe = () => {
       const [id, setter] = useState(1);
       setId = setter;
@@ -211,8 +215,8 @@ describe("useLazy", () => {
             const lazy = useLazy(
               ({ signal }) =>
                 new Promise<number>((resolve) => {
-                  signal.addEventListener("abort", () => aborted.push(true));
-                  setTimeout(() => resolve(id), 0);
+                  signal.addEventListener("abort", () => aborted.push(id));
+                  release.push(() => resolve(id));
                 }),
               [id],
             );
@@ -223,11 +227,16 @@ describe("useLazy", () => {
     };
 
     await mount(<Probe />);
-    await act(async () => setId(2));
-    await act(async () => {});
+    expect(aborted).toHaveLength(0); // still in flight, so there is something to supersede
 
-    // the first lazy is unobserved once replaced, which abandons its request
-    expect(aborted.length).toBeGreaterThan(0);
+    await act(async () => setId(2));
+
+    // the first lazy is unobserved once replaced, which abandons its request — and it is that
+    // one specifically, not merely "something aborted"
+    expect(aborted).toEqual([1]);
+
+    for (const settle of release) settle();
+    await act(async () => {});
   });
 });
 

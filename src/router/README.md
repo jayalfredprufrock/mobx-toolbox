@@ -866,9 +866,10 @@ If you do keep loading in the route file, name the path a component sits on and 
 against the route tree:
 
 ```tsx
+import type { FC } from "react";
 import type { PageProps } from "@jayalfredprufrock/mobx-toolbox/router";
 
-const StudyPage = ({ route }: PageProps<"/org/:orgId/studies/:studyId">) => {
+export const StudyPage: FC<PageProps<"/org/:orgId/studies/:studyId">> = ({ route }) => {
   route.params.studyId; // string — from the path
   route.data.study; // whatever that level's [LOAD] resolves to
   route.data.org; // ...and every ancestor's, merged in
@@ -879,6 +880,19 @@ const StudyPage = ({ route }: PageProps<"/org/:orgId/studies/:studyId">) => {
 The path is written out rather than inferred because the component cannot import the route tree that
 imports it. A mistyped path is a compile error, and the path argument autocompletes.
 
+> **Annotate the const, not the parameter.** The form above — `const X: FC<PageProps<…>> = …` — is
+> the one to use. Annotating the parameter instead (`({ route }: PageProps<…>) => …`) puts the
+> component's _inferred_ type on the path that resolves through `MobxRouter["routes"]`, and closes
+> the cycle: the route tree imports the component, the component's type reads the route tree.
+>
+> It can compile in isolation and then collapse once more than one component in the tree uses it. The
+> failure does not point at the cause — you get `TS7022` on components you just touched, plus
+> unrelated `Type '{ orgId: string }' is not assignable to type 'undefined'` on `navigate()` calls,
+> because `RoutePath` has degraded to `any`. If you see that, look for a parameter annotation.
+>
+> A `makePage(path, component)` helper looks like the ergonomic fix and is a dead end: `<P extends
+RoutePath>` is itself a circular constraint (`TS2313`). Annotating the const is the whole answer.
+
 **Omitting it changes nothing.** `PageProps` with no argument is the untyped `Route` it has
 always been, so existing components need no edit and pay nothing — an app that never names a path
 costs about a dozen extra type instantiations for the feature existing at all.
@@ -886,26 +900,47 @@ costs about a dozen extra type instantiations for the feature existing at all.
 ### What `data` resolves to
 
 Every `[LOAD]` **at that path and above it**, merged, with the deeper one winning — which is what
-`route.data` actually holds at runtime (`Object.assign` over the outlet chain). Descendants are
-excluded: which of them matched is not knowable from the path, so only what is _guaranteed_ present
-is typed.
+`route.data` actually holds at runtime (`Object.assign` over the outlet chain).
 
-`[CONTEXT]` accumulates the same way. Groups (`_list`) contribute their config without contributing a
-segment, exactly as they do at runtime.
+Descendants are excluded, and the reason is specific to `data`: two sibling loaders can both define
+`data.thing` with different types, and which of them ran is not knowable from the path. There is no
+sound answer, so only what is _guaranteed_ present is typed. **Params are a different story** — see
+below.
 
-### Wrappers sit on prefixes
+`[CONTEXT]` accumulates like `data`.
+
+Groups (`_list`) contribute their config without contributing a segment, exactly as they do at
+runtime.
+
+### Wrappers sit on prefixes, and see descendant params
 
 A `[WRAPPER]` usually lives on a nesting level that addresses no page of its own, so its path is not
 in `RoutePath`. `WrapperProps` takes a `RoutePrefix` instead — any prefix of any route path:
 
 ```tsx
-const OrgShell = ({ route, children }: WrapperProps<"/org/:orgId">) => {
+export const SegmentsShell: FC<WrapperProps<"/org/:orgId/segments">> = ({ route, children }) => {
+  route.params.orgId; // string — at this level
+  route.params.segmentId; // string | undefined — a descendant's
+
   route.data.org; // guaranteed here
-  // route.data.studies — not typed: a descendant's loader, and this wrapper renders for siblings too
+  // route.data.segment — not typed: a descendant's loader
 };
 ```
 
-That asymmetry is the point: `PageProps` rejects a path with no page, `WrapperProps`
+**Params include descendants; `data` does not.** The asymmetry is deliberate, not an oversight.
+A wrapper renders over its descendants, so a param one of them contributes really can be present —
+and since params are strings and the set of them is knowable from the tree, `string | undefined` is
+exactly true at this level. `data` has no such answer, because sibling loaders can disagree about
+what a key holds.
+
+That covers the shape this comes up in: an inbox beside a detail pane, where the shell reads the
+detail's param to highlight the selected row. Without it that is a hand-written
+`as string | undefined` asserting what the tree already knows.
+
+A **page** still gets exactly its own params — a page at `/org/:orgId/studies` matched without
+`:studyId`, so it is genuinely absent there.
+
+The prefix/path split is the other half: `PageProps` rejects a path with no page, `WrapperProps`
 accepts the levels wrappers actually live on.
 
 ### Guards and loaders can't use this

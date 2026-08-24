@@ -556,7 +556,7 @@ annotating one collapses the route tree to `any`. Components outside the tree do
 tree:
 
 ```tsx
-const StudyPage = ({ route }: PageProps<"/org/:orgId/studies/:studyId">) => {
+export const StudyPage: FC<PageProps<"/org/:orgId/studies/:studyId">> = ({ route }) => {
   route.params.studyId; // string
   route.data.study; // that level's [LOAD] payload
   route.data.org; // ...and every ancestor's, merged
@@ -564,15 +564,42 @@ const StudyPage = ({ route }: PageProps<"/org/:orgId/studies/:studyId">) => {
 };
 ```
 
+⚠️ **Annotate the const, not the parameter.** `({ route }: PageProps<…>) => …` puts the component's
+_inferred_ type on the path that resolves through `MobxRouter["routes"]`, closing a cycle: the route
+tree imports the component, the component's type reads the route tree.
+
+It can compile in isolation and then collapse once several components in one tree use it — and the
+failure does not point at the cause. You get `TS7022` on components you just touched, plus a cascade
+of unrelated `Type '{ orgId: string }' is not assignable to type 'undefined'` on `navigate()` calls,
+because `RoutePath` has degraded to `any`. If you see that, look for a parameter annotation.
+
+A `makePage(path, component)` helper is the obvious ergonomic fix and a dead end: `<P extends
+RoutePath>` is itself a circular constraint (`TS2313`). Annotating the const is the whole answer.
+
 `data` is every `[LOAD]` at and above the path, deeper winning — which is what `route.data` holds at
-runtime. Descendants are excluded, since which one matched isn't knowable from the path. Groups
-(`_list`) contribute config without contributing a segment.
+runtime. Descendant _loaders_ are excluded, since sibling branches can define the same key with
+different types and which one ran isn't knowable from the path. Groups (`_list`) contribute config
+without contributing a segment.
+
+Descendant **params** are included on a wrapper, as optional — a wrapper renders over its
+descendants, params are strings, and the set is knowable, so `string | undefined` is exactly true:
+
+```tsx
+export const SegmentsShell: FC<WrapperProps<"/org/:orgId/segments">> = ({ route }) => {
+  route.params.orgId; // string
+  route.params.segmentId; // string | undefined — from the level below
+};
+```
+
+That replaces a hand-written `as string | undefined` in any shell that renders over a detail route
+and reads its param. Pages are unaffected: a page at `/org/:orgId/studies` matched without
+`:studyId`, so it stays exact.
 
 Wrappers take a `RoutePrefix` rather than a `RoutePath`, because the level a wrapper sits on usually
 addresses no page and so never appears in `RoutePath`:
 
 ```tsx
-const OrgShell = ({ route, children }: WrapperProps<"/org/:orgId">) => route.data.org;
+export const OrgShell: FC<WrapperProps<"/org/:orgId">> = ({ route }) => route.data.org;
 ```
 
 **Nothing to migrate.** Both types keep working with no argument — that is still the untyped `Route`.

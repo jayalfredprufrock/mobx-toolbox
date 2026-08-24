@@ -98,6 +98,44 @@ const filter = useObservableBox(value, { equals: comparer.structural });
 The flow is one-way: the box mirrors the value, so writing to it from MobX's side holds only until
 the next render whose value disagrees. Keep the value where React already keeps it.
 
+## `useSlowLoading`
+
+Whether a wait has gone on long enough to be worth telling the user about.
+
+```tsx
+import { useSlowLoading } from "@jayalfredprufrock/mobx-toolbox/util";
+
+const showSkeleton = useSlowLoading(!list.loaded);
+```
+
+Loading UI flashes on fast responses: a request that resolves in 60 ms produces a 60 ms skeleton —
+long enough to see, too short to read, and it happens on every navigation. This is the standard
+two-part fix, in one place:
+
+- **A threshold.** A wait shorter than `after` (default 300 ms) never surfaces at all.
+- **A floor.** Once it has surfaced, it stays for `minDuration` (default 300 ms).
+
+Both halves are needed. A threshold alone turns a 320 ms wait into a 20 ms flash, which is worse than
+either extreme.
+
+```tsx
+useSlowLoading(active, { after: 100, minDuration: 500 });
+useSlowLoading(active, { after: 0, minDuration: 0 }); // the escape hatch: raw flag
+```
+
+Plain boolean in, plain boolean out, so it works the same inside an `observer()` and outside one —
+pass it a prop, a piece of React state, or something read off a lazy or a store.
+
+| situation                               | result                                      |
+| --------------------------------------- | ------------------------------------------- |
+| true for less than `after`              | never surfaces                              |
+| flickers true/false/true inside `after` | each rising edge restarts the window        |
+| clears while surfaced                   | held until `minDuration` has elapsed        |
+| true again before `minDuration` expires | pending hide cancelled; one continuous show |
+
+`LazyObserver` and `<Table.Loading>` both use it, which is what keeps their timing identical to the
+router's `[LOADING]`. Reach for it directly when a component renders its own skeleton.
+
 ## `WeakRefMap`
 
 A map with strong keys and weak values: entries disappear on their own once nothing else references

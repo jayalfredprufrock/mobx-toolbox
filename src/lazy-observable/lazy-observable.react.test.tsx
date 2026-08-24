@@ -30,13 +30,16 @@ const mount = async (el: React.ReactNode) => {
   return { container, root };
 };
 
+// Every render below reads `value` before there is one. That is deliberate: a read that returns
+// `undefined` still has to register observation, or the lazy is watched and never loads — the
+// subtlest failure mode in the module, and a silent one.
 describe("lazyObservable + react rendering", () => {
   it("loads via <Observer> render callback (respondents pattern)", async () => {
     const fetch = vi.fn(async () => [1, 2, 3]);
     const items = lazyObservableArray(fetch);
 
     const Page = () => (
-      <Observer>{() => <div data-testid="len">{items.value.length}</div>}</Observer>
+      <Observer>{() => <div data-testid="len">{items.value?.length ?? 0}</div>}</Observer>
     );
 
     const { container } = await mount(<Page />);
@@ -55,7 +58,7 @@ describe("lazyObservable + react rendering", () => {
     const gate = lazyObservable(fetchGate);
     const items = lazyObservableArray(fetchItems);
 
-    const Table = observer(() => <div>{items.value.length}</div>);
+    const Table = observer(() => <div>{items.value!.length}</div>);
     const Page = observer(() => {
       if (!gate.loaded) return null;
       return <Table />;
@@ -83,7 +86,7 @@ describe("lazyObservable + react rendering", () => {
     const publishedVersion = lazyObservable(fetchB);
     const distributions = lazyObservableArray(fetchItems);
 
-    const Table = observer(() => <div data-testid="len">{distributions.value.length}</div>);
+    const Table = observer(() => <div data-testid="len">{distributions.value?.length ?? 0}</div>);
 
     const Page = observer(() => {
       if (!latestVersion.loaded || !publishedVersion.loaded) return null;
@@ -113,7 +116,7 @@ describe("lazyObservable + react rendering", () => {
     const Page = observer(() => {
       const ref = useRef<ReturnType<typeof lazyObservableArray<number>>>(undefined);
       ref.current ??= lazyObservableArray(fetch);
-      return <div>{ref.current.value.length}</div>;
+      return <div>{ref.current.value?.length ?? 0}</div>;
     });
 
     const { container } = await mount(<Page />);

@@ -169,7 +169,7 @@ class SurveyPager implements ModelListener {
   }
 
   onModelEvent(type: ModelEventType, model: SurveyInstance): void {
-    if (type === "deleted") this.rows.value.remove(model);
+    if (type === "deleted") this.rows.value?.remove(model);
     if (type === "created") this.rows.invalidate();
   }
 }
@@ -180,7 +180,7 @@ describe("server-side search", () => {
   test("typing drives one throttled request per burst, and aborts what it supersedes", async () => {
     const api = makeApi();
     const search = new SurveySearch(api);
-    const stop = autorun(() => void search.results.value.slice());
+    const stop = autorun(() => void search.results.value?.slice());
     await tick();
     expect(api.search).toHaveBeenCalledTimes(1);
 
@@ -236,18 +236,18 @@ describe("page-at-a-time pagination", () => {
   test("changing the page replaces the rows and reports the total", async () => {
     const api = makeApi();
     const pager = new SurveyPager(api);
-    const stop = autorun(() => void pager.rows.value.slice());
+    const stop = autorun(() => void pager.rows.value?.slice());
     await tick();
 
     expect(pager.rows.value).toHaveLength(10);
-    expect(pager.rows.value[0]!.id).toBe(1);
+    expect(pager.rows.value![0]!.id).toBe(1);
     expect(pager.total).toBe(25);
     expect(pager.pageCount).toBe(3);
 
     pager.setPage(3);
     await tick();
 
-    expect(pager.rows.value.map((s) => s.id)).toEqual([21, 22, 23, 24, 25]);
+    expect(pager.rows.value!.map((s) => s.id)).toEqual([21, 22, 23, 24, 25]);
     expect(api.page).toHaveBeenCalledTimes(2);
     stop();
   });

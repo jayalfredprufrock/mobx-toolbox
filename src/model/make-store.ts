@@ -403,7 +403,7 @@ export function makeStore(
 
     /** Drop a model from every list on this store, without implying the record is gone. */
     remove(model: any): void {
-      for (const { lazy } of this._collections) lazy.value.remove(model);
+      for (const { lazy } of this._collections) lazy.value?.remove(model);
     }
 
     /**
@@ -429,7 +429,7 @@ export function makeStore(
     onModelEvent(type: ModelEventType, model: any): void {
       for (const { lazy, invalidateOn, discardOnInvalidate } of this._collections) {
         // Removal is unconditional: the record is gone, and dropping it is always correct.
-        if (type === "deleted") lazy.value.remove(model);
+        if (type === "deleted") lazy.value?.remove(model);
         if (invalidateOn.includes(type)) lazy.invalidate({ discard: discardOnInvalidate });
       }
     }

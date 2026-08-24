@@ -24,7 +24,8 @@ describe("lazyObservable", () => {
 
   test("starts in init status with undefined value", () => {
     const lazy = lazyObservable(() => Promise.resolve(42));
-    expect(lazy.status).toBe("init");
+    expect(lazy.loaded).toBe(false);
+    expect(lazy.fetching).toBe(false);
     expect(lazy.value).toBeUndefined();
     expect(lazy.loading).toBe(false);
     expect(lazy.loaded).toBe(false);
@@ -45,13 +46,14 @@ describe("lazyObservable", () => {
     observe(() => void lazy.value);
 
     // still untouched in the synchronous turn that observed it
-    expect(lazy.status).toBe("init");
+    expect(lazy.loaded).toBe(false);
+    expect(lazy.fetching).toBe(false);
     expect(lazy.loading).toBe(false);
     expect(fetchFn).not.toHaveBeenCalled();
 
     await Promise.resolve();
 
-    expect(lazy.status).toBe("loading");
+    expect(lazy.loading).toBe(true);
     expect(lazy.loading).toBe(true);
     expect(fetchFn).toHaveBeenCalledOnce();
   });
@@ -67,7 +69,8 @@ describe("lazyObservable", () => {
     await Promise.resolve();
 
     expect(fetchFn).not.toHaveBeenCalled();
-    expect(lazy.status).toBe("init");
+    expect(lazy.loaded).toBe(false);
+    expect(lazy.fetching).toBe(false);
   });
 
   test("an explicit getOrLoad still loads synchronously and is not double-fetched", async () => {
@@ -77,7 +80,7 @@ describe("lazyObservable", () => {
     observe(() => void lazy.value);
     // imperative calls are never in a render pass, so they are not deferred
     const promise = lazy.getOrLoad();
-    expect(lazy.status).toBe("loading");
+    expect(lazy.loading).toBe(true);
     expect(fetchFn).toHaveBeenCalledOnce();
 
     await promise;
@@ -95,7 +98,7 @@ describe("lazyObservable", () => {
     await lazy.getOrLoad();
 
     expect(lazy.value).toBe(42);
-    expect(lazy.status).toBe("loaded");
+    expect(lazy.loaded).toBe(true);
     expect(lazy.loaded).toBe(true);
     expect(lazy.loading).toBe(false);
   });
@@ -105,7 +108,7 @@ describe("lazyObservable", () => {
     const lazy = lazyObservable(fetchFn);
 
     observe(() => void lazy.value);
-    observe(() => void lazy.status);
+    observe(() => void lazy.loaded);
 
     await lazy.getOrLoad();
 
@@ -131,7 +134,7 @@ describe("lazyObservable", () => {
     runInAction(() => lazy.set(42));
 
     expect(lazy.value).toBe(42);
-    expect(lazy.status).toBe("loaded");
+    expect(lazy.loaded).toBe(true);
     expect(fetchFn).not.toHaveBeenCalled();
   });
 
@@ -153,7 +156,8 @@ describe("lazyObservable", () => {
 
     lazy.invalidate({ discard: true });
 
-    expect(lazy.status).toBe("init");
+    expect(lazy.loaded).toBe(false);
+    expect(lazy.fetching).toBe(false);
     expect(lazy.value).toBeUndefined();
   });
 
@@ -164,7 +168,7 @@ describe("lazyObservable", () => {
     lazy.invalidate();
 
     expect(lazy.value).toBe(42);
-    expect(lazy.status).toBe("loaded");
+    expect(lazy.loaded).toBe(true);
   });
 
   test("records error status on async fetch rejection", async () => {
@@ -177,7 +181,7 @@ describe("lazyObservable", () => {
       await lazy.getOrLoad();
     } catch {}
 
-    expect(lazy.status).toBe("error");
+    expect(lazy.error).toBeDefined();
     expect(lazy.error).toBe(err);
   });
 
@@ -192,7 +196,7 @@ describe("lazyObservable", () => {
       await lazy.getOrLoad();
     } catch {}
 
-    expect(lazy.status).toBe("error");
+    expect(lazy.error).toBeDefined();
     expect(lazy.error).toBe(err);
   });
 
@@ -223,7 +227,7 @@ describe("lazyObservable", () => {
     dispose();
     disposeList = disposeList.filter((d) => d !== dispose);
 
-    expect(lazy.status).toBe("loaded");
+    expect(lazy.loaded).toBe(true);
     expect(lazy.value).toBe(42);
   });
 });
@@ -246,27 +250,37 @@ describe("lazyObservableArray", () => {
     return dispose;
   };
 
-  test("starts with an empty array as initial value", () => {
+  test("holds nothing until a load lands — not an empty array", () => {
     const lazy = lazyObservableArray(() => Promise.resolve([1, 2, 3]));
-    expect(lazy.value).toEqual([]);
 
-    // value is typed as non-optional — no `?? []` guard needed at call sites
-    const _values: number[] = lazy.value;
-    void _values;
+    // `[]` would be a claim there are zero rows, which is not what is known yet
+    expect(lazy.value).toBeUndefined();
+    expect(lazy.loaded).toBe(false);
   });
 
-  test("respects an explicit initialValue", () => {
+  test("an explicit initialValue is loaded from the start, and still owed a fetch", async () => {
     const lazy = lazyObservableArray(() => Promise.resolve([1, 2, 3]), {
       initialValue: [9],
     });
+
+    // seeded: there is something to render immediately
     expect(lazy.value).toEqual([9]);
+    expect(lazy.loaded).toBe(true);
+    // ...but nothing has been fetched, which is what `fetchedAt` records
+    expect(lazy.fetchedAt).toBeUndefined();
+
+    // and the seed does not suppress the load — it is a starting point, not an answer
+    observe(() => void lazy.value);
+    await vi.waitUntil(() => lazy.fetchedAt !== undefined);
+    expect(lazy.value).toEqual([1, 2, 3]);
   });
 
-  test("explicit undefined initialValue still falls back to []", () => {
+  test("an explicit undefined initialValue is the same as none", () => {
     const lazy = lazyObservableArray(() => Promise.resolve([1, 2, 3]), {
       initialValue: undefined,
     });
-    expect(lazy.value).toEqual([]);
+    expect(lazy.value).toBeUndefined();
+    expect(lazy.loaded).toBe(false);
   });
 
   test("loads array when observed", async () => {
@@ -318,7 +332,8 @@ describe("invalidate", () => {
     expect(lazy.value).toBe(42);
 
     lazy.invalidate({ discard: true });
-    expect(lazy.status).toBe("init");
+    expect(lazy.loaded).toBe(false);
+    expect(lazy.fetching).toBe(false);
     expect(lazy.value).toBeUndefined();
     expect(fetch).toHaveBeenCalledTimes(1);
 
@@ -348,7 +363,7 @@ describe("invalidate", () => {
     await vi.waitUntil(() => lazy.loaded);
 
     lazy.invalidate();
-    await vi.waitUntil(() => lazy.status === "error");
+    await vi.waitUntil(() => lazy.error !== undefined);
     expect((lazy.error as Error).message).toBe("boom");
   });
 });
@@ -381,7 +396,7 @@ describe("regressions", () => {
 
     // A reads all three boxes (a spinner), B reads only the value (a list)
     const a = observe(() => {
-      void lazy.status;
+      void lazy.loaded;
       void lazy.error;
       void lazy.value;
     });
@@ -393,7 +408,7 @@ describe("regressions", () => {
     await tick();
 
     expect(lazy.observed).toBe(true);
-    expect(lazy.status).toBe("loaded");
+    expect(lazy.loaded).toBe(true);
     expect(lazy.value).toBe(1);
     expect(rendered).toEqual([undefined, 1]);
     expect(calls).toBe(1);
@@ -403,7 +418,7 @@ describe("regressions", () => {
     const lazy = lazyObservable(() => Promise.resolve(1));
     expect(lazy.observed).toBe(false);
 
-    const a = observe(() => void lazy.status);
+    const a = observe(() => void lazy.loaded);
     const b = observe(() => void lazy.value);
     expect(lazy.observed).toBe(true);
 
@@ -556,7 +571,7 @@ describe("abort", () => {
 
     resolvers[1]!(2);
     await expect(promise).resolves.toBe(2);
-    expect(lazy.status).toBe("loaded");
+    expect(lazy.loaded).toBe(true);
   });
 
   test("a dependency change aborts the previous request", async () => {
@@ -640,7 +655,7 @@ describe("abort", () => {
 
     expect(signals[0]!.aborted).toBe(true);
     expect(lazy.error).toBeUndefined();
-    expect(lazy.status).toBe("loading");
+    expect(lazy.loading).toBe(true);
   });
 
   test("a successful request leaves its signal unaborted", async () => {
@@ -662,29 +677,47 @@ describe("regressions — atomic writes", () => {
     await lazy.getOrLoad();
 
     const pairs: string[] = [];
-    const dispose = autorun(() => pairs.push(`${lazy.status}/${String(lazy.value)}`));
+    const dispose = autorun(() => pairs.push(`${lazy.loaded}/${String(lazy.value)}`));
     pairs.length = 0;
 
     lazy.invalidate({ discard: true });
 
-    // one atomic transition, never `loaded` with the value already cleared
-    expect(pairs).toEqual(["init/undefined"]);
+    // one atomic transition — `loaded` and `value` are never observed disagreeing, which is the
+    // whole reason they are two getters over one pair of boxes rather than independent state
+    expect(pairs).toEqual(["false/undefined"]);
     dispose();
   });
 
-  test("a full load cycle notifies once per transition", async () => {
+  test("a full load cycle notifies a value consumer exactly once", async () => {
     const lazy = lazyObservable(() => Promise.resolve(42));
     let runs = 0;
     const dispose = autorun(() => {
       void lazy.value;
-      void lazy.status;
+      void lazy.loaded;
       void lazy.error;
       runs++;
     });
 
     await vi.waitUntil(() => lazy.loaded);
-    // init → loading → loaded, plus the autorun's own first run
-    expect(runs).toBe(3);
+    // Starting the request changes none of these — there is still no value, still no error — so a
+    // consumer that renders from the value alone re-renders once, when the value lands, rather
+    // than a second time for a transition that showed it nothing.
+    expect(runs).toBe(2); // its own first run, plus the one that mattered
+    dispose();
+  });
+
+  test("a consumer that watches `fetching` does see the request start", async () => {
+    const lazy = lazyObservable(() => Promise.resolve(42));
+    const seen: boolean[] = [];
+    const dispose = autorun(() => {
+      void lazy.value;
+      seen.push(lazy.fetching);
+    });
+
+    await vi.waitUntil(() => lazy.loaded);
+    // false (nothing yet) → true (in flight) → false (landed): the extra notification is there for
+    // anyone who asked for it, which is what keeps it off everyone who did not.
+    expect(seen).toEqual([false, true, false]);
     dispose();
   });
 });
@@ -738,7 +771,7 @@ describe("fetching", () => {
 
     // the old rows stay on screen while the new ones are in flight
     expect(lazy.value).toBe(1);
-    expect(lazy.status).toBe("loaded");
+    expect(lazy.loaded).toBe(true);
     expect(lazy.loaded).toBe(true);
     expect(lazy.loading).toBe(false);
 
@@ -773,7 +806,7 @@ describe("fetching", () => {
 
     const promise = lazy.reload();
     expect(lazy.value).toBe(1);
-    expect(lazy.status).toBe("loaded");
+    expect(lazy.loaded).toBe(true);
     expect(lazy.fetching).toBe(true);
 
     resolveFetch(2);
@@ -790,7 +823,7 @@ describe("fetching", () => {
     await vi.waitUntil(() => lazy.loaded);
 
     lazy.invalidate();
-    await vi.waitUntil(() => lazy.status === "error");
+    await vi.waitUntil(() => lazy.error !== undefined);
 
     expect((lazy.error as Error).message).toBe("boom");
     expect(lazy.value).toBe(1);
@@ -826,13 +859,13 @@ describe("fetching", () => {
 describe("loadedAt", () => {
   test("is undefined until a value lands, then records when", async () => {
     const lazy = lazyObservable(() => Promise.resolve(42));
-    expect(lazy.loadedAt).toBeUndefined();
+    expect(lazy.fetchedAt).toBeUndefined();
 
     const before = Date.now();
     await lazy.getOrLoad();
 
-    expect(lazy.loadedAt).toBeGreaterThanOrEqual(before);
-    expect(lazy.loadedAt).toBeLessThanOrEqual(Date.now());
+    expect(lazy.fetchedAt).toBeGreaterThanOrEqual(before);
+    expect(lazy.fetchedAt).toBeLessThanOrEqual(Date.now());
   });
 
   test("tracks the value, not the request: a refresh keeps the old stamp until new data lands", async () => {
@@ -843,14 +876,14 @@ describe("loadedAt", () => {
       return calls === 1 ? Promise.resolve(1) : new Promise((r) => (resolveFetch = r));
     });
     await lazy.getOrLoad();
-    const firstStamp = lazy.loadedAt;
+    const firstStamp = lazy.fetchedAt;
 
     const promise = lazy.reload();
-    expect(lazy.loadedAt).toBe(firstStamp); // still describes the value on screen
+    expect(lazy.fetchedAt).toBe(firstStamp); // still describes the value on screen
 
     resolveFetch(2);
     await promise;
-    expect(lazy.loadedAt).toBeGreaterThanOrEqual(firstStamp!);
+    expect(lazy.fetchedAt).toBeGreaterThanOrEqual(firstStamp!);
     expect(lazy.value).toBe(2);
   });
 
@@ -861,20 +894,20 @@ describe("loadedAt", () => {
       return calls === 1 ? Promise.resolve(1) : Promise.reject(new Error("boom"));
     });
     await lazy.getOrLoad();
-    const stamp = lazy.loadedAt;
+    const stamp = lazy.fetchedAt;
 
     await expect(lazy.reload()).rejects.toThrow("boom");
-    expect(lazy.loadedAt).toBe(stamp);
+    expect(lazy.fetchedAt).toBe(stamp);
     expect(lazy.value).toBe(1);
   });
 
   test("set() stamps the value as current, discard clears the stamp", async () => {
     const lazy = lazyObservable(() => Promise.resolve(1));
     lazy.set(9);
-    expect(lazy.loadedAt).toBeDefined();
+    expect(lazy.fetchedAt).toBeDefined();
 
     lazy.invalidate({ discard: true });
-    expect(lazy.loadedAt).toBeUndefined();
+    expect(lazy.fetchedAt).toBeUndefined();
   });
 });
 
@@ -986,11 +1019,12 @@ describe("keepOnUnobserved", () => {
     dispose();
 
     // still cached right after the last observer leaves
-    expect(lazy.status).toBe("loaded");
+    expect(lazy.loaded).toBe(true);
     expect(lazy.value).toBe(42);
 
     await tick(60);
-    expect(lazy.status).toBe("init");
+    expect(lazy.loaded).toBe(false);
+    expect(lazy.fetching).toBe(false);
     expect(lazy.value).toBeUndefined();
   });
 
@@ -1128,52 +1162,63 @@ describe("lazyObservableArray identity", () => {
     expect(ref).toHaveLength(2);
   });
 
-  test("set() replaces the contents rather than the array", () => {
+  test("set() replaces the contents rather than the array", async () => {
     const lazy = lazyObservableArray(() => Promise.resolve([1]));
+    await lazy.getOrLoad();
     const ref = lazy.value;
 
     lazy.set([7, 8, 9]);
 
     expect(lazy.value).toBe(ref);
-    expect(ref.slice()).toEqual([7, 8, 9]);
-    expect(lazy.status).toBe("loaded");
+    expect(ref!.slice()).toEqual([7, 8, 9]);
+    expect(lazy.loaded).toBe(true);
   });
 
-  test("a discard clears the contents, keeping the array", async () => {
+  test("a discard drops the value, and the next load hands back the same array", async () => {
     const lazy = lazyObservableArray(() => Promise.resolve([1, 2]));
     await lazy.getOrLoad();
     const ref = lazy.value;
 
     lazy.invalidate({ discard: true });
 
+    // discarded means nothing is held — an emptied array would read as "there are zero rows"
+    expect(lazy.value).toBeUndefined();
+    expect(lazy.loaded).toBe(false);
+
+    await lazy.getOrLoad();
+
+    // the array itself was never replaced, so a reference taken before the discard is still valid
     expect(lazy.value).toBe(ref);
-    expect(ref.slice()).toEqual([]);
+    expect(ref!.slice()).toEqual([1, 2]);
   });
 
-  test("going unobserved clears the contents, keeping the array", async () => {
+  test("going unobserved drops the value, and the next load hands back the same array", async () => {
     const lazy = lazyObservableArray(() => Promise.resolve([1, 2]));
-    const dispose = autorun(() => void lazy.value.slice());
+    const dispose = autorun(() => void lazy.value?.slice());
     await vi.waitUntil(() => lazy.loaded);
     const ref = lazy.value;
-    expect(ref.slice()).toEqual([1, 2]);
+    expect(ref!.slice()).toEqual([1, 2]);
 
     dispose();
     await tick();
 
+    expect(lazy.value).toBeUndefined();
+    expect(lazy.loaded).toBe(false);
+
+    await lazy.getOrLoad();
     expect(lazy.value).toBe(ref);
-    expect(ref.slice()).toEqual([]);
   });
 
   test("an explicit initialValue is restored on discard, not carried over", async () => {
     const lazy = lazyObservableArray(() => Promise.resolve([9]), { initialValue: [0] });
     const ref = lazy.value;
-    expect(ref.slice()).toEqual([0]);
+    expect(ref!.slice()).toEqual([0]);
 
     await lazy.getOrLoad();
-    expect(ref.slice()).toEqual([9]);
+    expect(ref!.slice()).toEqual([9]);
 
     lazy.invalidate({ discard: true });
-    expect(ref.slice()).toEqual([0]);
+    expect(ref!.slice()).toEqual([0]);
   });
 
   test("loadedAt is the signal that new data arrived", async () => {
@@ -1183,8 +1228,8 @@ describe("lazyObservableArray identity", () => {
 
     const stamps: (number | undefined)[] = [];
     const dispose = reaction(
-      () => lazy.loadedAt,
-      () => stamps.push(lazy.value[0]),
+      () => lazy.fetchedAt,
+      () => stamps.push(lazy.value![0]),
     );
     await tick(2);
     await lazy.reload();
@@ -1198,12 +1243,12 @@ describe("lazyObservableArray identity", () => {
     const row = { id: 1 };
     const shallowLazy = lazyObservableArray(() => Promise.resolve([row]), { deep: false });
     await shallowLazy.getOrLoad();
-    expect(shallowLazy.value[0]).toBe(row);
-    expect(isObservable(shallowLazy.value[0]!)).toBe(false);
+    expect(shallowLazy.value![0]).toBe(row);
+    expect(isObservable(shallowLazy.value![0]!)).toBe(false);
 
     const deepLazy = lazyObservableArray(() => Promise.resolve([{ id: 1 }]));
     await deepLazy.getOrLoad();
-    expect(isObservable(deepLazy.value[0]!)).toBe(true);
+    expect(isObservable(deepLazy.value![0]!)).toBe(true);
   });
 
   test("remove() works on the value, including with deep: false", async () => {
@@ -1211,8 +1256,8 @@ describe("lazyObservableArray identity", () => {
     const lazy = lazyObservableArray(() => Promise.resolve(rows), { deep: false });
     await lazy.getOrLoad();
 
-    lazy.value.remove(rows[0]!);
+    lazy.value!.remove(rows[0]!);
 
-    expect(lazy.value.slice()).toEqual([{ id: 2 }]);
+    expect(lazy.value!.slice()).toEqual([{ id: 2 }]);
   });
 });

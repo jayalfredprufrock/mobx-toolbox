@@ -38,7 +38,7 @@ describe("Router + observer() page + lazyObservable", () => {
       distributions: lazyObservableArray(fetchItems),
     };
 
-    const Table = observer(() => <div>{survey.distributions.value.length}</div>);
+    const Table = observer(() => <div>{survey.distributions.value?.length ?? 0}</div>);
 
     const DistributionsPage = observer(({ route }: { route: any }) => {
       const { survey: s } = route.data;

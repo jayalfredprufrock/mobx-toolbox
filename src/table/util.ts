@@ -1,4 +1,4 @@
-import type { RowData } from "./table.types";
+import type { RowData, RowSource } from "./table.types";
 
 export const titleCase = (str: string): string => {
   return str
@@ -43,3 +43,17 @@ export const compareValues = (a: unknown, b: unknown): number => {
   if (a instanceof Date && b instanceof Date) return a.getTime() - b.getTime();
   return asString(a).localeCompare(asString(b));
 };
+
+/**
+ * Whether `rows` was given as a {@link RowSource} rather than an array or a getter.
+ *
+ * Structural rather than an `instanceof`: the point of `RowSource` is that `table` never has to
+ * know about `lazy-observable`, so the check is for the shape it needs — a `value` that may be an
+ * array and a boolean `fetching`.
+ */
+export const isRowSource = <T>(rows: unknown): rows is RowSource<T> =>
+  typeof rows === "object" &&
+  rows !== null &&
+  !Array.isArray(rows) &&
+  "fetching" in rows &&
+  "value" in rows;

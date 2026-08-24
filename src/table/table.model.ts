@@ -16,10 +16,12 @@ import type {
   FilterSource,
   RowData,
   RowId,
+  RowSource,
   SortDirection,
   TableConfig,
   TableState,
 } from "./table.types";
+import { isRowSource } from "./util";
 
 export class TableModel {
   readonly config?: TableConfig<any>;
@@ -78,6 +80,13 @@ export class TableModel {
 
   // Only set for the getter form of `config.rows`; see activate().
   private rowsReactionDisposer: IReactionDisposer | undefined;
+
+  /**
+   * The `RowSource` form of `config.rows`, if that is what was given. Held so `loading` and
+   * `refreshing` can read it: an array or a getter says nothing about whether more is coming, and
+   * only a source can distinguish "no rows yet" from "no rows".
+   */
+  private rowSource: RowSource<RowData> | undefined;
 
   // Re-derives factory columns once data exists; see activate().
   private columnsReactionDisposer: IReactionDisposer | undefined;
@@ -263,6 +272,36 @@ export class TableModel {
   // comparison in priority order wins). Comparison goes through each column's value accessor
   // (dot-paths, computed `value` fns) and optional `compare` def — never a raw `row[key]` lookup.
   // Sort keys with no matching column are skipped.
+  /**
+   * Nothing has arrived yet and a request is in flight — the state a first-load treatment belongs
+   * to, and the one where the empty slot would be a lie.
+   *
+   * Always `false` without a `RowSource`: an array or a getter carries no notion of loading, so the
+   * table does not invent one.
+   */
+  get loading(): boolean {
+    return this.rowSource !== undefined && this.rowSource.value === undefined;
+  }
+
+  /**
+   * Rows are on screen and a request is in flight behind them. Deliberately not the same as
+   * `loading`: the rows stay rendered and fully interactive, because replacing them to fetch
+   * mostly-identical rows would throw away scroll position, column arrangement and selection.
+   */
+  get refreshing(): boolean {
+    return (
+      this.rowSource !== undefined && this.rowSource.value !== undefined && this.rowSource.fetching
+    );
+  }
+
+  /**
+   * There is genuinely nothing to show — as opposed to nothing *yet*. This is the gate the empty
+   * slot uses, and the reason a table over a loading source never claims "no results".
+   */
+  get isEmpty(): boolean {
+    return !this.loading && this.displayRows.length === 0;
+  }
+
   get displayRows(): RowData[] {
     const rows = this.filteredRows;
     // manual mode: sorts is reactive state for the consumer to serialize; rows arrive pre-sorted
@@ -392,89 +431,98 @@ export class TableModel {
     this.config = config;
     this.configuredDefs = config?.columns;
 
-    makeObservable<this, "syncColumns" | "configuredDefs" | "runtimeDefs" | "suppressedKeys">(
+    makeObservable<
       this,
-      {
-        rows: observable.ref,
-        columns: observable,
-        columnOrder: observable.ref,
-        configuredDefs: observable.ref,
-        runtimeDefs: observable.ref,
-        suppressedKeys: observable.ref,
-        filterSources: observable.ref,
-        scrollX: observable,
-        scrollY: observable,
-        height: observable,
-        width: observable,
-        sorts: observable.ref,
-        selectedIds: observable.shallow,
-        expandedIds: observable.shallow,
-        scrollRequest: observable.ref,
+      "syncColumns" | "configuredDefs" | "runtimeDefs" | "suppressedKeys" | "rowSource"
+    >(this, {
+      rows: observable.ref,
+      columns: observable,
+      columnOrder: observable.ref,
+      configuredDefs: observable.ref,
+      runtimeDefs: observable.ref,
+      suppressedKeys: observable.ref,
+      filterSources: observable.ref,
+      scrollX: observable,
+      scrollY: observable,
+      height: observable,
+      width: observable,
+      sorts: observable.ref,
+      selectedIds: observable.shallow,
+      expandedIds: observable.shallow,
+      scrollRequest: observable.ref,
 
-        rowIds: computed,
-        visibleSelectedRows: computed,
-        allColumns: computed,
-        orderedColumns: computed,
-        columnWidths: computed,
-        virtualWidth: computed,
-        virtualHeight: computed,
-        expandedDisplayIndices: computed,
-        unpinnedColumns: computed,
-        firstUnpinnedRenderedIndex: computed,
-        lastUnpinnedRenderedIndex: computed,
-        unpinnedRenderedColumns: computed,
-        leftPinnedRenderedColumns: computed,
-        rightPinnedRenderedColumns: computed,
-        filteredRows: computed,
-        displayRows: computed,
-        firstRenderedIndex: computed,
-        lastRenderedIndex: computed,
-        renderedRows: computed,
-        virtualOffsetX: computed,
-        virtualOffsetY: computed,
-        renderedColumns: computed,
-        visualColumns: computed,
-        displayRowIndexMap: computed,
-        selectable: computed,
-        gridTemplateColumns: computed,
-        atEnd: computed,
-        selectedRows: computed,
-        allRowsSelected: computed,
-        someRowsSelected: computed,
+      rowIds: computed,
+      visibleSelectedRows: computed,
+      allColumns: computed,
+      orderedColumns: computed,
+      columnWidths: computed,
+      virtualWidth: computed,
+      virtualHeight: computed,
+      expandedDisplayIndices: computed,
+      unpinnedColumns: computed,
+      firstUnpinnedRenderedIndex: computed,
+      lastUnpinnedRenderedIndex: computed,
+      unpinnedRenderedColumns: computed,
+      leftPinnedRenderedColumns: computed,
+      rightPinnedRenderedColumns: computed,
+      // Someone else's observable object, held by reference — mobx must not convert it, and its
+      // own identity never changes, so there is nothing here to observe.
+      rowSource: false,
 
-        applyState: action.bound,
-        setFilter: action.bound,
-        syncColumns: action,
-        setColumns: action.bound,
-        addColumn: action.bound,
-        removeColumn: action.bound,
-        moveColumn: action.bound,
-        setRows: action.bound,
-        appendRows: action.bound,
-        setScroll: action.bound,
-        scrollToRow: action.bound,
-        scrollToEnd: action.bound,
-        clearScrollRequest: action.bound,
-        setWidth: action.bound,
-        setHeight: action.bound,
-        setSort: action.bound,
-        setSorts: action.bound,
-        clearSort: action.bound,
-        toggleRow: action.bound,
-        selectAllRows: action.bound,
-        clearSelection: action.bound,
-        toggleRowExpanded: action.bound,
-        collapseAllRows: action.bound,
-        toggleAllRows: action.bound,
-      },
-    );
+      filteredRows: computed,
+      loading: computed,
+      refreshing: computed,
+      isEmpty: computed,
+      displayRows: computed,
+      firstRenderedIndex: computed,
+      lastRenderedIndex: computed,
+      renderedRows: computed,
+      virtualOffsetX: computed,
+      virtualOffsetY: computed,
+      renderedColumns: computed,
+      visualColumns: computed,
+      displayRowIndexMap: computed,
+      selectable: computed,
+      gridTemplateColumns: computed,
+      atEnd: computed,
+      selectedRows: computed,
+      allRowsSelected: computed,
+      someRowsSelected: computed,
+
+      applyState: action.bound,
+      setFilter: action.bound,
+      syncColumns: action,
+      setColumns: action.bound,
+      addColumn: action.bound,
+      removeColumn: action.bound,
+      moveColumn: action.bound,
+      setRows: action.bound,
+      appendRows: action.bound,
+      setScroll: action.bound,
+      scrollToRow: action.bound,
+      scrollToEnd: action.bound,
+      clearScrollRequest: action.bound,
+      setWidth: action.bound,
+      setHeight: action.bound,
+      setSort: action.bound,
+      setSorts: action.bound,
+      clearSort: action.bound,
+      toggleRow: action.bound,
+      selectAllRows: action.bound,
+      clearSelection: action.bound,
+      toggleRowExpanded: action.bound,
+      collapseAllRows: action.bound,
+      toggleAllRows: action.bound,
+    });
 
     if (config?.filter) {
       this.setFilter(config.filter);
     }
-    // the getter form is applied by its reaction in activate(), below
+    // the getter and row-source forms are applied by their reaction in activate(), below
     if (Array.isArray(config?.rows)) {
       this.setRows(config.rows);
+    } else if (isRowSource<RowData>(config?.rows)) {
+      this.rowSource = config.rows;
     }
     // registered after initial config so construction itself never fires; structural equality
     // suppresses echoes from unrelated observable churn
@@ -492,10 +540,24 @@ export class TableModel {
     // whatever observables the getter touches. Ordered before the state reaction so the columns
     // this first materializes are part of that reaction's baseline rather than a change to report.
     const rows = this.config?.rows;
-    if (typeof rows === "function" && !this.rowsReactionDisposer) {
+    // A source is tracked by the *identity* of its `value`, not a copy of its contents. That is
+    // what lets a `LazyObservableArray` — which keeps one array for its lifetime and replaces the
+    // contents on each load — be applied exactly once: later loads reach the table's computeds
+    // through MobX directly, with no re-application and no copy of every row.
+    //
+    // A source whose `value` is a fresh array each load still works: its identity changes, so the
+    // reaction fires and the dataset is re-applied, which is the correct behaviour there.
+    const readRows =
+      typeof rows === "function" ? rows : isRowSource<RowData>(rows) ? () => rows.value : undefined;
+
+    if (readRows && !this.rowsReactionDisposer) {
       this.rowsReactionDisposer = reaction(
-        () => rows(),
-        (next) => this.setRows(next),
+        readRows,
+        // `undefined` means nothing has arrived, which is not the same as an empty dataset — leave
+        // the rows alone rather than clearing them, and let `loading` describe the state.
+        (next) => {
+          if (next) this.setRows(next);
+        },
         { fireImmediately: true },
       );
     }

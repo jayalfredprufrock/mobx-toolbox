@@ -39,7 +39,7 @@ function UserTable({ users }) {
 
 The config is read once, at construction — **except `rows`**, which `useTable` keeps in sync. It has to: a route's params can change without remounting the page (React reconciles the same component type at the same tree position), so a table that ignored later `rows` would keep rendering the previous org's data.
 
-`rows` takes either of two shapes, and they differ in **who decides the dataset changed** — which is what decides when row-keyed state (selection, expansion) resets, since that is `setRows`'s documented job.
+`rows` takes one of three shapes, and the first two differ in **who decides the dataset changed** — which is what decides when row-keyed state (selection, expansion) resets, since that is `setRows`'s documented job. The third, a **row source**, also carries whether the data is still arriving.
 
 ```tsx
 // React decides — re-applied when the array identity changes
@@ -50,10 +50,11 @@ useTable({ rows });
 useTable({ rows: () => store.filteredRows });
 ```
 
-| Shape       | Re-applied when                    | Gets it wrong by                                                                                                                                                              |
-| ----------- | ---------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `T[]`       | it's a different array than before | rebuilding the array inline each render — every parent render reads as a new dataset (harmless with `getRowId`, since state is intersected; without it, selection is cleared) |
-| `() => T[]` | the observables it _read_ change   | reading something MobX isn't tracking — props, React state, a plain field — in which case it is never re-run and the table silently keeps the first dataset                   |
+| Shape          | Re-applied when                    | Gets it wrong by                                                                                                                                                              |
+| -------------- | ---------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `T[]`          | it's a different array than before | rebuilding the array inline each render — every parent render reads as a new dataset (harmless with `getRowId`, since state is intersected; without it, selection is cleared) |
+| `() => T[]`    | the observables it _read_ change   | reading something MobX isn't tracking — props, React state, a plain field — in which case it is never re-run and the table silently keeps the first dataset                   |
+| `RowSource<T>` | its `value` changes                | nothing much — the table tracks the contents itself                                                                                                                           |
 
 Two more things worth knowing about the getter form: it is captured once, so close over observables rather than render-scoped values, which would go stale; and it must be the _source_ of the rows, not a transform of a prop.
 
@@ -98,35 +99,66 @@ Without `getRowId` the ids are row _positions_, which must not silently attach t
 
 ### Binding to a lazy observable
 
-All three forms work; they differ in who re-applies the dataset.
+Hand the lazy over whole:
 
 ```tsx
-// the array itself — the lazy owns it, so the table iterating it is what starts the load
-useTable({ rows: surveyStore.all.value, getRowId: (s) => s.id });
-
-// a getter over the live array — same thing, and re-evaluated if you swap collections
-useTable({ rows: () => surveyStore.all.value, getRowId: (s) => s.id });
-
-// a getter over a snapshot — re-applies through setRows on every load
-useTable({ rows: () => surveyStore.all.value.slice(), getRowId: (s) => s.id });
+useTable({ rows: surveyStore.all, getRowId: (s) => s.id });
 ```
 
-A `lazyObservableArray` owns a single observable array whose _contents_ are replaced on each load, so
-the first two forms hand the table a live array: the table's own computeds iterate it, which both
-marks the lazy observed (starting the fetch) and tracks the data (so the view updates). `setRows`
-runs once, so row-keyed state is never even at risk.
+The table tracks the array's contents itself, so there is no `.slice()` to remember — and this is
+the only form that can tell **a first load from an empty result**, which is what drives
+[loading and empty states](#loading-and-empty-states).
 
-The `.slice()` form takes a snapshot instead, so each load produces a new array and `setRows`
-re-applies it. That is fine — with `getRowId` the selection is intersected rather than cleared — and
-it's the form to use when the _source_ can change (`() => store.page(params).value.slice()`), since
-the getter is re-evaluated when the observables it read change.
+It is structural, not a dependency: `table` declares the shape it needs and never imports
+`lazy-observable`.
 
-Prefer the live-array forms for large datasets: `.slice()` copies every row on every load.
+```ts
+interface RowSource<T> {
+  value: T[] | undefined; // undefined while nothing has arrived
+  fetching: boolean; // a request is in flight, refreshes included
+}
+```
+
+A `LazyObservableArray` satisfies it, and so does anything else with those two properties.
+
+Reading `value` is what marks the lazy observed and starts the fetch — which works even before there
+is a value, so the table binding drives the first load.
+
+A getter still works when the rows are _derived_ rather than handed over:
+
+```tsx
+useTable({ rows: () => store.all.value?.filter(isActive) ?? [], getRowId: (s) => s.id });
+```
+
+That produces a new array on each load, so `setRows` re-applies the dataset — fine, because with
+`getRowId` selection is intersected rather than cleared. It carries no loading information, though,
+so `table.loading` stays `false`.
 
 Whichever you pick, **configure `getRowId`**. Without it row ids are positions, and any re-applied
 dataset clears selection and expansion.
 
-`src/table/lazy-binding.test.ts` pins all three behaviours.
+`src/table/lazy-binding.test.ts` pins these behaviours.
+
+### Loading and empty states
+
+Given a row source, the table distinguishes four states — and the one that used to need hand-wiring
+is the first:
+
+| state                                 | `loading` | `refreshing` | `isEmpty` |
+| ------------------------------------- | --------- | ------------ | --------- |
+| nothing loaded yet, request in flight | `true`    | `false`      | `false`   |
+| rows present, request in flight       | `false`   | `true`       | `false`   |
+| settled, zero rows                    | `false`   | `false`      | `true`    |
+| rows present, idle                    | `false`   | `false`      | `false`   |
+
+`isEmpty` is `false` during a first load, so a table can no longer claim "no results" while it is
+still fetching them. Without a row source, `loading` and `refreshing` are always `false` — an array
+or a getter carries no notion of loading, and the table does not invent one.
+
+**A refresh keeps its rows.** They stay rendered and fully interactive, because replacing them to
+fetch mostly-identical rows would throw away scroll position, column arrangement and selection. Use
+`table.refreshing` to indicate it somewhere that isn't the rows themselves — and don't dim them,
+which reads as _disabled_.
 
 Everything else (`columns`, `getRowId`, `onStateChange`, `filter`) is captured at construction. Change those through the model — `setFilter`, `applyState` — rather than by re-rendering.
 
@@ -402,17 +434,28 @@ Pinned cells must be opaque because they overlap scrolling ones. Set `--table-pi
 
 The library reads `--table-viewport-width` (set by `<Table.Root>`) for the pieces that pin horizontally, and exposes `--table-row-height`. `<Table.Empty>` also honors `--table-header-height` / `--table-header-gap` when computing its height.
 
-## Empty state
+## Empty and loading slots
 
-The library never decides what "empty" means — no rows and filtered-to-nothing are different stories, and only you know the wording and recovery actions:
+Both gate themselves. Render them after `<Table.Body>` and they appear only when they should:
 
 ```tsx
-{
-  table.displayRows.length === 0 && (
-    <Table.Empty>{table.rows.length ? "No matches" : "No users yet"}</Table.Empty>
-  );
-}
+<Table.Body>{...}</Table.Body>
+<Table.Empty>{table.rows.length ? "No matches" : "No users yet"}</Table.Empty>
+<Table.Loading><Skeleton /></Table.Loading>
 ```
+
+The library decides **when**; you decide **what**. That split is the point: the gate can't know
+whether "empty" means no data or a filter that matched nothing, so that distinction lives in the
+children — where it costs no API.
+
+`<Table.Empty>` shows only when `table.isEmpty`, so it stays out of the way during a first load.
+`<Table.Loading>` shows only when `table.loading`, and only once the wait has lasted long enough to
+be worth mentioning — a fast load renders nothing at all rather than flashing a skeleton. Pass
+`sustain={false}` to show it immediately, or `sustain={{ after: 100 }}` to retune it; the timing is
+[`useSlowLoading`](../util/README.md#useslowloading).
+
+Both own placement only — filling the viewport below the sticky header and pinning horizontally.
+Cosmetics are yours; `data-empty` and `data-loading` are the styling hooks.
 
 ## Resizing
 

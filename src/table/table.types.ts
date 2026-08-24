@@ -28,6 +28,24 @@ export type AutoColumnFn<T> = (
 
 export type RowId = string | number;
 
+/**
+ * A dataset that knows whether it is still arriving.
+ *
+ * Structural on purpose: `LazyObservableArray` satisfies it, so `rows={list}` works — but `table`
+ * declares the shape rather than importing the type, and stays independent of `lazy-observable`.
+ * Anything with these two properties works, including a hand-rolled object.
+ *
+ * Two properties are enough because `undefined` and `[]` are different answers: "not known yet"
+ * versus "there are none". That distinction is what lets the table tell a first load from an empty
+ * result without the caller wiring it up.
+ */
+export interface RowSource<T> {
+  /** The rows, or `undefined` while nothing has arrived yet. */
+  value: T[] | undefined;
+  /** Whether a request is in flight — including a refresh that still has rows to show. */
+  fetching: boolean;
+}
+
 export interface TableConfig<T> {
   /**
    * The dataset, in either of two shapes — and they differ in *who decides
@@ -48,8 +66,13 @@ export interface TableConfig<T> {
    * never re-run, and the table keeps the first dataset forever), and it is
    * captured once — so close over observables, not over render-scoped
    * values, which would go stale.
+   *
+   * **A row source** — an object with `value` and `fetching`, which a `LazyObservableArray`
+   * satisfies. The table tracks its contents itself, so this form needs no `.slice()`, and it is
+   * the only one that can tell a first load from an empty result: see `loading`, `refreshing` and
+   * `isEmpty` on the model.
    */
-  rows?: T[] | (() => T[]);
+  rows?: T[] | (() => T[]) | RowSource<T>;
   /** Fixed pixel height of every row (the virtualization contract). Default 40. */
   rowHeight?: number;
   /**

@@ -512,6 +512,26 @@ createStore(SurveyModel, {
 });
 ```
 
+### A collection holds nothing until it loads
+
+`collection()` returns a `LazyObservableArray`, so `value` is `undefined` until the first load
+rather than `[]`, and `loaded` narrows it:
+
+```tsx
+const Surveys = observer(() => {
+  const list = surveyStore.all;
+  if (!list.loaded) return <Spinner />;
+  return <List items={list.value} />; // `value` is SurveyInstance[] here
+});
+```
+
+The distinction matters for exactly one reason, and it is the one that used to cost every table
+author an afternoon: `undefined` means _not known yet_, `[]` means _there are none_. See
+[nothing yet is not the same as nothing](../lazy-observable/README.md#nothing-yet-is-not-the-same-as-nothing).
+
+A `discard` — from `invalidate({ discard: true })` or `discardOnInvalidate` — returns the collection
+to holding nothing, not to an empty list.
+
 ### Options a collection inherits
 
 Three options are declared on the store and overridden per collection, since the same answer usually
@@ -813,7 +833,7 @@ export const userStore = createStore(UserModel, {
 });
 
 // In a component (observer):
-const users = userStore.all.value; // loads on first observation
+const users = userStore.all.value; // loads on first observation; undefined until it lands
 
 // Imperatively:
 const user = await userStore.get({ id: 42 });

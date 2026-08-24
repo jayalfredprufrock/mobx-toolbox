@@ -87,14 +87,14 @@ describe("api client passthrough", () => {
 
     expect(api.listUsers).toHaveBeenCalledOnce();
     expect(all).toHaveLength(1);
-    expect(store.list.value[0]).toBe(created);
+    expect(store.list.value![0]).toBe(created);
   });
 
   test("delete goes through the client and leaves the collection", async () => {
     const { api, UserStore } = setup();
     const store = new UserStore();
     await store.list.getOrLoad();
-    const user = store.list.value[0]!;
+    const user = store.list.value![0]!;
 
     await user.delete();
 

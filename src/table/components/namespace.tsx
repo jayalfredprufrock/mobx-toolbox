@@ -1,7 +1,7 @@
 import { TableResizer } from "./column-resizer";
 import { SelectAll, SelectionCell, SelectionHeaderCell } from "./selection";
 import { TableBody, TableCell, TableRow } from "./table-body";
-import { TableEmpty } from "./table-empty";
+import { TableEmpty, TableLoading } from "./table-empty";
 import { TableExpansion } from "./table-expansion";
 import { TableColumnHeader, TableHeader } from "./table-header";
 import { TableRoot } from "./table-root";
@@ -18,6 +18,7 @@ export const Table = {
   Row: TableRow,
   Cell: TableCell,
   Empty: TableEmpty,
+  Loading: TableLoading,
   Expansion: TableExpansion,
   Resizer: TableResizer,
   SelectionCell: SelectionCell,

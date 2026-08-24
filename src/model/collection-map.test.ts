@@ -75,10 +75,10 @@ describe("collectionMap", () => {
     expect(api.list).not.toHaveBeenCalled();
 
     await surveys.byOrg({ orgId: "acme" }).getOrLoad();
-    expect(surveys.byOrg({ orgId: "acme" }).value.map((s) => s.title)).toEqual(["Alpha", "Beta"]);
+    expect(surveys.byOrg({ orgId: "acme" }).value!.map((s) => s.title)).toEqual(["Alpha", "Beta"]);
 
     await surveys.byOrg({ orgId: "globex" }).getOrLoad();
-    expect(surveys.byOrg({ orgId: "globex" }).value.map((s) => s.title)).toEqual(["Gamma"]);
+    expect(surveys.byOrg({ orgId: "globex" }).value!.map((s) => s.title)).toEqual(["Gamma"]);
 
     // acme's list is still loaded — the point of keying rather than refetching one list.
     expect(surveys.byOrg({ orgId: "acme" }).loaded).toBe(true);
@@ -141,10 +141,10 @@ describe("collectionMap", () => {
     await surveys.byOrg({ orgId: "acme" }).getOrLoad();
     await surveys.byOrgAndStatus({ orgId: "acme", status: "draft" }).getOrLoad();
 
-    const alpha = surveys.byOrg({ orgId: "acme" }).value.find((s) => s.title === "Alpha")!;
+    const alpha = surveys.byOrg({ orgId: "acme" }).value!.find((s) => s.title === "Alpha")!;
     await alpha.delete();
 
-    expect(surveys.byOrg({ orgId: "acme" }).value.map((s) => s.title)).toEqual(["Beta"]);
+    expect(surveys.byOrg({ orgId: "acme" }).value!.map((s) => s.title)).toEqual(["Beta"]);
     expect(surveys.byOrgAndStatus({ orgId: "acme", status: "draft" }).value).toHaveLength(0);
   });
 
@@ -153,7 +153,7 @@ describe("collectionMap", () => {
     const surveys = new Surveys();
     const acme = surveys.byOrg({ orgId: "acme" });
     const globex = surveys.byOrg({ orgId: "globex" });
-    const stop = autorun(() => void [acme.value.slice(), globex.value.slice()]);
+    const stop = autorun(() => void [acme.value?.slice(), globex.value?.slice()]);
     await vi.waitUntil(() => acme.loaded && globex.loaded);
     api.list.mockClear();
 
@@ -161,7 +161,7 @@ describe("collectionMap", () => {
 
     // Both refetch: only the server knows which lists a new record belongs to.
     await vi.waitUntil(() => api.list.mock.calls.length === 2);
-    expect(acme.value.map((s) => s.title)).toEqual(["Alpha", "Beta", "Delta"]);
+    expect(acme.value!.map((s) => s.title)).toEqual(["Alpha", "Beta", "Delta"]);
     stop();
   });
 
@@ -169,7 +169,7 @@ describe("collectionMap", () => {
     const { api, Surveys } = setup();
     const surveys = new Surveys();
     const acme = surveys.byOrg({ orgId: "acme" });
-    const stop = autorun(() => void acme.value.slice());
+    const stop = autorun(() => void acme.value?.slice());
     await vi.waitUntil(() => acme.loaded);
     api.list.mockClear();
 
@@ -184,19 +184,21 @@ describe("collectionMap", () => {
     const surveys = new Surveys();
     const acme = surveys.byOrg({ orgId: "acme" });
 
-    const stop = autorun(() => void acme.value.slice());
+    const stop = autorun(() => void acme.value?.slice());
     await vi.waitUntil(() => acme.loaded);
     expect(api.list).toHaveBeenCalledTimes(1);
 
     // Nothing is watching any more: `keepOnUnobserved` is false, so the rows go and the list is
-    // back to where it started. The map retains an empty shell, not a cached collection.
+    // back to where it started — holding nothing, which is not the same as holding no rows. The
+    // map retains an empty shell, not a cached collection.
     stop();
-    expect(acme.value).toHaveLength(0);
-    expect(acme.status).toBe("init");
-    expect(acme.loadedAt).toBeUndefined();
+    expect(acme.value).toBeUndefined();
+    expect(acme.loaded).toBe(false);
+    expect(acme.fetching).toBe(false);
+    expect(acme.fetchedAt).toBeUndefined();
 
     // Observing again is a fresh request, exactly as a first load is.
-    const restart = autorun(() => void acme.value.slice());
+    const restart = autorun(() => void acme.value?.slice());
     await vi.waitUntil(() => acme.loaded);
     expect(api.list).toHaveBeenCalledTimes(2);
     restart();
@@ -213,11 +215,12 @@ describe("collectionMap", () => {
 
     const after = surveys.byOrg({ orgId: "acme" });
     expect(after).not.toBe(before);
-    expect(after.status).toBe("init");
+    expect(after.loaded).toBe(false);
+    expect(after.fetching).toBe(false);
 
     // The forgotten list no longer follows the store: a deletion leaves it untouched.
     await after.getOrLoad();
-    const model = after.value[0]!;
+    const model = after.value![0]!;
     surveys.byOrg.clear();
     await model.delete();
     expect(after.value).toContain(model);

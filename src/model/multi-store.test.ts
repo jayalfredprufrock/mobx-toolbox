@@ -59,7 +59,7 @@ describe("one store per collection", () => {
     const drafts = new DraftStore();
     await drafts.list.getOrLoad();
 
-    const fromList = drafts.list.value[0]!;
+    const fromList = drafts.list.value![0]!;
     const fromGet = SurveyModel.instantiate({ id: 1, title: "Alpha", status: "draft" });
 
     expect(fromGet).toBe(fromList);
@@ -72,11 +72,11 @@ describe("one store per collection", () => {
     const b = new DraftStore();
     await a.list.getOrLoad();
     await b.list.getOrLoad();
-    expect(b.list.value[0]).toBe(a.list.value[0]);
+    expect(b.list.value![0]).toBe(a.list.value![0]);
 
-    await a.list.value[0]!.update({ title: "Renamed" });
+    await a.list.value![0]!.update({ title: "Renamed" });
 
-    expect(b.list.value[0]!.title).toBe("Renamed");
+    expect(b.list.value![0]!.title).toBe("Renamed");
   });
 
   test("a model belongs to no store in particular", async () => {
@@ -87,8 +87,8 @@ describe("one store per collection", () => {
     await b.list.getOrLoad();
 
     // the same instance is in both lists, and there is no notion of which one owns it
-    expect(b.list.value[0]).toBe(a.list.value[0]);
-    expect("store" in a.list.value[0]!).toBe(false);
+    expect(b.list.value![0]).toBe(a.list.value![0]);
+    expect("store" in a.list.value![0]!).toBe(false);
   });
 
   test("delete removes the model from every store listening to the model", async () => {
@@ -98,7 +98,7 @@ describe("one store per collection", () => {
     await a.list.getOrLoad();
     await b.list.getOrLoad();
 
-    await a.list.value[0]!.delete();
+    await a.list.value![0]!.delete();
 
     expect(a.list.value).toHaveLength(0);
     expect(b.list.value).toHaveLength(0);
@@ -113,13 +113,13 @@ describe("one store per collection", () => {
     void SurveyModel;
     const a = createStore(CreatingModel, { collections: { list: () => api.list("draft") } });
     const b = createStore(CreatingModel, { collections: { list: () => api.list("draft") } });
-    const stopA = autorun(() => void a.list.value.slice());
-    const stopB = autorun(() => void b.list.value.slice());
+    const stopA = autorun(() => void a.list.value?.slice());
+    const stopB = autorun(() => void b.list.value?.slice());
     await vi.waitUntil(() => a.list.loaded && b.list.loaded);
     expect(a.list.value).toHaveLength(1);
 
     await a.create({ title: "New", status: "draft" });
-    await vi.waitUntil(() => a.list.value.length === 2 && b.list.value.length === 2);
+    await vi.waitUntil(() => a.list.value!.length === 2 && b.list.value!.length === 2);
 
     stopA();
     stopB();
@@ -215,35 +215,35 @@ describe("invalidateOn", () => {
 
   test("an update does not refetch by default", async () => {
     const { store, list } = setupStore();
-    const stop = autorun(() => void store.list.value.slice());
+    const stop = autorun(() => void store.list.value?.slice());
     await vi.waitUntil(() => store.list.loaded);
     expect(list).toHaveBeenCalledTimes(1);
 
-    await store.list.value[0]!.update({ title: "Renamed" });
+    await store.list.value![0]!.update({ title: "Renamed" });
     await new Promise((r) => setTimeout(r, 20));
 
     // identity already showed the change, so no request was needed
     expect(list).toHaveBeenCalledTimes(1);
-    expect(store.list.value[0]!.title).toBe("Renamed");
+    expect(store.list.value![0]!.title).toBe("Renamed");
     stop();
   });
 
   test("listing updated opts into refetching", async () => {
     const { store, list } = setupStore(["updated"]);
-    const stop = autorun(() => void store.list.value.slice());
+    const stop = autorun(() => void store.list.value?.slice());
     await vi.waitUntil(() => store.list.loaded);
 
-    await store.list.value[0]!.update({ title: "Renamed" });
+    await store.list.value![0]!.update({ title: "Renamed" });
     await vi.waitUntil(() => list.mock.calls.length === 2);
     stop();
   });
 
   test("a delete removes the row without refetching by default", async () => {
     const { store, list } = setupStore();
-    const stop = autorun(() => void store.list.value.slice());
+    const stop = autorun(() => void store.list.value?.slice());
     await vi.waitUntil(() => store.list.loaded);
 
-    await store.list.value[0]!.delete();
+    await store.list.value![0]!.delete();
     await new Promise((r) => setTimeout(r, 20));
 
     expect(store.list.value).toHaveLength(0);
@@ -253,10 +253,10 @@ describe("invalidateOn", () => {
 
   test("listing deleted refetches as well as removing", async () => {
     const { store, list } = setupStore(["deleted"]);
-    const stop = autorun(() => void store.list.value.slice());
+    const stop = autorun(() => void store.list.value?.slice());
     await vi.waitUntil(() => store.list.loaded);
 
-    await store.list.value[0]!.delete();
+    await store.list.value![0]!.delete();
 
     // removed immediately, and the list refetched on top of that
     expect(store.list.value).toHaveLength(0);
@@ -283,16 +283,16 @@ describe("collection()", () => {
     }
     const store = new TwoLists();
     // observed, so an invalidation refetches rather than merely resetting
-    const stopA = autorun(() => void store.list.value.slice());
-    const stopB = autorun(() => void store.other.value.slice());
+    const stopA = autorun(() => void store.list.value?.slice());
+    const stopB = autorun(() => void store.other.value?.slice());
     await vi.waitUntil(() => store.list.loaded && store.other.loaded);
 
     // both transformed into models
-    expect(store.list.value[0]!.title).toBe("A");
-    expect(store.other.value[0]!.title).toBe("B");
+    expect(store.list.value![0]!.title).toBe("A");
+    expect(store.other.value![0]!.title).toBe("B");
 
     // both join the store's mutation handling: a delete sweeps every list
-    await store.other.value[0]!.delete();
+    await store.other.value![0]!.delete();
     expect(store.other.value).toHaveLength(0);
 
     // and a create marks both stale
@@ -310,7 +310,7 @@ describe("collection()", () => {
       rows = this.collection(quiet, { invalidateOn: [] });
     }
     const store = new Quiet();
-    const stop = autorun(() => void store.rows.value.slice());
+    const stop = autorun(() => void store.rows.value?.slice());
     await vi.waitUntil(() => store.rows.loaded);
 
     await store.create({ title: "New" });
@@ -410,7 +410,7 @@ describe("sort", () => {
 
     await store.create({ title: "Bravado" });
 
-    expect(store.list.value.map((m) => m.title)).toEqual(["Alpha", "Bravado", "Bravo", "Charlie"]);
+    expect(store.list.value!.map((m) => m.title)).toEqual(["Alpha", "Bravado", "Bravo", "Charlie"]);
   });
 
   test("without a sort a created record still goes on top", async () => {
@@ -426,7 +426,7 @@ describe("sort", () => {
 
     await store.create({ title: "Zulu" });
 
-    expect(store.list.value[0]!.title).toBe("Zulu");
+    expect(store.list.value![0]!.title).toBe("Zulu");
   });
 });
 
@@ -456,11 +456,11 @@ describe("createStore collections", () => {
     const store = createStore(Model, {
       collections: { quiet: { fetch: quiet, invalidateOn: [] } },
     });
-    const stop = autorun(() => void store.quiet.value.slice());
+    const stop = autorun(() => void store.quiet.value?.slice());
     await vi.waitUntil(() => store.quiet.loaded);
 
-    store.quiet.value[0]!.setData(row(1, "draft"));
-    Model.notifyListeners("created", store.quiet.value[0]!);
+    store.quiet.value![0]!.setData(row(1, "draft"));
+    Model.notifyListeners("created", store.quiet.value![0]!);
     await new Promise((r) => setTimeout(r, 20));
 
     // invalidateOn: [] — a create does not mark this one stale
@@ -481,7 +481,7 @@ describe("createStore collections", () => {
     });
     await Promise.all([store.a.getOrLoad(), store.b.getOrLoad()]);
 
-    await store.a.value[0]!.delete();
+    await store.a.value![0]!.delete();
 
     expect(store.a.value).toHaveLength(0);
     expect(store.b.value).toHaveLength(0);
@@ -549,7 +549,7 @@ describe("optimisticCreate", () => {
 
     const created = await store.create({ title: "Beta" });
 
-    expect(store.all.value[0]).toBe(created);
+    expect(store.all.value![0]).toBe(created);
     expect(store.filtered.value).toHaveLength(1);
   });
 
@@ -583,8 +583,8 @@ describe("store.invalidateCollections", () => {
     const store = createStore(makeModel(Schema, { keys: ["id"] }), {
       collections: { a, b },
     });
-    const stopA = autorun(() => void store.a.value.slice());
-    const stopB = autorun(() => void store.b.value.slice());
+    const stopA = autorun(() => void store.a.value?.slice());
+    const stopB = autorun(() => void store.b.value?.slice());
     await vi.waitUntil(() => store.a.loaded && store.b.loaded);
 
     store.invalidateCollections();
@@ -599,7 +599,7 @@ describe("store.invalidateCollections", () => {
     const store = createStore(makeModel(Schema, { keys: ["id"] }), {
       collections: { quiet: { fetch: quiet, invalidateOn: [] } },
     });
-    const stop = autorun(() => void store.quiet.value.slice());
+    const stop = autorun(() => void store.quiet.value?.slice());
     await vi.waitUntil(() => store.quiet.loaded);
 
     store.invalidateCollections();
@@ -612,14 +612,16 @@ describe("store.invalidateCollections", () => {
     const store = createStore(makeModel(Schema, { keys: ["id"] }), {
       collections: { list: { fetch: () => Promise.resolve(rows()) } },
     });
-    const stop = autorun(() => void store.list.value.slice());
+    const stop = autorun(() => void store.list.value?.slice());
     await vi.waitUntil(() => store.list.loaded);
     expect(store.list.value).toHaveLength(1);
 
-    // discard blanks the list while it refetches, rather than keeping the old rows visible
+    // discard drops the rows while it refetches, rather than keeping the old ones visible —
+    // and "dropped" means holding nothing, which nothing can mistake for a list of zero rows
     store.invalidateCollections({ discard: true });
 
-    expect(store.list.value).toHaveLength(0);
+    expect(store.list.value).toBeUndefined();
+    expect(store.list.loaded).toBe(false);
     stop();
   });
 
@@ -629,7 +631,7 @@ describe("store.invalidateCollections", () => {
       a = this.collection(listA);
     }
     const store = new Store();
-    const stop = autorun(() => void store.a.value.slice());
+    const stop = autorun(() => void store.a.value?.slice());
     await vi.waitUntil(() => store.a.loaded);
 
     store.invalidateCollections();
@@ -653,7 +655,7 @@ describe("discardOnInvalidate", () => {
     const store = createStore(Model, {
       collections: { list: () => Promise.resolve([{ id: 1, title: "Alpha" }]) },
     });
-    const stop = autorun(() => void store.list.value.slice());
+    const stop = autorun(() => void store.list.value?.slice());
     await vi.waitUntil(() => store.list.loaded);
 
     await store.create({ title: "Beta" });
@@ -676,12 +678,12 @@ describe("discardOnInvalidate", () => {
         },
       },
     });
-    const stop = autorun(() => void store.list.value.slice());
+    const stop = autorun(() => void store.list.value?.slice());
     await vi.waitUntil(() => store.list.loaded);
 
     await store.create({ title: "Beta" });
 
-    expect(store.list.value).toHaveLength(0);
+    expect(store.list.value).toBeUndefined();
     stop();
   });
 
@@ -694,13 +696,13 @@ describe("discardOnInvalidate", () => {
       });
     }
     const store = new Store();
-    const stopA = autorun(() => void store.blanks.value.slice());
-    const stopB = autorun(() => void store.keeps.value.slice());
+    const stopA = autorun(() => void store.blanks.value?.slice());
+    const stopB = autorun(() => void store.keeps.value?.slice());
     await vi.waitUntil(() => store.blanks.loaded && store.keeps.loaded);
 
     store.invalidateCollections();
 
-    expect(store.blanks.value).toHaveLength(0);
+    expect(store.blanks.value).toBeUndefined();
     expect(store.keeps.value).toHaveLength(1);
     stopA();
     stopB();
@@ -712,12 +714,12 @@ describe("discardOnInvalidate", () => {
       keeps = this.collection(() => Promise.resolve([{ id: 1, title: "Alpha" }]));
     }
     const store = new Store();
-    const stop = autorun(() => void store.keeps.value.slice());
+    const stop = autorun(() => void store.keeps.value?.slice());
     await vi.waitUntil(() => store.keeps.loaded);
 
     store.invalidateCollections({ discard: true });
 
-    expect(store.keeps.value).toHaveLength(0);
+    expect(store.keeps.value).toBeUndefined();
     stop();
   });
 });

@@ -79,6 +79,99 @@ Related fix: a `redirect()` thrown from a `[LOAD]` no longer marks the outlet `e
 out, so the generic "A route loader or lazy component failed." text no longer flashes before the
 new route lands. If you avoided loader redirects because of that flash, they are now clean.
 
+### lazy-observable — state model
+
+Every change in this section is the same correction: **`status` answered three questions at once**,
+and they contradict each other at the edges. A failed refresh kept its value but reported
+`status: "error"` and `loaded: false` — so `LazyObserver` threw a working screen to the error
+boundary, and `loaded` could never narrow `value`.
+
+There are three independent facts, and now three properties for them:
+
+| fact                          | property   |
+| ----------------------------- | ---------- |
+| is there a value?             | `loaded`   |
+| is a request running?         | `fetching` |
+| how did the last request end? | `error`    |
+
+| before                      | after                                           |
+| --------------------------- | ----------------------------------------------- |
+| `lazy.status === "loaded"`  | `lazy.loaded`                                   |
+| `lazy.status === "loading"` | `lazy.loading`                                  |
+| `lazy.status === "error"`   | `lazy.error !== undefined`                      |
+| `lazy.status === "init"`    | `!lazy.loaded && !lazy.fetching && !lazy.error` |
+| `lazy.loadedAt`             | `lazy.fetchedAt`                                |
+
+`status` is **removed** rather than deprecated: it cannot be reproduced faithfully, because its
+`"error"` value was the bug. Any shim would have to pick a meaning and still be wrong at the edge
+that caused the failure.
+
+⚠️ **`loaded` now means "holds a value".** It used to mean "the last request succeeded". The
+difference shows up on a failed refresh, which is now `loaded: true` with an `error` — both true at
+once. Anywhere you gate rendering on `loaded`, that is the behaviour you wanted; anywhere you used
+it to mean "the last request was fine", check `error` instead.
+
+⚠️ **`lazyObservableArray` starts at `undefined`, not `[]`.** `value` is `T[] | undefined`, because
+"no rows yet" and "zero rows" are different answers and only one of them is a fact. This is the
+change with the widest blast radius:
+
+```ts
+// before
+rows.value.map(render);
+
+// after — pick whichever fits
+if (rows.loaded) rows.value.map(render); // narrows; no `!` needed
+rows.value?.map(render);
+```
+
+Reading `value` still registers observation while it is `undefined`, so a `value?.map(...)` in a
+component still triggers the first load. Nothing about _when_ things load has changed.
+
+To keep the old behaviour on a specific lazy, ask for it — and note it now means what it says
+("there are zero rows, and revalidate"), which is what makes it safe:
+
+```ts
+lazyObservableArray(fetch, { initialValue: [] });
+```
+
+⚠️ **`invalidate({ discard: true })` returns the value to `initialValue`, usually `undefined`.** It
+used to empty the array in place. Any assertion like `expect(list.value).toHaveLength(0)` after a
+discard becomes `expect(list.value).toBeUndefined()`. This applies to store collections via
+`discardOnInvalidate` too.
+
+The array _identity_ guarantee survives: `value` is the same array every time there is one, so a
+reference taken before a discard is still valid when the next load fills it back in.
+
+⚠️ **`getOrLoad()` now respects staleness.** It short-circuits on `loaded && !stale` rather than on
+`loaded`, which fixes a real bug: `invalidate()` followed by `getOrLoad()` used to hand back the
+value it had just been told to replace, and never refetch — but only when nothing happened to be
+observing the lazy. The same call now behaves the same way either way.
+
+If you were relying on `getOrLoad()` to be a pure cache read, use `peek`-style access instead: check
+`lazy.loaded` and read `lazy.value` directly.
+
+**`initialValue` means loaded-but-stale.** A seeded lazy renders immediately _and_ revalidates on
+first observation — which makes it the right shape for hydration from SSR, storage, or a cache. It is
+distinct from `set()`, which marks a value authoritative and owes no fetch:
+
+| call                                  | state          | meaning                              |
+| ------------------------------------- | -------------- | ------------------------------------ |
+| `lazyObservable(f, { initialValue })` | loaded + stale | a starting point, still owed a fetch |
+| `lazy.set(value)`                     | loaded + fresh | authoritative; no fetch              |
+
+⚠️ **`LazyObserver` no longer throws on a failed refresh.** It re-throws only when there is nothing
+to render (`error` with `!loaded`). A refresh that fails while data is on screen keeps that screen —
+the previous behaviour destroyed a working page over a background request. The error is still
+readable on the lazy if you want to surface it.
+
+**`LazyObserver` delays its placeholder.** It waits 300 ms before showing one and then keeps it up
+for 300 ms, so a fast load renders no placeholder at all. ⚠️ The new failure mode is that a slow load
+now renders **nothing** for up to 300 ms where it previously reserved space immediately — check any
+`placeholder` you are using as a layout reserver rather than a spinner. `sustain={false}` restores
+the old behaviour per call site.
+
+---
+
 ### lazy-observable
 
 | before                                        | after                                                    |
@@ -366,6 +459,48 @@ loading and error, with models built by hand. That is one call now: params are p
 the result is a `LazyObservableArray`, and records go through the model's identity map — so an edit
 made anywhere in the app shows up in it, and nothing needs disposing. Reach for it instead of putting
 a component's filter state on a shared store, which is what stops the store being shared.
+
+**`useSlowLoading` instead of hand-rolled skeleton timing.** The threshold-plus-floor behaviour that
+`[LOADING]` routes have always had is now public and used by `LazyObserver` and `<Table.Loading>`, so
+all three surfaces agree at 300/300. Reach for it directly wherever a component renders its own
+skeleton:
+
+```tsx
+const showSkeleton = useSlowLoading(!list.loaded);
+```
+
+Anything currently rendering a skeleton straight off `loading` is flashing it on fast responses.
+
+**Hand a lazy to a table instead of `.slice()`.** `rows` now accepts a _row source_ — anything with
+`value` and `fetching`, which `LazyObservableArray` satisfies:
+
+```tsx
+// before
+useTable({ rows: () => store.all.value.slice(), getRowId });
+
+// after
+useTable({ rows: store.all, getRowId });
+```
+
+The table tracks contents itself, so the `.slice()` footgun is gone. More importantly it can now
+distinguish a first load from an empty result, which is what removes this workaround:
+
+```tsx
+// before — or the table claims "no results" during the first fetch
+<Table.Empty>{list.loading ? undefined : <EmptyState />}</Table.Empty>
+
+// after — both slots gate themselves
+<Table.Empty>{table.rows.length ? "No matches" : "No users yet"}</Table.Empty>
+<Table.Loading><Skeleton /></Table.Loading>
+```
+
+`table.loading`, `table.refreshing` and `table.isEmpty` are available directly if you render your
+own. A refresh keeps its rows on screen and interactive rather than swapping in a skeleton, so
+scroll position, column arrangement and selection all survive it.
+
+⚠️ `<Table.Empty>` now gates itself on `table.isEmpty`. An existing outer gate
+(`{cond && <Table.Empty>}`) still works and is simply redundant. `table` still takes no dependency on
+`lazy-observable` — `RowSource` is a structural shape it declares itself.
 
 **`useLazy` instead of `useMemo(() => lazyObservable(…))` for a details page.** Loading one record
 in a component had no first-class shape, so the pattern was:

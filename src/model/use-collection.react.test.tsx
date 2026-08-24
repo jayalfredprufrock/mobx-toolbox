@@ -60,7 +60,7 @@ describe("useCollection", () => {
         ({ orgId }, options) => list({ orgId, ...options }),
         { params: { orgId } },
       );
-      return <span>{surveys.value.map((s) => s.title).join(",")}</span>;
+      return <span>{surveys.value?.map((s) => s.title).join(",") ?? ""}</span>;
     });
 
     const view = await render(Probe, "acme");
@@ -83,7 +83,7 @@ describe("useCollection", () => {
         ({ orgId }, options) => list({ orgId, ...options }),
         { params: { orgId } },
       );
-      return <span>{surveys.value.length}</span>;
+      return <span>{surveys.value?.length ?? 0}</span>;
     });
 
     const view = await render(Probe, "acme");
@@ -112,7 +112,7 @@ describe("useCollection", () => {
       lazy = useCollection(SurveyModel, ({ orgId }, options) => list({ orgId, ...options }), {
         params: { orgId },
       });
-      return <span>{lazy.value.map((s: any) => s.title).join(",")}</span>;
+      return <span>{lazy.value?.map((s: any) => s.title).join(",") ?? ""}</span>;
     });
 
     const view = await render(Probe, "acme");
@@ -124,7 +124,7 @@ describe("useCollection", () => {
     expect(view.container.textContent).toBe("Alpha");
     expect(lazy.fetching).toBe(true);
     expect(lazy.loading).toBe(false);
-    expect(lazy.status).toBe("loaded");
+    expect(lazy.loaded).toBe(true);
 
     await act(async () => release([{ id: 2, orgId: "globex", title: "Gamma" }]));
     expect(view.container.textContent).toBe("Gamma");
@@ -139,7 +139,7 @@ describe("useCollection", () => {
     );
     const Probe = observer(() => {
       const surveys = useCollection(SurveyModel, (options) => all(options));
-      return <span>{surveys.value.length}</span>;
+      return <span>{surveys.value?.length ?? 0}</span>;
     });
 
     const view = await render(Probe, "acme");
@@ -160,7 +160,7 @@ describe("useCollection", () => {
       lazy = useCollection(SurveyModel, ({ orgId }, options) => list({ orgId, ...options }), {
         params: { orgId },
       });
-      return <span>{lazy.value.map((s: any) => s.title).join(",")}</span>;
+      return <span>{lazy.value?.map((s: any) => s.title).join(",") ?? ""}</span>;
     });
 
     const view = await render(Probe, "acme");
@@ -168,12 +168,12 @@ describe("useCollection", () => {
 
     // Same record, same instance — identity is the model's, not the store's.
     const scoped = lazy.value[0];
-    expect(scoped).toBe(shared.all.value.find((s) => s.id === 1));
+    expect(scoped).toBe(shared.all.value!.find((s) => s.id === 1));
 
     // ...so an edit made anywhere is on screen here.
     await act(async () => void (await scoped.update({ title: "Renamed" })));
     expect(view.container.textContent).toBe("Renamed");
-    expect(shared.all.value.find((s) => s.id === 1)!.title).toBe("Renamed");
+    expect(shared.all.value!.find((s) => s.id === 1)!.title).toBe("Renamed");
 
     await view.unmount();
   });
@@ -185,7 +185,7 @@ describe("useCollection", () => {
       lazy = useCollection(SurveyModel, ({ orgId }, options) => list({ orgId, ...options }), {
         params: { orgId },
       });
-      return <span>{lazy.value.map((s: any) => s.title).join(",")}</span>;
+      return <span>{lazy.value?.map((s: any) => s.title).join(",") ?? ""}</span>;
     });
 
     const view = await render(Probe, "acme");
@@ -194,8 +194,10 @@ describe("useCollection", () => {
     await view.unmount();
 
     // The model holds its listeners weakly, so the store is garbage once the component lets go —
-    // and the list, still reachable from this test, has simply gone unobserved.
-    expect(lazy.value).toHaveLength(0);
-    expect(lazy.status).toBe("init");
+    // and the list, still reachable from this test, has simply gone unobserved: back to holding
+    // nothing, rather than to an empty list it never actually fetched.
+    expect(lazy.value).toBeUndefined();
+    expect(lazy.loaded).toBe(false);
+    expect(lazy.fetching).toBe(false);
   });
 });

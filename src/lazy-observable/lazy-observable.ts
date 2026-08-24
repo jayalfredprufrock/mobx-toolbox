@@ -1,5 +1,4 @@
 import {
-  isObservableArray,
   reaction,
   runInAction,
   type IObservableArray,
@@ -7,7 +6,6 @@ import {
   observable,
   onBecomeObserved,
   onBecomeUnobserved,
-  untracked,
 } from "mobx";
 
 /** Options for `invalidate()`. */
@@ -19,54 +17,95 @@ export interface LazyInvalidateOptions {
   discard?: boolean;
 }
 
-export interface LazyObservable<T = any, TInitialValue = T | undefined> {
-  value: TInitialValue;
+/**
+ * Everything about a lazy that does not depend on whether it holds a value.
+ *
+ * Three facts vary independently here, and none of them is derivable from the others — which is why
+ * there is no single `status` enum. `loaded` (below) says whether there is a value; `fetching` says
+ * whether a request is running; `error` says how the last request ended. A refresh that fails while
+ * a value is on screen is `loaded: true` *and* has an `error`, and both are true statements.
+ */
+export interface LazyObservableApi<T> {
   /**
-   * What this lazy currently *holds* — not what it is doing. A refresh that keeps its existing
-   * value stays `"loaded"`; use `fetching` to tell whether a request is in flight.
+   * How the last request ended, or `undefined` if it succeeded (or none has run). Cleared when a
+   * new request starts and on every success.
+   *
+   * An error does **not** clear the value: a failed refresh keeps showing what it had, so `error`
+   * and a readable `value` coexist. Check `loaded` to decide whether there is anything to render;
+   * `error` only tells you what happened last.
    */
-  status: "init" | "loading" | "loaded" | "error";
   error: unknown;
-  /** `true` when there is nothing to show yet and a request is in flight (`status === "loading"`). */
-  loading: boolean;
-  loaded: boolean;
   /**
-   * `true` whenever a request is in flight, including a background refresh that is still
-   * showing its previous value. `loading` is the subset of this with nothing to show yet.
+   * `true` when there is nothing to show yet and a request is in flight — that is,
+   * `!loaded && fetching`. The state a first-load spinner belongs to.
+   */
+  loading: boolean;
+  /**
+   * `true` whenever a request is in flight, including a background refresh that is still showing
+   * its previous value. `loading` is the subset of this with nothing to show yet.
    */
   fetching: boolean;
   /**
-   * When the current value landed, as epoch milliseconds, or `undefined` when nothing is held.
-   * Tracks the value itself: a refresh that keeps the old value keeps its original timestamp
-   * until the new one arrives, and a failed refresh leaves it untouched.
+   * When a request last succeeded, as epoch milliseconds, or `undefined` if none ever has.
+   *
+   * Named for the fetch rather than the value, because the two differ: a lazy seeded with
+   * `initialValue` is `loaded` with no `fetchedAt` (hydrated, never been to the network), and a
+   * failed refresh leaves the previous timestamp in place (still showing data from then).
    */
-  loadedAt: number | undefined;
+  fetchedAt: number | undefined;
   /**
-   * `true` while at least one reaction is observing `value`, `status`, or `error`.
-   * Observable, so it can be read reactively — reading it does not itself count as
-   * observing the value, so it never triggers a load.
+   * `true` while at least one reaction is observing `value`, `loaded`, `loading` or `error`.
+   * Observable, so it can be read reactively — reading it does not itself count as observing the
+   * value, so it never triggers a load.
    */
   observed: boolean;
-  /** Resolve with the current value, loading first if it isn't loaded. Joins a load already in flight. */
+  /**
+   * Resolve with the current value, loading first if there isn't one *or* the one held is stale.
+   * Joins a load already in flight rather than starting a second.
+   *
+   * Staleness counts, so `invalidate()` followed by `getOrLoad()` fetches rather than handing back
+   * the value being replaced — whether or not anything happens to be observing.
+   */
   getOrLoad(): Promise<T>;
   /** Always start a fresh load, abandoning any result already in flight. */
   reload(): Promise<T>;
   /**
-   * Write the value directly and mark it loaded, without fetching. Abandons any load in
-   * flight (so it cannot clobber this write) and detaches from dependency-driven refetching
-   * until the next load.
+   * Write the value directly and mark it loaded and fresh, without fetching — the value is treated
+   * as authoritative, so no load is owed. Abandons any load in flight (so it cannot clobber this
+   * write) and detaches from dependency-driven refetching until the next load.
+   *
+   * Contrast `initialValue`, which is loaded but still *stale*: a starting point that gets
+   * revalidated on first observation.
    */
   set(value: T): void;
   /**
-   * Mark the value stale and load again *if anyone is watching*. If nothing is observing, the
-   * load happens on next observation instead — the same rule that governs the very first load.
+   * Mark the value stale and load again *if anyone is watching*. If nothing is observing, the load
+   * happens on next observation — or on the next `getOrLoad()`, which counts staleness.
    *
-   * The current value stays readable while the refetch runs (`status` remains `"loaded"`,
-   * `fetching` becomes `true`), so a list doesn't blank out between a mutation and its
-   * refresh. Pass `{ discard: true }` to clear it first and show a fresh load instead.
+   * The current value stays readable while the refetch runs (`loaded` remains `true`, `fetching`
+   * becomes `true`), so a list doesn't blank out between a mutation and its refresh. Pass
+   * `{ discard: true }` to drop it first and show a fresh load instead.
    */
   invalidate(options?: LazyInvalidateOptions): void;
 }
+
+/**
+ * A lazy observable.
+ *
+ * `loaded` is a discriminant, so checking it narrows `value` — no separate `!== undefined` guard:
+ *
+ * ```ts
+ * if (list.loaded) list.value.map(render);   // value is T here
+ * ```
+ *
+ * Written as a union of two complete members rather than `Api & (A | B)`. Both narrow — TypeScript
+ * distributes the intersection — but `LazyObservableArray` cannot be: it has to `Omit` `set` from
+ * the API and replace it, and `Omit` over a union collapses it into one object, taking the
+ * discriminant with it. The two types are spelled the same way so they stay comparable.
+ */
+export type LazyObservable<T = any> =
+  | (LazyObservableApi<T> & { loaded: true; value: T })
+  | (LazyObservableApi<T> & { loaded: false; value: undefined });
 
 export interface LazyObservableOptions {
   /**
@@ -116,10 +155,16 @@ export interface LazyObservableOptions {
   debugName?: string;
 }
 
-export interface LazyObservableOptionsWithInitialValue<
-  TInitialValue,
-> extends LazyObservableOptions {
-  initialValue?: TInitialValue;
+export interface LazyObservableOptionsWithInitialValue<T> extends LazyObservableOptions {
+  /**
+   * A value to start with, before anything is fetched. The lazy reports `loaded` immediately and
+   * still counts as stale, so the first observation revalidates it — which is what makes this the
+   * right shape for hydration from SSR, storage, or a cache you already trust.
+   *
+   * Without it a lazy holds nothing (`loaded: false`, `value: undefined`) until a load lands. That
+   * distinction is the point: an empty array means "there are none", not "not known yet".
+   */
+  initialValue?: T;
 }
 
 const noop = (): void => {};
@@ -146,60 +191,107 @@ export interface LazyFetchOptions {
 /** Taking the argument is optional; zero-argument fetchers remain valid. */
 export type LazyFetch<T> = (options: LazyFetchOptions) => Promise<T>;
 
-export function lazyObservable<T>(fetch: LazyFetch<T>): LazyObservable<T>;
-export function lazyObservable<T>(
-  fetch: LazyFetch<T>,
-  options: LazyObservableOptions,
-): LazyObservable<T>;
-export function lazyObservable<T, TInitialValue>(
-  fetch: LazyFetch<T>,
-  options: LazyObservableOptionsWithInitialValue<TInitialValue>,
-): LazyObservable<T, TInitialValue>;
-
 export function lazyObservable<T>(
   fetch: LazyFetch<T>,
   options?: LazyObservableOptionsWithInitialValue<T>,
 ): LazyObservable<T> {
+  return createLazy(fetch, options);
+}
+
+/**
+ * The shared implementation behind `lazyObservable` and `lazyObservableArray`. The only difference
+ * between them is where the value lives — a box, or an observable array the lazy owns — so that is
+ * the one thing passed in, and every rule about loading, staleness, errors and observation is
+ * written once here.
+ */
+function createLazy<T>(
+  fetch: LazyFetch<T>,
+  options?: LazyObservableOptionsWithInitialValue<T>,
+  ownedArray?: IObservableArray<unknown>,
+): LazyObservable<T> {
   /**
-   * Where the value lives. An observable array — which `lazyObservableArray` seeds — is already an
-   * observable container, so it is owned directly rather than wrapped in a box. Wrapping it would
-   * create two layers with only the outer one deciding when loading starts, so iterating the array
-   * would track its contents without ever triggering a fetch; owning it means any read of the
-   * contents both tracks *and* loads.
+   * Where the value lives. `lazyObservableArray` passes an observable array it owns, which is
+   * already an observable container, so it is used directly rather than wrapped in a box. Wrapping
+   * it would create two layers with only the outer one deciding when loading starts, so iterating
+   * the array would track its contents without ever triggering a fetch; owning it means any read of
+   * the contents both tracks *and* loads.
    *
    * Updates then replace the array's contents in place, so `value` keeps its identity for the
    * lifetime of the lazy: a reference you hold stays valid. The trade is that the identity is no
-   * longer a signal — observe the contents, or `loadedAt`.
+   * longer a signal — observe the contents, or `fetchedAt`.
    */
-  const ownedArray = isObservableArray(options?.initialValue)
-    ? (options.initialValue as unknown as IObservableArray<unknown>)
-    : undefined;
-  // Untracked: mobx fires `onBecomeObserved` synchronously from the *first* read of an atom inside
-  // a tracking context, and only that once. Constructing a lazy during an `observer()` render puts
-  // this snapshot inside that context, so a tracked read here would spend the array's one
-  // transition before the hooks below are attached — leaving a lazy that is watched, never learns
-  // it, and so never loads.
-  const initialItems = ownedArray ? untracked(() => [...ownedArray]) : undefined;
   const box = ownedArray
     ? undefined
-    : observable.box<T>(options?.initialValue, { deep: options?.deep ?? true });
+    : observable.box<T | undefined>(options?.initialValue, { deep: options?.deep ?? true });
+
+  /**
+   * What a discard returns to. Arrays are snapshotted at construction, because the caller keeps a
+   * reference to the array they passed and mutating it must not change what a discard restores.
+   * Scalars are held as given, matching how the box would have stored them anyway.
+   */
+  const seed = (
+    Array.isArray(options?.initialValue) ? [...options.initialValue] : options?.initialValue
+  ) as T | undefined;
+
+  /**
+   * Whether there is a value at all — the authority behind `loaded`, rather than testing `value`
+   * for `undefined`.
+   *
+   * It has to be its own box for two reasons. The owned array always exists (identity must be
+   * stable from construction) so its emptiness says nothing about whether it has been filled; and
+   * `undefined` is a legitimate value for a scalar lazy, which a `value !== undefined` test would
+   * misread as "nothing here" — and then refetch forever, since `getOrLoad` would never see it as
+   * loaded.
+   *
+   * Only `applyValue` and `clearValue` below write to it, which is what keeps it in step with
+   * whichever container is holding the value.
+   */
+  const hasValue = observable.box(seed !== undefined);
 
   /** The observable that observation hooks attach to: the array itself, or the box. */
   const valueSource = (ownedArray ?? box) as IObservableArray<unknown>;
 
-  const readValue = (): T => (ownedArray ?? box!.get()) as T;
+  /**
+   * Reads a value if there is one, and *always* touches an observable on the way — otherwise a read
+   * that lands before the first load would return `undefined` without registering anything, and a
+   * lazy nothing observes never loads. That is the whole mechanism, so it is deliberately
+   * unconditional rather than short-circuiting on `hasValue`.
+   */
+  const readValue = (): T | undefined => {
+    const has = hasValue.get();
+    // Touch the container itself, not just the flag: for the array case this is what makes a
+    // contents read both track and load, and it must happen whether or not there is a value yet.
+    if (ownedArray) void ownedArray.length;
+    else void box!.get();
+    return has ? ((ownedArray ?? box!.get()) as T) : undefined;
+  };
 
   const applyValue = (next: T): void => {
     if (ownedArray) ownedArray.replace(next as unknown[]);
     else box!.set(next);
+    hasValue.set(true);
   };
-  const status = observable.box<LazyObservable<T>["status"]>("init");
+
+  /**
+   * Back to where the lazy started: the seed if there was one, otherwise holding nothing. The owned
+   * array is emptied rather than replaced, so a reference taken earlier stays valid.
+   */
+  const clearValue = (): void => {
+    if (seed !== undefined) {
+      applyValue(seed);
+      return;
+    }
+    if (ownedArray) ownedArray.clear();
+    else box!.set(undefined);
+    hasValue.set(false);
+  };
+
   const error = observable.box<unknown>(undefined);
 
   /**
    * Observation is *derived*, never counted: this holds whichever of the public boxes are
    * currently observed, and `observed` is simply whether that set is non-empty. A single
-   * shared counter miscounts any mix of consumers — a spinner reading `status` alongside a
+   * shared counter miscounts any mix of consumers — a spinner reading `loaded` alongside a
    * list reading `value` drove it to zero while the list was still mounted, silently
    * blanking it forever.
    */
@@ -207,21 +299,24 @@ export function lazyObservable<T>(
   const observed = observable.box(false);
 
   /**
-   * Staleness is its own box, deliberately not derived from `status`: the gate reaction
+   * Staleness is its own box, deliberately not derived from anything public: the gate reaction
    * below reads it, and reading a *public* box there would register the lazy's own reaction
    * as an observer of itself — it would report as permanently observed and never be lazy.
    */
   const stale = observable.box(true);
 
-  /** Whether a request is in flight. Separate from `status`, which describes what is held. */
+  /** Whether a request is in flight. Independent of whether a value is held. */
   const fetching = observable.box(false);
 
-  /** When the currently held value landed. Tracks the value, not the request. */
-  const loadedAt = observable.box<number | undefined>(undefined);
+  /**
+   * When a request last succeeded. Tracks the *fetch*, not the value: a seeded lazy holds a value
+   * with no `fetchedAt`, and a failed refresh keeps the previous one.
+   */
+  const fetchedAt = observable.box<number | undefined>(undefined);
 
   /**
    * When the last request finished, successfully or not. `reloadEvery` measures from here rather
-   * than from `loadedAt` so a failed reload waits a full interval instead of retrying instantly
+   * than from `fetchedAt` so a failed reload waits a full interval instead of retrying instantly
    * off an old value's timestamp.
    */
   const settledAt = observable.box<number | undefined>(undefined);
@@ -246,8 +341,9 @@ export function lazyObservable<T>(
 
   /**
    * Created only by `getOrLoad`/`reload`, i.e. only when a caller is actually awaiting a
-   * value. Loads triggered by observation have no deferred, so a failed background fetch
-   * surfaces through `error`/`status` instead of becoming an unhandled rejection.
+   * value. Loads triggered by observation have no deferred — there is no call stack to throw
+   * into — so a failed background fetch surfaces through `error` instead of becoming an
+   * unhandled rejection.
    */
   let pending: Deferred<T> | undefined;
 
@@ -299,9 +395,11 @@ export function lazyObservable<T>(
     pending = undefined;
 
     if ("error" in result) {
+      // The value is deliberately left alone: a refresh that fails keeps showing what it had, so
+      // `error` and a readable `value` coexist. Consumers decide from `loaded` whether there is
+      // anything to render, and from `error` what happened last.
       write(() => {
         error.set(result.error);
-        status.set("error");
         settledAt.set(Date.now());
         fetching.set(false);
       });
@@ -310,8 +408,7 @@ export function lazyObservable<T>(
       write(() => {
         applyValue(result.value);
         error.set(undefined);
-        status.set("loaded");
-        loadedAt.set(Date.now());
+        fetchedAt.set(Date.now());
         settledAt.set(Date.now());
         fetching.set(false);
       });
@@ -329,12 +426,11 @@ export function lazyObservable<T>(
     write(() => {
       stale.set(false);
       fetching.set(true);
-      // A refresh that still holds a value stays "loaded" so consumers keep rendering it;
-      // only a load with nothing to show claims "loading".
-      if (status.get() !== "loaded") {
-        error.set(undefined);
-        status.set("loading");
-      }
+      // Whatever value is held stays held — a refresh never blanks what is on screen; `loading`
+      // derives from `!loaded && fetching`, so a first load reports it and a refresh does not.
+      // The previous failure is cleared here: a request is running, so it is no longer the
+      // current state of affairs.
+      error.set(undefined);
     });
 
     let fetchPromise: Promise<T>;
@@ -386,14 +482,12 @@ export function lazyObservable<T>(
     write(() => {
       stale.set(true);
       fetching.set(false);
-      if (discard || status.get() !== "loaded") {
-        // For an owned array, reset its *contents*: `options.initialValue` is that same live array,
-        // so setting it back would leave the stale rows in place.
-        if (initialItems) applyValue(initialItems as T);
-        else box!.set(options?.initialValue);
+      if (discard || !hasValue.get()) {
+        // Back to `initialValue` — which for most lazies means holding nothing again, so a
+        // discarded list reads `undefined` rather than an empty array it could be mistaken for.
+        clearValue();
         error.set(undefined);
-        status.set("init");
-        loadedAt.set(undefined);
+        fetchedAt.set(undefined);
       }
     });
 
@@ -405,14 +499,14 @@ export function lazyObservable<T>(
 
   /**
    * MobX fires `onBecomeObserved` synchronously, which for an `observer()` component means *during
-   * its render*. Calling `startLoad()` there writes `status` mid-render, and if another mounted
+   * its render*. Calling `startLoad()` there writes observable state mid-render, and if another
    * component already observes this lazy, mobx-react-lite force-updates it while React is rendering
    * something else — which React rejects ("Cannot update a component while rendering a different
    * component").
    *
    * Deferring to a microtask moves the write just past the render pass. It still runs in the same
-   * task, well before any fetch could resolve, so the only observable difference is that `status`
-   * reads "init" rather than "loading" during that first render.
+   * task, well before any fetch could resolve, so the only observable difference is that `fetching`
+   * reads `false` during that first render.
    */
   const scheduleLoad = (): void => {
     if (loadScheduled) return;
@@ -455,7 +549,7 @@ export function lazyObservable<T>(
     const interval = options.reloadEvery;
     reaction(
       () =>
-        observed.get() && !fetching.get() && !stale.get() && loadedAt.get() !== undefined
+        observed.get() && !fetching.get() && !stale.get() && fetchedAt.get() !== undefined
           ? settledAt.get()
           : undefined,
       (anchor) => {
@@ -484,7 +578,7 @@ export function lazyObservable<T>(
     // across mounts, only successfully loaded values should.
     const keep = options?.keepOnUnobserved ?? false;
     // Unobserved data is dropped outright: nothing can be showing it, so there is nothing to keep.
-    if (status.get() === "error" || keep === false) {
+    if (error.get() !== undefined || keep === false) {
       drop(true);
     } else if (typeof keep === "object") {
       keepTimer = setTimeout(() => drop(true), keep.for);
@@ -492,7 +586,9 @@ export function lazyObservable<T>(
     // keep === true: hold the loaded value indefinitely.
   };
 
-  for (const source of [valueSource, status, error]) {
+  // What counts as "observing": the value itself, whether there is one, and how the last request
+  // ended. `fetching` is deliberately not here — a spinner watching it must not keep a lazy alive.
+  for (const source of [valueSource, hasValue, error]) {
     onBecomeObserved(source, () => {
       observedBoxes.add(source);
       syncObserved();
@@ -507,29 +603,29 @@ export function lazyObservable<T>(
     get value() {
       return readValue();
     },
-    get status() {
-      return status.get();
-    },
     get error() {
       return error.get();
     },
     get loading() {
-      return status.get() === "loading";
+      return !hasValue.get() && fetching.get();
     },
     get loaded() {
-      return status.get() === "loaded";
+      return hasValue.get();
     },
     get fetching() {
       return fetching.get();
     },
-    get loadedAt() {
-      return loadedAt.get();
+    get fetchedAt() {
+      return fetchedAt.get();
     },
     get observed() {
       return observed.get();
     },
     getOrLoad() {
-      if (status.get() === "loaded") return Promise.resolve(readValue());
+      // Staleness counts, not just presence: an invalidated lazy holds a value it has been told to
+      // replace, and a seeded one holds a value it has never verified. Both owe a fetch, and a
+      // caller who awaited deserves the result of it rather than the thing being superseded.
+      if (hasValue.get() && !stale.get()) return Promise.resolve(readValue() as T);
       const deferred = ensurePending();
       // Join a load already in flight rather than starting a second one.
       if (!fetching.get()) startLoad();
@@ -552,8 +648,10 @@ export function lazyObservable<T>(
       write(() => {
         applyValue(newValue);
         error.set(undefined);
-        status.set("loaded");
-        loadedAt.set(Date.now());
+        // A written value is authoritative, so it is fresh rather than merely present: no fetch is
+        // owed, and it is stamped as though a request had just produced it.
+        fetchedAt.set(Date.now());
+        settledAt.set(Date.now());
         stale.set(false);
         fetching.set(false);
       });
@@ -563,17 +661,32 @@ export function lazyObservable<T>(
     invalidate(invalidateOptions?: LazyInvalidateOptions) {
       drop(invalidateOptions?.discard ?? false);
     },
-  };
+    // `loaded` and `value` are getters over the same pair of boxes, so they always agree — but the
+    // compiler can only see two independent properties, not the union's guarantee.
+  } as LazyObservable<T>;
 }
 
-export interface LazyObservableArray<T = any> extends Omit<
-  // `value` is never undefined and never a different array: the lazy owns one observable array and
-  // replaces its contents on every load.
-  LazyObservable<IObservableArray<T>, IObservableArray<T>>,
-  "set"
-> {
+/**
+ * The API of a list lazy: everything a scalar one has, except that `set` takes a plain array —
+ * callers hand over data, not an observable container.
+ */
+type LazyArrayApi<T> = Omit<LazyObservableApi<IObservableArray<T>>, "set"> & {
   set(value: T[]): void;
-}
+};
+
+/**
+ * A lazy over a list. `value` is the *same* observable array for the lifetime of the lazy once
+ * there is one — loads replace its contents rather than the array — so a reference you hold stays
+ * valid. The trade is that the identity is no longer a change signal: observe the contents, or
+ * `fetchedAt`.
+ *
+ * `value` is `undefined` until the first load (or an explicit `initialValue`), because "no rows
+ * yet" and "zero rows" are different answers and only one of them is a fact. `loaded` narrows it,
+ * exactly as it does for a scalar lazy.
+ */
+export type LazyObservableArray<T = any> =
+  | (LazyArrayApi<T> & { loaded: true; value: IObservableArray<T> })
+  | (LazyArrayApi<T> & { loaded: false; value: undefined });
 
 export interface LazyObservableArrayOptions<T> extends LazyObservableOptions {
   initialValue?: T[];
@@ -583,16 +696,25 @@ export function lazyObservableArray<T>(
   fetch: LazyFetch<T[]>,
   options?: LazyObservableArrayOptions<T>,
 ): LazyObservableArray<T> {
-  // The array is created here and owned for the lifetime of the lazy: `value` is always the same
-  // `IObservableArray`, and loads replace its contents. `deep` applies to the array's *items*; the
-  // box itself is a ref, since the array it holds never changes.
+  // Created here and owned for the lifetime of the lazy, so `value` is the same array every time
+  // there is one and loads replace its contents. `deep` applies to the array's *items*.
+  //
+  // It is created even when nothing seeds it — identity has to be stable from the start — but it is
+  // not *exposed* until there is a value, so an unloaded lazy reads `undefined` rather than `[]`.
   const { deep, ...rest } = options ?? {};
   const items = observable.array<T>(options?.initialValue ?? [], { deep: deep ?? true });
-  return lazyObservable(fetch, {
-    ...rest,
-    initialValue: items,
-  }) as unknown as LazyObservableArray<T>;
+  // The internal generic is what `fetch` returns — a plain array — while the public type says
+  // `IObservableArray`, which is what `value` actually hands back. `applyValue` bridges them by
+  // replacing contents rather than assigning.
+  return createLazy<T[]>(
+    fetch,
+    { ...rest, initialValue: options?.initialValue },
+    items as unknown as IObservableArray<unknown>,
+  ) as unknown as LazyObservableArray<T>;
 }
 
-export type InferLazyObservable<O> =
-  O extends LazyObservableArray<infer T> ? T[] : O extends LazyObservable<infer T> ? T : never;
+/**
+ * The value type a lazy resolves to. Inferred off `getOrLoad` rather than the type itself, so it
+ * reads through the `loaded` union without needing to match either member.
+ */
+export type InferLazyObservable<O> = O extends { getOrLoad(): Promise<infer T> } ? T : never;

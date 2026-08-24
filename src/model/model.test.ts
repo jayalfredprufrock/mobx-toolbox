@@ -356,7 +356,7 @@ describe("makeStore", () => {
 
       expect(createFn).toHaveBeenCalledWith({ name: "Bob", email: "b@example.com" });
       expect(created.id).toBe(2);
-      expect(store.list.value[0]!.id).toBe(2);
+      expect(store.list.value![0]!.id).toBe(2);
     });
   });
 
@@ -370,7 +370,7 @@ describe("makeStore", () => {
       const users = await store.list.getOrLoad();
       store.remove(users[0]!);
       expect(store.list.value).toHaveLength(1);
-      expect(store.list.value[0]!.id).toBe(2);
+      expect(store.list.value![0]!.id).toBe(2);
     });
   });
 });
@@ -551,11 +551,11 @@ describe("makeStore with an identity-mapped model", () => {
   test("reloading a collection keeps the same model instances", async () => {
     const store = makeIdentifiedStore();
     await store.list.getOrLoad();
-    const held = store.list.value[0]!;
+    const held = store.list.value![0]!;
 
     await store.list.reload();
 
-    expect(store.list.value[0]).toBe(held);
+    expect(store.list.value![0]).toBe(held);
     expect(store.list.value).toHaveLength(2);
   });
 
@@ -563,13 +563,13 @@ describe("makeStore with an identity-mapped model", () => {
     const store = makeIdentifiedStore();
     await store.list.getOrLoad();
 
-    expect(await store.get({ id: 1 })).toBe(store.list.value[0]);
+    expect(await store.get({ id: 1 })).toBe(store.list.value![0]);
   });
 
   test("an update through one reference is visible through every other", async () => {
     const store = makeIdentifiedStore();
     await store.list.getOrLoad();
-    const fromList = store.list.value[0]!;
+    const fromList = store.list.value![0]!;
     const fromGet = await store.get({ id: 1 });
 
     await fromGet.update({ name: "Renamed" });
@@ -581,7 +581,7 @@ describe("makeStore with an identity-mapped model", () => {
     const data = rows();
     const store = makeIdentifiedStore(data);
     await store.list.getOrLoad();
-    const held = store.list.value[0]!;
+    const held = store.list.value![0]!;
 
     data[0]!.name = "Changed on the server";
     await store.list.reload();
@@ -592,7 +592,7 @@ describe("makeStore with an identity-mapped model", () => {
   test("create does not duplicate a record the collection already holds", async () => {
     const store = makeIdentifiedStore();
     await store.list.getOrLoad();
-    const existing = store.list.value[0]!;
+    const existing = store.list.value![0]!;
 
     const created = await store.create({ id: 1, name: "Alice", email: "alice@example.com" });
 
@@ -606,7 +606,7 @@ describe("makeStore with an identity-mapped model", () => {
 
     const created = await store.create({ id: 3, name: "Cara", email: "cara@example.com" });
 
-    expect(store.list.value[0]).toBe(created);
+    expect(store.list.value![0]).toBe(created);
     expect(store.list.value).toHaveLength(3);
   });
 });
@@ -629,10 +629,10 @@ describe("makeStore from a model class", () => {
     });
 
     await store.list.getOrLoad();
-    const held = store.list.value[0]!;
+    const held = store.list.value![0]!;
 
     await store.list.reload();
-    expect(store.list.value[0]).toBe(held);
+    expect(store.list.value![0]).toBe(held);
   });
 
   test("the schema comes from the model, so it is declared once", async () => {
@@ -650,7 +650,7 @@ describe("makeStore from a model class", () => {
     const store = createStore(UserModel, { collections: { list: () => Promise.resolve(rows()) } });
 
     await store.list.getOrLoad();
-    await store.list.value[0]!.delete();
+    await store.list.value![0]!.delete();
 
     expect(deleteFn).toHaveBeenCalledWith({ id: 1 });
     expect(store.list.value).toHaveLength(1);
@@ -668,7 +668,7 @@ describe("makeStore from a model class", () => {
     });
 
     await store.list.getOrLoad();
-    expect(store.list.value[0]!.label).toBe("admin:Alice");
+    expect(store.list.value![0]!.label).toBe("admin:Alice");
   });
 
   test("a keyless model class still works, just without identity", async () => {
@@ -676,11 +676,11 @@ describe("makeStore from a model class", () => {
     const store = createStore(UserModel, { collections: { list: () => Promise.resolve(rows()) } });
 
     await store.list.getOrLoad();
-    const held = store.list.value[0]!;
+    const held = store.list.value![0]!;
     await store.list.reload();
 
-    expect(store.list.value[0]).not.toBe(held);
-    expect(store.list.value[0]!.name).toBe("Alice");
+    expect(store.list.value![0]).not.toBe(held);
+    expect(store.list.value![0]!.name).toBe("Alice");
   });
 
   test("a union model class is accepted too", async () => {
@@ -696,7 +696,7 @@ describe("makeStore from a model class", () => {
     });
 
     await store.list.getOrLoad();
-    const payment = store.list.value[0]!;
+    const payment = store.list.value![0]!;
     expect(payment.is("card") && payment.cardNumber).toBe("4242");
   });
 
@@ -846,7 +846,7 @@ describe("model statics", () => {
     const user = await UserModel.get({ id: 1 });
     const store = new UserStore();
     await store.list.getOrLoad();
-    expect(store.list.value[0]).toBe(user); // identity, not ownership
+    expect(store.list.value![0]).toBe(user); // identity, not ownership
 
     await user.delete();
 
@@ -1048,10 +1048,10 @@ describe("identity modes", () => {
       });
 
       await store.list.getOrLoad();
-      const held = store.list.value[0]!;
+      const held = store.list.value![0]!;
       await store.list.reload();
 
-      expect(store.list.value[0]).not.toBe(held);
+      expect(store.list.value![0]).not.toBe(held);
     });
   });
 });

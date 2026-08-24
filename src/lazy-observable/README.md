@@ -14,15 +14,34 @@ The fetch function runs the first time the observable is accessed inside a react
 
 ### Properties
 
-| Property   | Type                                         | Description                                                         |
-| ---------- | -------------------------------------------- | ------------------------------------------------------------------- |
-| `value`    | `T \| TInitialValue`                         | Current value (`undefined` until loaded)                            |
-| `status`   | `"init" \| "loading" \| "loaded" \| "error"` | What is currently _held_ (not what is happening)                    |
-| `loading`  | `boolean`                                    | `true` when there is nothing to show yet and a request is in flight |
-| `fetching` | `boolean`                                    | `true` whenever a request is in flight, refreshes included          |
-| `loaded`   | `boolean`                                    | `true` when status is `"loaded"`                                    |
-| `error`    | `unknown`                                    | Last fetch error                                                    |
-| `observed` | `boolean`                                    | `true` while something is observing this lazy                       |
+| Property    | Type                  | Description                                                           |
+| ----------- | --------------------- | --------------------------------------------------------------------- |
+| `value`     | `T \| undefined`      | The value, or `undefined` when there isn't one                        |
+| `loaded`    | `boolean`             | Whether there is a value — **narrows `value`**                        |
+| `loading`   | `boolean`             | Nothing to show yet _and_ a request in flight (`!loaded && fetching`) |
+| `fetching`  | `boolean`             | A request is in flight, refreshes included                            |
+| `error`     | `unknown`             | How the last request ended; `undefined` if it succeeded               |
+| `fetchedAt` | `number \| undefined` | When a request last succeeded                                         |
+| `observed`  | `boolean`             | `true` while something is observing this lazy                         |
+
+Three facts vary independently here, and none is derivable from the others:
+
+- **`loaded`** — is there a value? Decides what renders.
+- **`fetching`** — is a request running?
+- **`error`** — how did the last request end?
+
+A refresh that fails while data is on screen is `loaded: true` _and_ has an `error`. Both are true
+statements, and there is no single enum value that says so — which is why there isn't one.
+
+#### `loaded` narrows `value`
+
+`loaded` is a discriminant, so checking it is all the guard you need:
+
+```ts
+if (list.loaded) {
+  list.value.map(render); // `value` is T here — no `!`, no `!== undefined`
+}
+```
 
 ### Methods
 
@@ -36,8 +55,8 @@ lazy.invalidate({ discard: true }); // → void — same, but clear the value fi
 
 #### Refreshing without blanking
 
-`status` describes what the lazy _holds_; `fetching` describes whether a request is in flight. A
-refresh that already has a value stays `"loaded"` and merely flips `fetching`, so the data keeps
+`loaded` describes what the lazy _holds_; `fetching` describes whether a request is in flight. A
+refresh that already has a value stays `loaded` and merely flips `fetching`, so the data keeps
 rendering instead of flashing empty between a mutation and its refetch:
 
 ```tsx
@@ -49,17 +68,21 @@ const SurveyList = observer(() => {
 });
 ```
 
-| situation                  | `status`    | `loaded` | `loading` | `fetching` |
-| -------------------------- | ----------- | -------- | --------- | ---------- |
-| first load                 | `"loading"` | `false`  | `true`    | `true`     |
-| loaded, idle               | `"loaded"`  | `true`   | `false`   | `false`    |
-| refreshing (default)       | `"loaded"`  | `true`   | `false`   | `true`     |
-| refreshing after `discard` | `"loading"` | `false`  | `true`    | `true`     |
-| refresh failed             | `"error"`   | `false`  | `false`   | `false`    |
+| situation                  | `value`     | `loaded` | `loading` | `fetching` | `error` |
+| -------------------------- | ----------- | -------- | --------- | ---------- | ------- |
+| nothing yet                | `undefined` | `false`  | `false`   | `false`    | —       |
+| first load                 | `undefined` | `false`  | `true`    | `true`     | —       |
+| first load failed          | `undefined` | `false`  | `false`   | `false`    | set     |
+| loaded, idle               | value       | `true`   | `false`   | `false`    | —       |
+| refreshing (default)       | value       | `true`   | `false`   | `true`     | —       |
+| refreshing after `discard` | `undefined` | `false`  | `true`    | `true`     | —       |
+| **refresh failed**         | **value**   | **true** | `false`   | `false`    | **set** |
 
-A failed refresh reports the error but leaves the previous value readable on `value`. Pass
-`{ discard: true }` when stale data would be misleading rather than helpful — a filter change, or
-switching to a different record.
+That last row is the one worth reading twice. A failed refresh keeps the previous value readable and
+records the error — so `error` alone never means "there is nothing to show". Check `loaded` for that.
+
+Pass `{ discard: true }` when stale data would be misleading rather than helpful — a filter change,
+or switching to a different record.
 
 #### Demand vs. staleness
 
@@ -103,13 +126,18 @@ old it gets.
 A failed reload reports its error and is retried on the next interval — a transient failure won't
 leave a dashboard frozen.
 
-If you'd rather decide when to refresh yourself, `loadedAt` records when the current value landed:
+If you'd rather decide when to refresh yourself, `fetchedAt` records when a request last
+succeeded:
 
 ```tsx
 useEffect(() => {
-  if (surveys.loadedAt && Date.now() - surveys.loadedAt > 300_000) surveys.invalidate();
+  if (surveys.fetchedAt && Date.now() - surveys.fetchedAt > 300_000) surveys.invalidate();
 }, []);
 ```
+
+It tracks the _fetch_, not the value, and the two genuinely differ: a lazy seeded with
+`initialValue` is `loaded` with no `fetchedAt` (hydrated, never been to the network), and a failed
+refresh leaves the previous timestamp in place (still showing data from then).
 
 `invalidate()` replaces the old `reset()`. `reset()` promised inertness but had to reload when
 observed — otherwise a mounted component sat at its initial value forever, with no spinner, no
@@ -126,7 +154,7 @@ an explicit write.
 
 ```ts
 lazyObservable(fetch, {
-  initialValue: [], // default value before loading (also typed as TInitialValue)
+  initialValue: seed, // start loaded with this, and still revalidate — default: none
   deep: false, // convert the value's contents to observables? — default: true
   keepOnUnobserved: true, // false | true | { for: ms } — default: false
   trackDependencies: true, // false | true | { throttle: ms } — default: false
@@ -245,26 +273,53 @@ read of the array's contents — `.slice()`, `.length`, iterating it — both tr
 the lazy observed, so it fetches. A boxed array would have split those two jobs across two layers.
 
 ```ts
-autorun(() => render(users.value.slice())); // tracks contents *and* triggers the load
+autorun(() => render(users.value?.slice())); // tracks contents *and* triggers the load
 ```
+
+Reading `value` registers observation **even when there is nothing there yet** — that is what makes
+the first load happen at all. Optional chaining is fine; the read still counts.
 
 `deep` applies to the array's items. Pass `deep: false` for rows that are already observable, such
 as models, so nothing is converted on the way in.
 
 The trade for a stable reference: **the identity is no longer a signal that data arrived.** Observe
-the contents, or observe `loadedAt`:
+the contents, or observe `fetchedAt`:
 
 ```ts
 // ✅ a load landed
 reaction(
-  () => users.loadedAt,
+  () => users.fetchedAt,
   () => persist(users.value),
 );
-// ❌ never fires again — the reference never changes
+// ❌ fires once, when the first load fills it in, then never again
 reaction(
   () => users.value,
   (items) => persist(items),
 );
+```
+
+Identity is stable **from the first load onward**. Before that `value` is `undefined`, and a
+`discard` (or going unobserved) returns it to `undefined` — but the array itself is never replaced,
+so a reference taken earlier is still valid when the next load fills it back in.
+
+### Nothing yet is not the same as nothing
+
+`value` is `undefined` until a load lands, not `[]`:
+
+```ts
+const rows = lazyObservableArray(api.listSurveys);
+
+rows.value; // undefined — "not known yet"
+await rows.getOrLoad();
+rows.value; // [] — "there are none"
+```
+
+An empty array as the starting value would be a claim about the data that nothing had checked, and
+it is the reason table empty-states used to need `list.loading ? undefined : <Empty/>` wired by hand.
+If you want that behaviour on purpose, ask for it — and it means what it says:
+
+```ts
+lazyObservableArray(api.listSurveys, { initialValue: [] }); // loaded, zero rows, still revalidates
 ```
 
 ## `useLazy` / `useLazyArray`
@@ -312,7 +367,8 @@ recompute, which would rebuild the lazy and silently drop what it had loaded. Se
 
 ## `LazyObserver` component
 
-Renders nothing (or a `placeholder`) while observables are loading, and renders children once all are loaded. Re-throws any observable error so it propagates to an error boundary.
+Renders `children` once every observed lazy holds a value, a `placeholder` while they don't, and
+re-throws a failure that leaves nothing to render so an error boundary can take over.
 
 ```tsx
 import { LazyObserver } from "@jayalfredprufrock/mobx-toolbox/lazy-observable";
@@ -330,11 +386,55 @@ import { LazyObserver } from "@jayalfredprufrock/mobx-toolbox/lazy-observable";
 </LazyObserver>
 ```
 
+### The placeholder waits before it appears
+
+A request that resolves in 60 ms would otherwise produce a 60 ms skeleton — long enough to see, too
+short to read, on every navigation. So the placeholder is held back until the wait has lasted 300 ms,
+and then kept up for at least 300 ms. A fast load renders **nothing at all** in between.
+
+```tsx
+<LazyObserver observe={users} placeholder={<Spinner />} sustain={false}>      // show it at once
+<LazyObserver observe={users} placeholder={<Spinner />} sustain={{ after: 100 }}>
+```
+
+With the tuple form the clock runs off the _combined_ gate — it starts when the first value is
+missing and resets once they are all present — rather than per-lazy. The timing is
+[`useSlowLoading`](../util/README.md#useslowloading), which you can use directly for a component
+that renders its own skeleton.
+
+### What it throws, and what it doesn't
+
+Only a failure with **nothing to render** reaches the boundary:
+
+| state                   | renders                     |
+| ----------------------- | --------------------------- |
+| error, nothing loaded   | re-throws to the boundary   |
+| error, value still held | `children`, with that value |
+
+A failed _refresh_ keeps the screen it has. Throwing there would destroy working data over a
+background request, and the error is still readable on the lazy for anyone who wants to surface it.
+
+Note also that the gate is `loaded`, not `fetching`: a reload that keeps its value renders
+`children` throughout, so a refresh never blanks the page.
+
+### Why a failed load can't just throw
+
+`lazyObservable` captures errors rather than throwing them, and that is structural rather than a
+preference. Loads are triggered by _observation_ — when a component renders, reads `value`, and that
+starts a fetch, there is no call stack belonging to anyone. Throwing from inside a MobX reaction
+produces an unhandled rejection no error boundary can catch, and the render that caused it finished
+long ago.
+
+The explicit path does throw: `await lazy.getOrLoad()` and `await lazy.reload()` reject normally.
+Both behaviours exist, split by whether there is a caller to throw at — and `LazyObserver` is what
+turns a captured error back into one a boundary can see.
+
 ## Key types
 
 ```ts
 import type {
   LazyObservable, // the object returned by lazyObservable() and useLazy()
+  LazyObservableApi, // the half of it that doesn't depend on `loaded`
   LazyObservableArray, // the object returned by lazyObservableArray() and useLazyArray()
   LazyObservableOptions, // options for lazyObservable()
   LazyInvalidateOptions, // options for invalidate()

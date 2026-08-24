@@ -241,7 +241,7 @@ describe("useLazyArray", () => {
       <Observer>
         {() => {
           const rows = useLazyArray(async () => ["a", "b"], []);
-          return <span>{rows.value.join(",")}</span>;
+          return <span>{rows.value?.join(",") ?? "loading"}</span>;
         }}
       </Observer>,
     );
@@ -261,7 +261,8 @@ describe("useLazyArray", () => {
         <Observer>
           {() => {
             const rows = useLazyArray(async () => ["a"], []);
-            arrays.push(rows.value);
+            // only once there is one — the point is that it never changes after that
+            if (rows.value) arrays.push(rows.value);
             return <span>{n}</span>;
           }}
         </Observer>
@@ -286,8 +287,8 @@ describe("useLazyArray", () => {
         <Observer>
           {() => {
             const rows = useLazyArray(async () => [`row ${id}`], [id]);
-            arrays.push(rows.value);
-            return <span>{rows.value.join(",")}</span>;
+            if (rows.value) arrays.push(rows.value);
+            return <span>{rows.value?.join(",") ?? "loading"}</span>;
           }}
         </Observer>
       );

@@ -228,6 +228,55 @@ describe("useModel", () => {
     expect(get).toHaveBeenCalledTimes(2);
   });
 
+  test("a keyless model takes no params argument, and its get sees the fetch options", async () => {
+    const SettingsSchema = T.Object({ theme: T.String() });
+    const seen: unknown[] = [];
+    const SettingsModel = makeModel(SettingsSchema, {
+      keys: [],
+      get: async (...args: unknown[]) => {
+        seen.push(args);
+        return { theme: "dark" };
+      },
+    });
+
+    const Probe = observer(() => {
+      const settings = useModel(SettingsModel);
+      return <span>{settings.value?.theme ?? "loading"}</span>;
+    });
+
+    const { container } = await mount(<Probe />);
+    await act(async () => {});
+
+    expect(container.textContent).toBe("dark");
+    // the fetch options land first — no `undefined` placeholder ahead of them, which would have
+    // gone into whatever the endpoint's first parameter is
+    expect(seen).toHaveLength(1);
+    const args = seen[0] as unknown[];
+    expect(args[0]).toHaveProperty("signal");
+  });
+
+  test("a keyless model still accepts lazy options in the second slot", async () => {
+    const SettingsSchema = T.Object({ theme: T.String() });
+    const SettingsModel = makeModel(SettingsSchema, {
+      keys: [],
+      get: async () => ({ theme: "dark" }),
+    });
+
+    let lazy!: any;
+    const Probe = observer(() => {
+      lazy = useModel(SettingsModel, { keepOnUnobserved: true });
+      return <span>{lazy.value?.theme ?? "loading"}</span>;
+    });
+
+    const view = await mount(<Probe />);
+    await act(async () => {});
+    expect(lazy.loaded).toBe(true);
+
+    // the options really were applied: the value survives going unobserved
+    await view.unmount();
+    expect(lazy.loaded).toBe(true);
+  });
+
   test("shares instances with an app-wide store", async () => {
     const { StudyModel } = setup();
     class Studies extends makeStore(StudyModel) {

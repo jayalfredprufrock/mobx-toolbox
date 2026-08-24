@@ -35,6 +35,20 @@ these are right.
 
 No API changed here — one default did.
 
+**The route-component prop types lost their `Component` infix.** A pure rename — same shapes, same
+behaviour:
+
+| before                  | after          |
+| ----------------------- | -------------- |
+| `PageComponentProps`    | `PageProps`    |
+| `WrapperComponentProps` | `WrapperProps` |
+| `ErrorComponentProps`   | `ErrorProps`   |
+| `LoadingComponentProps` | `LoadingProps` |
+
+Find-and-replace on the type names is the whole migration. If `PageProps` collides with something in
+your app — a framework generates one under that name — alias it at the import:
+`import type { PageProps as RoutePageProps } from "@jayalfredprufrock/mobx-toolbox/router"`.
+
 ⚠️ **Redirects now replace the history entry instead of pushing one.** This applies to every
 redirect: a `[REDIRECT]` leaf and a `redirect()` thrown from a guard or loader.
 `router.navigate()` and `<Link>` are unaffected — those are ordinary navigations and still push.
@@ -506,12 +520,43 @@ the result is a `LazyObservableArray`, and records go through the model's identi
 made anywhere in the app shows up in it, and nothing needs disposing. Reach for it instead of putting
 a component's filter state on a shared store, which is what stops the store being shared.
 
-**Typed route props, if loading lives in the route file.** `PageComponentProps` and
-`WrapperComponentProps` now take an optional path, and resolve `route` against the augmented route
+**Typed `route.context` in guards and loaders.** `route.context` has always been
+`Record<string, any>`. Declare its shape by augmenting `MobxRouterContext`, alongside the
+`MobxRouter` augmentation you already have:
+
+```ts
+declare module "@jayalfredprufrock/mobx-toolbox/router" {
+  interface MobxRouterContext {
+    public: boolean;
+    requiredRole?: string;
+  }
+}
+```
+
+```tsx
+[GUARD]: async (route) => {
+  if (!route.context.public) throw redirect({ to: "/login" }); // boolean, not any
+};
+```
+
+**Nothing to migrate** — without the augmentation `route.context` is exactly what it was.
+
+Two things worth knowing before you reach for it. It describes the **app**, not a path: context
+merges down the tree, so the interface is the union of what any level may contribute — mark a key
+optional if only some branches set it. And nothing checks it against your `[CONTEXT]` declarations;
+it is an assertion about them.
+
+This exists because a guard or loader **cannot** name a path-derived type: both live inside the
+object `makeRoutes()` is inferring, and the computed types resolve through that same object, so
+annotating one collapses the route tree to `any`. Components outside the tree don't need it —
+`PageProps<"/path">` computes the exact context in force there.
+
+**Typed route props, if loading lives in the route file.** `PageProps` and
+`WrapperProps` now take an optional path, and resolve `route` against the augmented route
 tree:
 
 ```tsx
-const StudyPage = ({ route }: PageComponentProps<"/org/:orgId/studies/:studyId">) => {
+const StudyPage = ({ route }: PageProps<"/org/:orgId/studies/:studyId">) => {
   route.params.studyId; // string
   route.data.study; // that level's [LOAD] payload
   route.data.org; // ...and every ancestor's, merged
@@ -527,7 +572,7 @@ Wrappers take a `RoutePrefix` rather than a `RoutePath`, because the level a wra
 addresses no page and so never appears in `RoutePath`:
 
 ```tsx
-const OrgShell = ({ route, children }: WrapperComponentProps<"/org/:orgId">) => route.data.org;
+const OrgShell = ({ route, children }: WrapperProps<"/org/:orgId">) => route.data.org;
 ```
 
 **Nothing to migrate.** Both types keep working with no argument — that is still the untyped `Route`.
@@ -616,7 +661,8 @@ useModel(StudyModel, { id, orgId }); // can't desync
 Params are typed from the model's `keys`, compared shallowly, and key order is not a change. The
 result is an ordinary `lazyObservable` over the model's `get`, so it honours the model's `cache`,
 aborts superseded requests, and hands back the identity-mapped instance. A model with no key params
-takes `undefined`.
+(`keys: []` or `keys: false`) takes no params argument at all — `useModel(SettingsModel)`, with any
+options moving up into the second slot.
 
 `useCollection` is unchanged and keeps its name — `useModel` / `useCollection` reads as singular and
 plural, and both take a model as their first argument.

@@ -304,7 +304,7 @@ interface RouteLevel {
 This is what lets route-level metadata — breadcrumbs, sub-navigation, per-level analytics — live in the wrapper instead of in the route file, without hardcoding a path the route tree already knows:
 
 ```tsx
-const OrgScope = observer(({ route, level, children }: WrapperComponentProps) => (
+const OrgScope = observer(({ route, level, children }: WrapperProps) => (
   <CrumbScope crumb={{ to: level.pattern, label: route.data.organization?.name }}>
     {children}
   </CrumbScope>
@@ -316,7 +316,7 @@ const OrgScope = observer(({ route, level, children }: WrapperComponentProps) =>
 **`pattern` is `undefined` when the level addresses no page of its own.** A nesting level with no `index` child isn't navigable, and deriving a path for it would produce one that 404s. The optionality is the check — if `pattern` is there, it's a real destination:
 
 ```tsx
-const Crumb = ({ level, children }: WrapperComponentProps) =>
+const Crumb = ({ level, children }: WrapperProps) =>
   level.pattern ? <Link to={level.pattern}>{children}</Link> : <span>{children}</span>;
 ```
 
@@ -327,7 +327,7 @@ Two things to know about the mapping between levels and components:
 - **A page's level is its own, not its parent's.** `responses: ResponsesPage` gets `/…/:surveyId/responses`, while the `[WRAPPER]` above it gets `/…/:surveyId`. An `index` page shares its parent's pattern, because that is the path it renders at.
 - **Levels and outlets do not line up one-to-one.** A level declaring both `[WRAPPER]` and `[LOAD]` produces two outlets that share one level; a level with neither produces none. So `level.index` counts levels, not rendered slots — don't use it to index into `route.outlets`.
 
-On a synthetic error route (see [`[ERROR]`](#error--error-handling)) the surviving wrappers keep their levels, and the `[ERROR]` component receives the level that failed. It is the one place `level` may be absent — hence `ErrorComponentProps.level?` — when nothing matched at all.
+On a synthetic error route (see [`[ERROR]`](#error--error-handling)) the surviving wrappers keep their levels, and the `[ERROR]` component receives the level that failed. It is the one place `level` may be absent — hence `ErrorProps.level?` — when nothing matched at all.
 
 ## `[REDIRECT]` — redirects
 
@@ -443,13 +443,50 @@ const routes = makeRoutes()({
 });
 ```
 
+### Typing the context
+
+`route.context` is `Record<string, any>` by default. Declare its shape by augmenting
+`MobxRouterContext`, the same way you augment `MobxRouter` with your routes:
+
+```ts
+declare module "@jayalfredprufrock/mobx-toolbox/router" {
+  interface MobxRouterContext {
+    requiredRole: string;
+    public?: boolean;
+  }
+}
+```
+
+Guards and loaders then read it typed, with unknown keys caught:
+
+```tsx
+const checkRole: Guard = async (route) => {
+  route.context.requiredRole; // string
+  route.context.nope; // ✗ never declared
+};
+```
+
+**Why an augmented interface and not the path.** A `[GUARD]` or `[LOAD]` lives _inside_ the object
+`makeRoutes()` is inferring, and the path-derived types resolve through `MobxRouter["routes"]` — that
+same object. Annotating a guard with one collapses the whole route tree to `any` (TS7022), the same
+self-reference that keeps `[REDIRECT]` targets checked at runtime rather than by the compiler.
+`MobxRouterContext` stands on its own, so it reaches where the computed types can't.
+
+**It describes the app, not a path.** Context merges down the tree, so the interface is the union of
+what any level may contribute — mark a key optional if only some branches set it. Nothing verifies
+the interface against your `[CONTEXT]` declarations; it is an assertion about them.
+
+Outside the route tree you don't need it:
+[`PageProps<"/path">`](#typed-props-from-a-path) computes the exact context in force at that path,
+which is strictly more precise. The augmentation is for the places that can't reach it.
+
 ## `[ERROR]` — error handling
 
 `[ERROR]` sets the component rendered when navigation or loading fails at or below that level. Like `[LAYOUT]`, it inherits down the tree and can be overridden. The error UI renders **inside** the `[LAYOUT]` and `[WRAPPER]`s of the matched route prefix — an access-denied message shows up within the current app shell, not on a bare page. The attempted URL is preserved (no redirect).
 
 ```tsx
 import { ERROR, RouterError } from "@mobx-toolbox/router";
-import type { ErrorComponentProps } from "@mobx-toolbox/router";
+import type { ErrorProps } from "@mobx-toolbox/router";
 
 const routes = makeRoutes()({
   [LAYOUT]: AppShell,
@@ -462,7 +499,7 @@ const routes = makeRoutes()({
   },
 });
 
-function AppError({ error, route }: ErrorComponentProps) {
+function AppError({ error, route }: ErrorProps) {
   if (error.type === "NOT_FOUND") return <NotFound404 path={error.path} />;
   if (error.cause instanceof AccessDeniedError) return <AccessDenied />;
   return <SomethingWentWrong error={error} />;
@@ -507,7 +544,7 @@ const RedirectHome = () => {
   return null;
 };
 
-const AppError = ({ error }: ErrorComponentProps) =>
+const AppError = ({ error }: ErrorProps) =>
   error.type === "NOT_FOUND" ? <RedirectHome /> : <SomethingWentWrong error={error} />;
 ```
 
@@ -667,7 +704,7 @@ const routes = makeRoutes()({
   },
 });
 
-function AppSkeleton({ route }: LoadingComponentProps) {
+function AppSkeleton({ route }: LoadingProps) {
   return <SkeletonGrid />;
 }
 ````
@@ -829,9 +866,9 @@ If you do keep loading in the route file, name the path a component sits on and 
 against the route tree:
 
 ```tsx
-import type { PageComponentProps } from "@jayalfredprufrock/mobx-toolbox/router";
+import type { PageProps } from "@jayalfredprufrock/mobx-toolbox/router";
 
-const StudyPage = ({ route }: PageComponentProps<"/org/:orgId/studies/:studyId">) => {
+const StudyPage = ({ route }: PageProps<"/org/:orgId/studies/:studyId">) => {
   route.params.studyId; // string — from the path
   route.data.study; // whatever that level's [LOAD] resolves to
   route.data.org; // ...and every ancestor's, merged in
@@ -842,7 +879,7 @@ const StudyPage = ({ route }: PageComponentProps<"/org/:orgId/studies/:studyId">
 The path is written out rather than inferred because the component cannot import the route tree that
 imports it. A mistyped path is a compile error, and the path argument autocompletes.
 
-**Omitting it changes nothing.** `PageComponentProps` with no argument is the untyped `Route` it has
+**Omitting it changes nothing.** `PageProps` with no argument is the untyped `Route` it has
 always been, so existing components need no edit and pay nothing — an app that never names a path
 costs about a dozen extra type instantiations for the feature existing at all.
 
@@ -859,24 +896,35 @@ segment, exactly as they do at runtime.
 ### Wrappers sit on prefixes
 
 A `[WRAPPER]` usually lives on a nesting level that addresses no page of its own, so its path is not
-in `RoutePath`. `WrapperComponentProps` takes a `RoutePrefix` instead — any prefix of any route path:
+in `RoutePath`. `WrapperProps` takes a `RoutePrefix` instead — any prefix of any route path:
 
 ```tsx
-const OrgShell = ({ route, children }: WrapperComponentProps<"/org/:orgId">) => {
+const OrgShell = ({ route, children }: WrapperProps<"/org/:orgId">) => {
   route.data.org; // guaranteed here
   // route.data.studies — not typed: a descendant's loader, and this wrapper renders for siblings too
 };
 ```
 
-That asymmetry is the point: `PageComponentProps` rejects a path with no page, `WrapperComponentProps`
+That asymmetry is the point: `PageProps` rejects a path with no page, `WrapperProps`
 accepts the levels wrappers actually live on.
+
+### Guards and loaders can't use this
+
+A `[GUARD]` or `[LOAD]` is written _inside_ the route tree, and these types resolve through
+`MobxRouter["routes"]` — the object being inferred. Naming one from a guard collapses the tree to
+`any` (TS7022). It is the same self-reference that keeps `[REDIRECT]` targets checked at runtime.
+
+For the case that comes up in practice — a root guard reading a flag off `route.context` — declare
+the shape instead: [typing the context](#typing-the-context). `route.params` and `route.data` stay
+untyped in a guard; params are usually read from the path the guard is guarding, and `data` is empty
+during guards anyway, since they run before loaders.
 
 ### Why `[ERROR]` and `[LOADING]` are not path-typed
 
 Neither is guaranteed the data a path implies. **Error routes never run ancestor `[LOAD]` loaders**,
 so a typed `route.data` on an `[ERROR]` component would name fields that are reliably absent — and a
 `[LOADING]` component renders precisely while the loaders it would describe are still in flight.
-Typing them would be a lie in both cases, so `ErrorComponentProps` and `LoadingComponentProps` keep
+Typing them would be a lie in both cases, so `ErrorProps` and `LoadingProps` keep
 the untyped `Route`.
 
 ## Navigation
@@ -1032,7 +1080,7 @@ The `Route` instance passed to guards and loaders; also `router.activeRoute`:
 route.path; // "dashboard/settings" — matched segments joined by "/" ("" at the root)
 route.pattern; // "/org/:orgId/surveys" — path with :params unsubstituted; undefined on error routes
 route.params; // Record<string, string> — URL params, e.g. { id: "42" }
-route.context; // Record<string, any> — merged [CONTEXT] from ancestor routes
+route.context; // merged [CONTEXT] from ancestor routes — typed by MobxRouterContext if augmented
 route.data; // Record<string, any> — merged return values of all [LOAD] functions
 route.layout; // Component | undefined — resolved [LAYOUT]
 route.error; // RouterError | undefined — set on synthetic error routes only
@@ -1089,6 +1137,7 @@ import type {
   LazyComponent, // () => Promise<any>
   Routes, // root route definition object type
   RoutePath, // union of all app paths (after MobxRouter augmentation)
+  RoutePrefix, // ...and every prefix of them, including levels that address no page
   StaticRoutePath, // paths without :params
   DynamicRoutePath, // paths with :params
   NavigateOptions, // { to, params?, replace?, search?, preserveSearch?, state? }
@@ -1097,10 +1146,14 @@ import type {
   RedirectTarget, // what [REDIRECT] accepts: path | options | (route) => path | options
   RouteLevel, // { index, segment, pattern? } — where a component sits
   RouteTarget, // { pathname, pattern?, params, levels } — router.target
-  WrapperComponentProps, // { route: Route; level: RouteLevel; children? }
-  PageComponentProps, // { route: Route; level: RouteLevel }
-  ErrorComponentProps, // { route: Route; error: RouterError; level?: RouteLevel }
-  LoadingComponentProps, // { route: Route; level: RouteLevel }
+  WrapperProps, // <P extends RoutePrefix?> { route, level, children? }
+  PageProps, // <P extends RoutePath?> { route, level }
+  ErrorProps, // { route: Route; error: RouterError; level?: RouteLevel }
+  LoadingProps, // { route: Route; level: RouteLevel }
+  RouteAt, // the Route at a path: params, data and context resolved
+  RouteDataAt, // just the merged [LOAD] payloads at a path
+  RouteContextAt, // just the merged [CONTEXT] at a path
+  MobxRouterContext, // augment to type route.context in guards and loaders
   RouteSegmentState, // "preloading" | "loading" | "error" | "ready"
 } from "@mobx-toolbox/router";
 ```

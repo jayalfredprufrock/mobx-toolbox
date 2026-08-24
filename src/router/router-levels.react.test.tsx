@@ -7,7 +7,7 @@ import { Router } from "./components/router";
 import { makeRoutes } from "./make-routes";
 import { RouterStore } from "./router.store";
 import { LOAD, LOADING, PAGE, WRAPPER } from "./symbols";
-import type { LoadingComponentProps, PageComponentProps, WrapperComponentProps } from "./types";
+import type { LoadingProps, PageProps, WrapperProps } from "./types";
 
 const containers: HTMLElement[] = [];
 
@@ -33,7 +33,7 @@ const mount = async (routes: any, initialPath: string) => {
 
 // Each level reports its own pattern — the thing a breadcrumb needs and
 // that a wrapper previously had to hardcode.
-const Scope = ({ level, children }: WrapperComponentProps) => (
+const Scope = ({ level, children }: WrapperProps) => (
   <div>
     <span data-level={level.index}>{level.pattern ?? "(not navigable)"}</span>
     {children}
@@ -45,7 +45,7 @@ const patterns = (container: HTMLElement) =>
 
 describe("route levels reach the components that render at them", () => {
   test("[WRAPPER]s and the page each receive their own level", async () => {
-    const Page = ({ level }: PageComponentProps) => <span>{level.pattern}</span>;
+    const Page = ({ level }: PageProps) => <span>{level.pattern}</span>;
     const routes = makeRoutes()({
       [WRAPPER]: Scope,
       index: Page,
@@ -72,7 +72,7 @@ describe("route levels reach the components that render at them", () => {
   test("the pattern a wrapper reports is the one it can navigate to", async () => {
     const Page = () => null;
     let seen: string | undefined;
-    const Capture = ({ level, children }: WrapperComponentProps) => {
+    const Capture = ({ level, children }: WrapperProps) => {
       seen = level.pattern;
       return children;
     };
@@ -92,7 +92,7 @@ describe("route levels reach the components that render at them", () => {
 
   test("a [LOADING] component receives the level of the slot it fills", async () => {
     let seen: string | undefined;
-    const Skeleton = ({ level }: LoadingComponentProps) => {
+    const Skeleton = ({ level }: LoadingProps) => {
       seen = level.pattern;
       return <span>SKELETON</span>;
     };
@@ -117,7 +117,7 @@ describe("route levels reach the components that render at them", () => {
   });
 
   test("a group's [WRAPPER] renders in the chain for its children only", async () => {
-    const Chrome = ({ children }: WrapperComponentProps) => (
+    const Chrome = ({ children }: WrapperProps) => (
       <div>
         <span>CHROME</span>
         {children}

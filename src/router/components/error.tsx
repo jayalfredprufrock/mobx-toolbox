@@ -1,14 +1,14 @@
 import React from "react";
 import { RouterError } from "../errors";
 import type { Route } from "../route";
-import type { Component, ErrorComponentProps } from "../types";
+import type { Component, ErrorProps } from "../types";
 
 /**
  * Rendered when an error occurs and no `[ERROR]` component is defined
  * on the matched prefix. Deliberately minimal and dependency-free —
  * define a root-level `[ERROR]` to replace it.
  */
-export const DefaultErrorPage: Component = ({ error }: ErrorComponentProps) => (
+export const DefaultErrorPage: Component = ({ error }: ErrorProps) => (
   <div role="alert">
     <h1>{error.type === "NOT_FOUND" ? "Page Not Found" : "Something Went Wrong"}</h1>
     <p>{error.message}</p>

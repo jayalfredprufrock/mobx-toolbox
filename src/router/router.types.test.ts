@@ -64,11 +64,11 @@ ${body}
 const propsFixture = (body: string) => `
 import { makeRoutes, CONTEXT, LOAD, PAGE, WRAPPER } from ${JSON.stringify(join(routerDir, "index"))};
 import type {
-  PageComponentProps,
+  PageProps,
   RouteContextAt,
   RouteDataAt,
   RoutePrefix,
-  WrapperComponentProps,
+  WrapperProps,
 } from ${JSON.stringify(join(routerDir, "index"))};
 
 const C = () => null;
@@ -212,13 +212,134 @@ describe.skipIf(!existsSync(tsc))(
   120_000,
 );
 
+/**
+ * A guard or loader cannot name a path-derived type — both live inside the object `makeRoutes()` is
+ * inferring, and the computed types derive from that same object. `MobxRouterContext` is a
+ * standalone interface, so it reaches the one place the computed types can't. These pin that it
+ * types the context *and* that it does not reintroduce the self-reference.
+ */
+const contextFixture = (augmentation: string, body: string) => `
+import { makeRoutes, CONTEXT, GUARD, LOAD, PAGE } from ${JSON.stringify(join(routerDir, "index"))};
+import type { RoutePath } from ${JSON.stringify(join(routerDir, "index"))};
+
+const C = () => null;
+
+${augmentation}
+
+export const routes = makeRoutes()({
+  [CONTEXT]: { public: false as boolean },
+  index: { [PAGE]: C },
+  login: { [PAGE]: C },
+  org: { $orgId: { index: { [PAGE]: C }, overview: { [PAGE]: C } } },
+${body}
+});
+
+declare module ${JSON.stringify(join(routerDir, "types"))} {
+  interface MobxRouter {
+    routes: typeof routes;
+  }
+}
+
+// if anything above made the tree self-referential, this collapses to \`any\` and TS7022 fires
+export const stillTyped = "/org/:orgId/overview" satisfies RoutePath;
+`;
+
+const AUGMENT = `
+declare module ${JSON.stringify(join(routerDir, "types"))} {
+  interface MobxRouterContext {
+    public: boolean;
+    tenant: string;
+  }
+}
+`;
+
+const typecheckContext = (augmentation: string, body: string): string =>
+  compile(contextFixture(augmentation, body));
+
+describe.skipIf(!existsSync(tsc))(
+  "context typed by augmentation",
+  () => {
+    test("a guard reads the augmented context, and the tree stays inferable", () => {
+      expect(
+        typecheckContext(
+          AUGMENT,
+          `  [GUARD]: async (route) => {
+    const p: boolean = route.context.public;
+    const t: string = route.context.tenant;
+    void [p, t];
+  },`,
+        ),
+      ).toBe("");
+    });
+
+    test("a loader reads it too", () => {
+      expect(
+        typecheckContext(
+          AUGMENT,
+          `  [LOAD]: async (route) => ({ len: route.context.tenant.length }),`,
+        ),
+      ).toBe("");
+    });
+
+    test("a wrong type on a known key is caught", () => {
+      expect(
+        typecheckContext(
+          AUGMENT,
+          `  [GUARD]: async (route) => {
+    // @ts-expect-error \`public\` is a boolean
+    const p: string = route.context.public;
+    void p;
+  },`,
+        ),
+      ).toBe("");
+    });
+
+    test("an undeclared key is caught", () => {
+      expect(
+        typecheckContext(
+          AUGMENT,
+          `  [GUARD]: async (route) => {
+    // @ts-expect-error never declared on the context
+    void route.context.nope;
+  },`,
+        ),
+      ).toBe("");
+    });
+
+    test("without the augmentation the context stays untyped, as before", () => {
+      expect(
+        typecheckContext(
+          "",
+          `  [GUARD]: async (route) => {
+    const anything: string = route.context.whatever;
+    void anything;
+  },`,
+        ),
+      ).toBe("");
+    });
+
+    test("a path-derived type in a guard still collapses the tree — the reason this exists", () => {
+      // not a regression: the self-reference is structural. This pins *why* the augmentation
+      // route is the one that works, so nobody 'fixes' it by reaching for the computed types.
+      const diagnostics = typecheckContext(
+        AUGMENT,
+        `  [GUARD]: async (route: import(${JSON.stringify(join(routerDir, "index"))}).RouteAt<"/">) => {
+    void route.context;
+  },`,
+      );
+      expect(diagnostics).toMatch(/TS7022|TS2456|TS2502/);
+    });
+  },
+  120_000,
+);
+
 describe.skipIf(!existsSync(tsc))(
   "path-parameterised route props",
   () => {
     test("params come from the path", () => {
       expect(
         typecheckProps(`
-      export const page = (props: PageComponentProps<"/org/:orgId/studies/:studyId">) => {
+      export const page = (props: PageProps<"/org/:orgId/studies/:studyId">) => {
         assignable<string>(props.route.params.orgId);
         assignable<string>(props.route.params.studyId);
         // @ts-expect-error — not a param on this path
@@ -231,7 +352,7 @@ describe.skipIf(!existsSync(tsc))(
     test("data merges every loader at and above the path, and no others", () => {
       expect(
         typecheckProps(`
-      export const page = (props: PageComponentProps<"/org/:orgId/studies/:studyId">) => {
+      export const page = (props: PageProps<"/org/:orgId/studies/:studyId">) => {
         assignable<{ id: number; title: string }>(props.route.data.study);   // own level
         assignable<{ id: number }[]>(props.route.data.studies);              // parent
         assignable<{ id: string; name: string }>(props.route.data.org);      // grandparent
@@ -246,7 +367,7 @@ describe.skipIf(!existsSync(tsc))(
     test("an index page picks up its own level's loader, not its children's", () => {
       expect(
         typecheckProps(`
-      export const page = (props: PageComponentProps<"/org/:orgId/studies">) => {
+      export const page = (props: PageProps<"/org/:orgId/studies">) => {
         assignable<{ id: number }[]>(props.route.data.studies);
         assignable<{ id: string; name: string }>(props.route.data.org);
         // @ts-expect-error — the $studyId child is a descendant, not an ancestor
@@ -259,7 +380,7 @@ describe.skipIf(!existsSync(tsc))(
     test("a group contributes config without contributing a segment", () => {
       expect(
         typecheckProps(`
-      export const page = (props: PageComponentProps<"/org/:orgId/exports">) => {
+      export const page = (props: PageProps<"/org/:orgId/exports">) => {
         assignable<string[]>(props.route.data.exports);                  // the page's own
         assignable<number>(props.route.data.quota);                      // the group's
         assignable<{ id: string; name: string }>(props.route.data.org);  // above the group
@@ -272,7 +393,7 @@ describe.skipIf(!existsSync(tsc))(
     test("context accumulates the same way data does", () => {
       expect(
         typecheckProps(`
-      export const page = (props: PageComponentProps<"/org/:orgId/settings">) => {
+      export const page = (props: PageProps<"/org/:orgId/settings">) => {
         assignable<string>(props.route.context.tenant);
         assignable<{ theme: string }>(props.route.data.prefs);
       };
@@ -285,7 +406,7 @@ describe.skipIf(!existsSync(tsc))(
     test("a path with no loaders above it has no data", () => {
       expect(
         typecheckProps(`
-      export const page = (props: PageComponentProps<"/login">) => {
+      export const page = (props: PageProps<"/login">) => {
         // @ts-expect-error — nothing is loaded anywhere on this path
         props.route.data.anything;
       };
@@ -296,7 +417,7 @@ describe.skipIf(!existsSync(tsc))(
     test("a wrapper sits on a prefix, and sees only what is guaranteed there", () => {
       expect(
         typecheckProps(`
-      export const wrapper = (props: WrapperComponentProps<"/org/:orgId">) => {
+      export const wrapper = (props: WrapperProps<"/org/:orgId">) => {
         assignable<string>(props.route.params.orgId);
         assignable<{ id: string; name: string }>(props.route.data.org);
         assignable<{ id: string }[]>(props.route.data.orgs);
@@ -312,7 +433,7 @@ describe.skipIf(!existsSync(tsc))(
       expect(
         typecheckProps(`
       // @ts-expect-error — /org/:orgId addresses no page, so it is not a RoutePath
-      export const page = (_p: PageComponentProps<"/org/:orgId">) => {};
+      export const page = (_p: PageProps<"/org/:orgId">) => {};
     `),
       ).toBe("");
     });
@@ -321,13 +442,13 @@ describe.skipIf(!existsSync(tsc))(
       expect(
         typecheckProps(`
       // @ts-expect-error — typo in a segment
-      export const a = (_p: PageComponentProps<"/org/:orgId/studys/:studyId">) => {};
+      export const a = (_p: PageProps<"/org/:orgId/studys/:studyId">) => {};
       // @ts-expect-error — wrong param name
-      export const b = (_p: PageComponentProps<"/org/:orgId/studies/:id">) => {};
+      export const b = (_p: PageProps<"/org/:orgId/studies/:id">) => {};
       // @ts-expect-error — not a path in this tree at all
-      export const c = (_p: PageComponentProps<"/nope">) => {};
+      export const c = (_p: PageProps<"/nope">) => {};
       // @ts-expect-error — a wrapper prefix must still be a real prefix
-      export const d = (_p: WrapperComponentProps<"/org/:orgId/nope">) => {};
+      export const d = (_p: WrapperProps<"/org/:orgId/nope">) => {};
     `),
       ).toBe("");
     });
@@ -335,11 +456,11 @@ describe.skipIf(!existsSync(tsc))(
     test("omitting the path keeps the untyped Route, so existing code is unaffected", () => {
       expect(
         typecheckProps(`
-      export const page = (props: PageComponentProps) => {
+      export const page = (props: PageProps) => {
         assignable<Record<string, any>>(props.route.params);
         assignable<Record<string, any>>(props.route.data);
       };
-      export const wrapper = (props: WrapperComponentProps) => {
+      export const wrapper = (props: WrapperProps) => {
         assignable<Record<string, any>>(props.route.data);
         assignable<React.ReactNode>(props.children);
       };

@@ -9,7 +9,14 @@ import type {
 } from "../types";
 import { useRouter } from "./router";
 
-type LinkComponentProps<C extends React.ElementType> = Omit<
+/**
+ * The host element's own props, minus the ones the link claims for itself — everything that passes
+ * straight through to whatever `C` renders as.
+ *
+ * Deliberately not called `LinkProps`: these are the *element's* props, not the link's. The link's
+ * own are {@link LinkPropsBase}, which is built from these.
+ */
+type PassthroughProps<C extends React.ElementType> = Omit<
   React.ComponentProps<C>,
   | "ref"
   | "exact"
@@ -26,7 +33,7 @@ type LinkComponentProps<C extends React.ElementType> = Omit<
 export type LinkPropsBase<
   C extends React.ElementType,
   I extends React.ElementType = C,
-> = LinkComponentProps<C> &
+> = PassthroughProps<C> &
   // `replace`, `state`, `search` and `preserveSearch` — everything
   // `navigate()` takes beyond the destination itself, which `to` and
   // `params` carry. Derived rather than restated so a new navigate option
@@ -60,7 +67,7 @@ export interface LinkComponent<C extends React.ElementType, I extends React.Elem
 // this smooths over some of the awkwardness when extending this component
 export const makeLinkComponent = <C extends React.ElementType, I extends React.ElementType = C>(
   C: C,
-  baseProps?: Partial<LinkComponentProps<C>> & {
+  baseProps?: Partial<PassthroughProps<C>> & {
     as?: I;
     onClick?: (event: React.MouseEvent<HTMLElement>) => void;
   },

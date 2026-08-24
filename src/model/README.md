@@ -741,7 +741,15 @@ useModel(StudyModel, { id, orgId }); // can't desync
 ```
 
 They are typed from the model's `keys`, compared shallowly (so rebuilding the object every render
-costs nothing), and key order is not a change. A model with no key params takes `undefined`.
+costs nothing), and key order is not a change.
+
+A model with **no key params** (`keys: []` or `keys: false`) takes no params argument at all — the
+slot isn't there to fill:
+
+```tsx
+const settings = useModel(SettingsModel);
+const settings = useModel(SettingsModel, { keepOnUnobserved: true }); // options move up
+```
 
 **A param change builds a new lazy**, so the value starts empty and loads again — which is what you
 want for a record: showing the study you navigated away from while the next one loads would be a lie.

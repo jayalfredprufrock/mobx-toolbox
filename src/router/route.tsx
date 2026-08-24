@@ -2,7 +2,15 @@ import { computed, makeObservable } from "mobx";
 import { RouterError } from "./errors";
 import type { LoadOptions, Outlet } from "./outlet";
 import { Redirect } from "./redirect";
-import type { Component, Guard, GuardEntry, MatchLevel, Obj, RoutePath } from "./types";
+import type {
+  Component,
+  Guard,
+  GuardEntry,
+  MatchLevel,
+  Obj,
+  RouteContext,
+  RoutePath,
+} from "./types";
 
 export interface RouteConfig {
   path: string;
@@ -33,7 +41,7 @@ export class Route {
   readonly pattern?: RoutePath;
   readonly outlets: Outlet[];
   readonly guards: Guard[];
-  readonly context: Obj;
+  readonly context: RouteContext;
   readonly params: Obj;
   readonly layout?: Component;
   /** set on synthetic error routes; the error being rendered */
@@ -73,7 +81,11 @@ export class Route {
     this.guardEntries = def.guards;
     this.guards = def.guards.map((entry) => entry.guard);
     this.levels = def.levels;
-    this.context = def.context ?? {};
+    // The matcher assembles context by merging the `[CONTEXT]` objects down the matched chain, so
+    // what arrives here is a plain `Obj`. `MobxRouterContext` is the app's assertion about what
+    // those declarations add up to — a claim the library has no way to check — so this is the one
+    // place it is taken on trust.
+    this.context = (def.context ?? {}) as RouteContext;
     this.outlets = def.outlets;
     this.params = def.params;
     this.layout = def.layout;

@@ -14,6 +14,31 @@ import type { AnyModelClass } from "./make-store";
 type GetParams<MC> = MC extends { get: (params: infer P, ...rest: any[]) => any } ? P : never;
 
 /**
+ * Whether the model declared no key params, so `Model.get` takes none.
+ *
+ * Asked through `K[number]` rather than `K extends readonly []` for the reason `makeModel` documents
+ * on its own `Keyless`: an inline `keys: []` infers as `never[]`, which is not assignable to
+ * `readonly []` and would read as keyed. This is the same question `buildParams()` answers at
+ * runtime, so the type and the call can't disagree about which argument is which.
+ */
+type Keyless<MC> = MC extends { keys: infer K }
+  ? [K] extends [readonly any[]]
+    ? [K[number]] extends [never]
+      ? true
+      : false
+    : true
+  : true;
+
+/**
+ * Everything after the model. A keyless model has nothing to pass for params, so it takes options
+ * directly rather than a placeholder ahead of them.
+ */
+type UseModelArgs<MC> =
+  Keyless<MC> extends true
+    ? [options?: LazyObservableOptions]
+    : [params: GetParams<MC>, options?: LazyObservableOptions];
+
+/**
  * Turn `params` into a dependency list. Sorted by key so a differently-ordered object of the same
  * values isn't read as a change, and keys are included alongside values so adding or removing one
  * counts.
@@ -56,21 +81,27 @@ const paramsToDeps = (params: unknown): unknown[] => {
  * a new lazy — the value starts empty and loads again, which is what you want for a record: showing
  * the study you navigated away from while the next one loads would be a lie.
  *
- * For a model with no key params (`keys: []` or `keys: false`), pass `undefined`.
+ * A model with no key params (`keys: []` or `keys: false`) takes no params argument at all —
+ * `useModel(SettingsModel)`, and `useModel(SettingsModel, { keepOnUnobserved: true })` for options.
  */
 export function useModel<MC extends AnyModelClass>(
   model: MC,
-  params: GetParams<MC>,
-  options?: LazyObservableOptions,
+  ...args: UseModelArgs<MC>
 ): LazyObservable<InstanceType<MC>> {
+  // Which argument holds what depends on whether the model declared keys — the same question
+  // `buildParams()` asks, so a keyless model's `get` is called with the fetch options first rather
+  // than with a placeholder ahead of them.
+  const keys = (model as { keys?: unknown }).keys;
+  const keyed = Array.isArray(keys) && keys.length > 0;
+  const params = keyed ? (args[0] as object) : undefined;
+  const options = (keyed ? args[1] : args[0]) as LazyObservableOptions | undefined;
+
   // `get` is generic over the class it is called on, so it can't be reached through a structural
   // type — the conditional above is what types the params, and this is what reaches the function.
-  const get = (model as unknown as { get: (...args: any[]) => Promise<InstanceType<MC>> }).get.bind(
+  const get = (model as unknown as { get: (...a: any[]) => Promise<InstanceType<MC>> }).get.bind(
     model,
   );
   return useLazy<InstanceType<MC>>(
-    // A keyless model's `get` takes the fetch options first — passing `undefined` ahead of them
-    // would land in whatever its first parameter is. Same rule the instance's `reload` follows.
     (fetchOptions) => (params === undefined ? get(fetchOptions) : get(params, fetchOptions)),
     [model, ...paramsToDeps(params)],
     {

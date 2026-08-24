@@ -56,11 +56,11 @@ export interface RouteLevel {
  * `[ERROR]`, a wrapper does receive `children` — it wraps the rest of the
  * chain below it.
  *
- * Name the path it sits on to get `route` typed — see {@link PageComponentProps}. A wrapper's path
+ * Name the path it sits on to get `route` typed — see {@link PageProps}. A wrapper's path
  * is a {@link RoutePrefix} rather than a `RoutePath`, because the level it wraps often addresses no
  * page of its own.
  */
-export interface WrapperComponentProps<P extends RoutePrefix | undefined = undefined> {
+export interface WrapperProps<P extends RoutePrefix | undefined = undefined> {
   route: [P] extends [undefined] ? Route : RouteAt<P & string>;
   level: RouteLevel;
   children?: React.ReactNode;
@@ -73,7 +73,7 @@ export interface WrapperComponentProps<P extends RoutePrefix | undefined = undef
  * path, `data` from every `[LOAD]` at or above it, `context` from every `[CONTEXT]`:
  *
  * ```tsx
- * const StudyPage = ({ route }: PageComponentProps<"/org/:orgId/studies/:studyId">) => {
+ * const StudyPage = ({ route }: PageProps<"/org/:orgId/studies/:studyId">) => {
  *   route.params.studyId; // string
  *   route.data.study; // whatever that level's [LOAD] resolves to
  *   route.data.org; // ...and the ancestor's, merged in
@@ -83,13 +83,13 @@ export interface WrapperComponentProps<P extends RoutePrefix | undefined = undef
  * The path is given rather than inferred because the component cannot import the route tree that
  * imports it. A mistyped one is a compile error; leaving it off keeps the untyped `Route`.
  */
-export interface PageComponentProps<P extends RoutePath | undefined = undefined> {
+export interface PageProps<P extends RoutePath | undefined = undefined> {
   route: [P] extends [undefined] ? Route : RouteAt<P & string>;
   level: RouteLevel;
 }
 
 /** The props every `[ERROR]` component receives. */
-export interface ErrorComponentProps {
+export interface ErrorProps {
   route: Route;
   error: RouterError;
   /**
@@ -106,7 +106,7 @@ export interface ErrorComponentProps {
  * be ready while this slot is still loading — rendering it would paint
  * a page with incomplete `route.data`.
  */
-export interface LoadingComponentProps {
+export interface LoadingProps {
   route: Route;
   level: RouteLevel;
 }
@@ -278,6 +278,39 @@ export type NavigateOptions<P = string> = {
 
 // biome-ignore lint/suspicious/noEmptyInterface: open for extension
 export interface MobxRouter {}
+
+/**
+ * The shape of `route.context`, for an app that wants one. Augment it the way you augment
+ * `MobxRouter`:
+ *
+ * ```ts
+ * declare module "@jayalfredprufrock/mobx-toolbox/router" {
+ *   interface MobxRouterContext {
+ *     public: boolean;
+ *   }
+ * }
+ * ```
+ *
+ * This exists because a `[GUARD]` or `[LOAD]` **cannot** name a path-derived type. Both live inside
+ * the object `makeRoutes()` is inferring, and `RouteAt<P>` derives from `MobxRouter["routes"]` —
+ * that same object. Annotating one collapses the whole route tree to `any` (TS7022), the same
+ * self-reference {@link RedirectTarget} documents.
+ *
+ * A standalone interface has no such dependency, so it reaches the one place the computed types
+ * can't. The trade is that it describes the context of the app rather than of a path: it is the
+ * union of what any level may contribute, so declare a key optional if only some branches set it.
+ *
+ * Components outside the route tree don't need this — `PageProps<"/path">` computes the exact
+ * context in force at that path, which is strictly more precise.
+ */
+// biome-ignore lint/suspicious/noEmptyInterface: open for extension
+export interface MobxRouterContext {}
+
+/**
+ * What `route.context` is typed as: the augmented shape if there is one, and the untyped `Obj` it
+ * has always been if not — so an app that never augments is unaffected.
+ */
+export type RouteContext = keyof MobxRouterContext extends never ? Obj : MobxRouterContext;
 
 export type MobxRouterRoutes = MobxRouter extends { routes: infer R } ? R : Routes;
 

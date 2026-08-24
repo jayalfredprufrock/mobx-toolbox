@@ -137,8 +137,9 @@ so `table.loading` stays `false`.
 (`table.loading` and `table.refreshing` are the table's own state, unrelated to any property on a
 lazy — the table reads `value` and `fetching` off the source and derives the rest.)
 
-Whichever you pick, **configure `getRowId`**. Without it row ids are positions, and any re-applied
-dataset clears selection and expansion.
+**`getRowId` is worth configuring, but it is no longer the difference between working and not.**
+Without it, a row's id is its own object identity — see [row identity](#row-identity) — so anything
+identity-mapped keeps its selection across a reload for free.
 
 `src/table/lazy-binding.test.ts` pins these behaviours.
 
@@ -381,11 +382,65 @@ Selection is keyed by **row id**, not row reference, so it survives sorting, fil
 
 ### Row identity
 
-By default a row's id is its index in the source array — stable across `appendRows`, and reset by `setRows` along with the rest of row-keyed state. Pass `getRowId` when a refetch may replace row objects that mean the same row:
+Row-keyed state — selection, expansion — is keyed by a row id. Where that id comes from decides what
+survives a reload.
 
-```ts
-useTable({ rows, getRowId: (row) => row.id });
+**Without `getRowId`**, the id is the row's own **object identity**. A dataset that hands back the
+same objects keeps its state; one that rebuilds them drops it. That makes the common case work with
+no configuration at all, because every identity-mapped record is the same instance each time:
+
+```tsx
+// no getRowId: selection follows the record through a refetch, a poll, a re-sort
+useTable({ rows: surveyStore.all });
 ```
+
+**With `getRowId`**, the id comes from the data, so the same _record_ survives even when it arrives
+as a **different object** — a plain-JSON refetch, anything not identity-mapped:
+
+```tsx
+useTable({ rows, getRowId: (s) => s.id });
+```
+
+| your rows are…                        | without `getRowId` | with it  |
+| ------------------------------------- | ------------------ | -------- |
+| identity-mapped records (same object) | selection survives | survives |
+| rebuilt objects for the same records  | selection drops    | survives |
+
+Either way it is never _wrong_: a stale id resolves to nothing rather than to whatever row now sits
+in that position.
+
+> The default used to be the row's **index**. That was only safe while the dataset was re-applied
+> wholesale — a source that replaces its contents in place, which is what every
+> `LazyObservableArray` does, would leave a selected index pointing at whatever row later occupied
+> the slot. Object identity has no such failure mode.
+
+#### The same id keys React
+
+`<Table.Body>` keys each row on its row id, so whatever identifies a row for selection also
+identifies it to React. That means the id decides how a change to the dataset is _rendered_:
+
+| dataset changes         | with a stable id                      | with an index           |
+| ----------------------- | ------------------------------------- | ----------------------- |
+| rows reordered          | React **moves** the nodes             | rewrites their contents |
+| a row's values change   | that row's node updates               | same                    |
+| rows replaced by copies | new nodes (nothing claims they match) | contents rewritten      |
+
+Reusing a node and rewriting its contents is the index-as-key antipattern: it costs focus, caret
+position, and any transition mid-flight. Identity ids avoid it without configuration, and `getRowId`
+extends the same benefit to records that arrive as new objects.
+
+**One row, twice.** The same object appearing twice in a dataset gets one id for both occurrences
+and React warns about the duplicate key. That is inherent to identifying a row by _what it is_ —
+`getRowId` has the same problem when it returns the same value twice — so a dataset where a row can
+legitimately repeat needs an id that distinguishes the occurrences.
+
+#### Why not sniff for an `id` property
+
+It would be a silent correctness bug waiting to happen: a dataset whose `id` is not unique — or is
+an id of something else, a parent, a type — would merge two rows' state with nothing to signal it.
+The table has no way to check the guess, and the failure would show up as a mysteriously shared
+selection. Object identity is always true, and `getRowId` is there for when you want value identity
+and can say so.
 
 ## Expansion
 

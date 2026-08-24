@@ -289,3 +289,67 @@ describe("aria wiring outside the rendered window", () => {
     expect(pinned.textContent).toBe("Name");
   });
 });
+
+describe("row keys and reconciliation", () => {
+  // `<Table.Body>` keys each row on `table.rowIds`, so whatever identifies a row for selection also
+  // identifies it to React. With the row's own object identity as the default, a reorder *moves*
+  // the DOM node; with the row's index it would reuse the node in that position and rewrite its
+  // contents — which is the index-as-key antipattern, and costs focus, caret position and any
+  // transition mid-flight.
+  test("reordering the same rows moves their DOM nodes rather than rewriting them", async () => {
+    const alpha = { id: 1, name: "alpha" };
+    const beta = { id: 2, name: "beta" };
+    const table = makeTable([alpha, beta], ["id", "name"]);
+    const { container } = await mount(<BasicTable table={table} />);
+
+    const before = bodyRows(container);
+    const alphaNode = before.find((el) => el.textContent?.includes("alpha"));
+    expect(before.indexOf(alphaNode!)).toBe(0);
+
+    // the same two objects, other way round
+    await act(async () => {
+      table.setRows([beta, alpha]);
+    });
+
+    const after = bodyRows(container);
+    const alphaAfter = after.find((el) => el.textContent?.includes("alpha"));
+
+    expect(after.indexOf(alphaAfter!)).toBe(1); // it moved...
+    expect(alphaAfter).toBe(alphaNode); // ...and it is the same element
+  });
+
+  test("rows replaced by new objects get new nodes, as they should", async () => {
+    const table = makeTable([{ id: 1, name: "alpha" }], ["id", "name"]);
+    const { container } = await mount(<BasicTable table={table} />);
+    const before = bodyRows(container)[0];
+
+    await act(async () => {
+      table.setRows([{ id: 1, name: "alpha" }]); // same values, different object
+    });
+
+    // nothing claims this is the row that was there before, so React builds a new one
+    expect(bodyRows(container)[0]).not.toBe(before);
+  });
+
+  test("getRowId makes the node survive a replaced object", async () => {
+    const table = new TableModel({
+      rows: [{ id: 1, name: "alpha" }],
+      columns: ["id", "name"],
+      rowHeight: 40,
+      rowOverscan: 0,
+      getRowId: (row) => (row as { id: number }).id,
+    });
+    table.setWidth(600);
+    table.setHeight(120);
+    const { container } = await mount(<BasicTable table={table} />);
+    const before = bodyRows(container)[0];
+
+    await act(async () => {
+      table.setRows([{ id: 1, name: "alpha renamed" }]);
+    });
+
+    const after = bodyRows(container)[0];
+    expect(after).toBe(before); // same record by value, so the same node updates in place
+    expect(after?.textContent).toContain("renamed");
+  });
+});

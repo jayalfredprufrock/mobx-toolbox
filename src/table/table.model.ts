@@ -114,11 +114,37 @@ export class TableModel {
     return this.config?.columnOverscan ?? 1;
   }
 
-  // row → id, from config.getRowId; defaults to the row's index in the source array, which is
-  // equivalent to reference identity for a static dataset and stable across appendRows
+  /**
+   * Stable ids for rows when no `getRowId` is configured, keyed by the row object itself.
+   *
+   * Weak, so it never holds a row alive, and it needs no knowledge of what a row *is* — a dataset
+   * that hands back the same objects keeps its row-keyed state, and one that rebuilds them drops
+   * it. That covers identity-mapped records without the table knowing anything about models.
+   */
+  private readonly identityIds = new WeakMap<RowData, RowId>();
+  private nextIdentityId = 0;
+
+  private identityId(row: RowData): RowId {
+    let id = this.identityIds.get(row);
+    if (id === undefined) {
+      id = this.nextIdentityId++;
+      this.identityIds.set(row, id);
+    }
+    return id;
+  }
+
+  /**
+   * row → id, from `config.getRowId` when given and from the row's own object identity otherwise.
+   *
+   * The default used to be the row's *index*, which is only safe while the dataset is re-applied
+   * wholesale: a source that replaces its contents in place — which is what a `LazyObservableArray`
+   * does — would leave a selected index pointing at whatever row later occupied that slot.
+   */
   get rowIds(): Map<RowData, RowId> {
     const getRowId = this.config?.getRowId;
-    return new Map(this.rows.map((row, i) => [row, getRowId ? getRowId(row, i) : i]));
+    return new Map(
+      this.rows.map((row, i) => [row, getRowId ? getRowId(row, i) : this.identityId(row)]),
+    );
   }
 
   get allColumns(): ColumnModel[] {
@@ -446,6 +472,9 @@ export class TableModel {
       | "suppressedKeys"
       | "rowSource"
       | "rowsBinding"
+      | "identityIds"
+      | "nextIdentityId"
+      | "identityId"
     >(this, {
       rows: observable.ref,
       columns: observable,
@@ -481,6 +510,12 @@ export class TableModel {
       // reaction is re-armed on replacement rather than tracked, so there is nothing to observe.
       rowSource: false,
       rowsBinding: false,
+
+      // Memoization behind `rowIds`, not state: a WeakMap keyed by row and a counter. Neither is
+      // observable, and `identityId` only ever fills a gap in the map.
+      identityIds: false,
+      nextIdentityId: false,
+      identityId: false,
 
       filteredRows: computed,
       loading: computed,
@@ -752,15 +787,18 @@ export class TableModel {
   }
 
   /**
-   * Replace the dataset. What happens to row-keyed state (selection, expansion) depends on where
-   * the ids come from:
+   * Replace the dataset. Row-keyed state (selection, expansion) is **intersected** against the
+   * incoming rows: an id that still resolves to a row survives, and one that does not is dropped.
+   * A refresh — a refetch, a poll, an invalidation — therefore arrives without clearing the user's
+   * selection, while genuinely switching datasets drops it naturally.
    *
-   * - **With `getRowId`** the ids are derived from the data, so they survive a new array: state is
-   *   intersected against the incoming rows, keeping ids that still resolve and dropping the rest.
-   *   That is what lets a refresh — a refetch, a poll, an invalidation — arrive without clearing
-   *   the user's selection, while genuinely switching datasets still drops it naturally.
-   * - **Without `getRowId`** the ids are positions, which must not silently attach to different
-   *   rows, so state is cleared outright.
+   * What "still resolves" means depends on where the ids come from:
+   *
+   * - **With `getRowId`** they are derived from the data, so the same record survives even when it
+   *   arrives as a different object. That is what a plain-JSON refetch needs.
+   * - **Without it** they follow the row's object identity, so state survives for a dataset that
+   *   hands back the same objects — anything identity-mapped — and is dropped for one that rebuilds
+   *   them, which is the honest answer there.
    *
    * Use `appendRows` to add without resetting. Re-passing the array already in place is a no-op:
    * same array, same dataset. (`rows` is an `observable.ref`, so mutating one in place is invisible
@@ -771,19 +809,13 @@ export class TableModel {
     this.rows = rows;
     this.syncColumns();
 
-    if (!this.config?.getRowId) {
-      this.selectedIds.clear();
-      this.expandedIds.clear();
-      return;
-    }
-
     const live = new Set(this.rowIds.values());
     for (const id of this.selectedIds) if (!live.has(id)) this.selectedIds.delete(id);
     for (const id of this.expandedIds) if (!live.has(id)) this.expandedIds.delete(id);
   }
 
   /** Append rows without resetting row-keyed state — the "load more" path. Existing rows keep
-   * their positions, so default (index) ids stay stable and selection survives. */
+   * their ids either way, so selection survives. */
   appendRows(rows: RowData[]): void {
     this.rows = [...this.rows, ...rows];
     this.syncColumns();

@@ -141,6 +141,54 @@ describe("`undefined` can be a real value", () => {
     expect(lazy.loaded).toBe(true); // there are none
     expect(lazy.value?.slice()).toEqual([]);
   });
+
+  // The seed path has to agree with the fetch path above: the same `undefined`, held for the same
+  // reason, cannot be a value when it arrives from the network and nothing when it is handed in.
+  // Presence of the key is what says "seeded", which is why an explicit `undefined` counts.
+  test("seeding with undefined is loaded, matching a fetch that resolves undefined", async () => {
+    let calls = 0;
+    const lazy = lazyObservable<string | undefined>(
+      async () => {
+        calls++;
+        return "fetched";
+      },
+      { initialValue: undefined },
+    );
+
+    expect(lazy.loaded).toBe(true);
+    expect(lazy.value).toBeUndefined();
+    expect(calls).toBe(0);
+
+    // seeded still means stale, so the first getOrLoad revalidates
+    await lazy.getOrLoad();
+    expect(lazy.value).toBe("fetched");
+    expect(calls).toBe(1);
+  });
+
+  test("a discarded undefined seed returns to undefined, still loaded", async () => {
+    const lazy = lazyObservable<string | undefined>(async () => "fetched", {
+      initialValue: undefined,
+    });
+    await lazy.getOrLoad();
+    expect(lazy.value).toBe("fetched");
+
+    lazy.invalidate({ discard: true });
+
+    // back to the seed — which is `undefined`, and is still a value it holds
+    expect(lazy.loaded).toBe(true);
+    expect(lazy.value).toBeUndefined();
+  });
+
+  test("omitting initialValue is not the same as seeding with undefined", async () => {
+    const seeded = lazyObservable<string | undefined>(async () => "x", {
+      initialValue: undefined,
+    });
+    const unseeded = lazyObservable<string | undefined>(async () => "x");
+
+    expect(seeded.loaded).toBe(true);
+    expect(unseeded.loaded).toBe(false);
+    expect(seeded.value).toBe(unseeded.value); // both undefined; only `loaded` tells them apart
+  });
 });
 
 describe("getOrLoad answers staleness, not just presence", () => {
@@ -277,6 +325,38 @@ describe("initialValue seeds a value that is still owed a fetch", () => {
 
     expect(lazy.loaded).toBe(true);
     expect(lazy.value?.slice()).toEqual([0]);
+  });
+
+  // A list is seeded by *having* rows, never by the option being present — `undefined` is not a
+  // list. The scalar rule (presence counts) would make every array lazy report loaded at
+  // construction, since `lazyObservableArray` always passes the key down to the shared builder.
+  test("a list is not seeded by an explicit undefined", async () => {
+    const lazy = lazyObservableArray(() => Promise.resolve([9]), { initialValue: undefined });
+
+    expect(lazy.loaded).toBe(false);
+    expect(lazy.value).toBeUndefined();
+
+    await lazy.getOrLoad();
+    expect(lazy.value?.slice()).toEqual([9]);
+
+    // and a discard drops to nothing rather than restoring an "undefined seed"
+    lazy.invalidate({ discard: true });
+    expect(lazy.loaded).toBe(false);
+    expect(lazy.value).toBeUndefined();
+  });
+
+  test("an unseeded list holds nothing until a load lands", async () => {
+    const lazy = lazyObservableArray(() => Promise.resolve([9]));
+
+    expect(lazy.loaded).toBe(false);
+    expect(lazy.value).toBeUndefined();
+  });
+
+  test("an empty seed is a seed: the list is loaded before anything is fetched", async () => {
+    const lazy = lazyObservableArray(() => Promise.resolve([9]), { initialValue: [] });
+
+    expect(lazy.loaded).toBe(true);
+    expect(lazy.value?.slice()).toEqual([]);
   });
 });
 

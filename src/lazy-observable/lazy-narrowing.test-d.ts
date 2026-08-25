@@ -7,7 +7,15 @@
  * would notice. These are compile-time assertions: the file passing `vp check` *is* the test.
  */
 import type { IObservableArray } from "mobx";
-import { lazyObservable, lazyObservableArray } from "./lazy-observable";
+import type { RowSource } from "../table/table.types";
+import {
+  lazyObservable,
+  lazyObservableArray,
+  type LazyFetch,
+  type LazyObservable,
+  type LazyObservableArray,
+} from "./lazy-observable";
+import { useLazy, useLazyArray } from "./use-lazy";
 
 /**
  * Compiles only if the argument is assignable to `Expected`.
@@ -90,5 +98,109 @@ void scalar.loading;
 
 // what replaced it, and the two facts it was made of
 void (!scalar.loaded && scalar.fetching);
+
+// --- a seed narrows the result, so no guard is needed at all ---------------
+
+const seededScalar = lazyObservable(() => Promise.resolve(42), { initialValue: 0 });
+
+// no `if (loaded)` anywhere: this is the whole point of the seeded overload
+assignableTo<number>(seededScalar.value);
+assignableTo<true>(seededScalar.loaded);
+const seededDoubled: number = seededScalar.value * 2;
+void seededDoubled;
+
+const seededList = lazyObservableArray(() => Promise.resolve([1, 2, 3]), { initialValue: [] });
+assignableTo<IObservableArray<number>>(seededList.value);
+assignableTo<true>(seededList.loaded);
+seededList.value.replace([4, 5]);
+
+// an empty seed is still a seed: "there are none" is a fact, so it reports loaded
+const emptySeeded = lazyObservableArray(() => Promise.resolve<string[]>([]), { initialValue: [] });
+assignableTo<IObservableArray<string>>(emptySeeded.value);
+
+// --- a seed of `undefined` counts, when `T` admits one ---------------------
+
+// matches a fetch resolving `undefined`, which has always reported loaded
+const maybeSeeded = lazyObservable<string | undefined>(async () => "later", {
+  initialValue: undefined,
+});
+assignableTo<true>(maybeSeeded.loaded);
+// `value` stays wide, because `undefined` is the value rather than the absence of one
+assignableTo<string | undefined>(maybeSeeded.value);
+
+// --- a possibly-undefined seed, which is the case the overloads guard -------
+
+declare const maybeNumber: number | undefined;
+
+// With `T` free, inference widens it to include `undefined` rather than rejecting the call: the
+// lazy really does hold a value (the seed), and that value really might be `undefined`. So
+// `loaded` narrows and `value` stays wide, which is the honest reading of both facts.
+const widened = lazyObservable(() => Promise.resolve(1), { initialValue: maybeNumber });
+assignableTo<true>(widened.loaded);
+assignableTo<number | undefined>(widened.value);
+// @ts-expect-error ...so `value` cannot be read as a bare `number`
+assignableTo<number>(widened.value);
+
+// A `T` pinned by the fetch widens the same way, for the same reason.
+declare const fetchNumber: LazyFetch<number>;
+const widenedFromFetch = lazyObservable(fetchNumber, { initialValue: maybeNumber });
+assignableTo<number | undefined>(widenedFromFetch.value);
+
+// Pinning `T` explicitly is the one spelling that cannot widen, so it is rejected instead. That
+// is the whole breaking change: `T` says `undefined` is not a value, the seed says it might be,
+// and nothing sound can be built from the pair.
+// @ts-expect-error possibly-undefined seed on an explicitly non-undefined `T`
+lazyObservable<number>(() => Promise.resolve(1), { initialValue: maybeNumber });
+
+// Lists have no such ambiguity — `undefined` is never a list — so this is accepted and simply
+// does not narrow.
+declare const maybeRows: number[] | undefined;
+const looseList = lazyObservableArray(() => Promise.resolve([1]), { initialValue: maybeRows });
+assignableTo<LazyObservableArray<number>>(looseList);
+// @ts-expect-error ...which means it still needs the guard
+assignableTo<IObservableArray<number>>(looseList.value);
+
+// --- explicit type arguments still work ------------------------------------
+
+// the reason these are overloads and not one signature with a conditional return type: naming
+// `T` must not force a second type parameter to its default
+const explicitScalar = lazyObservable<number>(() => Promise.resolve(1), { initialValue: 7 });
+assignableTo<number>(explicitScalar.value);
+const explicitList = lazyObservableArray<number>(() => Promise.resolve([1]), { initialValue: [] });
+assignableTo<IObservableArray<number>>(explicitList.value);
+
+// --- the hooks carry the narrowing, rather than dropping it ----------------
+
+declare const deps: React.DependencyList;
+
+const hookScalar = useLazy(() => Promise.resolve(42), deps);
+assignableTo<number | undefined>(hookScalar.value);
+// @ts-expect-error unseeded, so still a union
+assignableTo<number>(hookScalar.value);
+
+const hookSeeded = useLazy(() => Promise.resolve(42), deps, { initialValue: 0 });
+assignableTo<number>(hookSeeded.value);
+assignableTo<true>(hookSeeded.loaded);
+
+const hookList = useLazyArray(() => Promise.resolve([1]), deps);
+// @ts-expect-error unseeded, so still a union
+assignableTo<IObservableArray<number>>(hookList.value);
+
+const hookSeededList = useLazyArray(() => Promise.resolve([1]), deps, { initialValue: [] });
+assignableTo<IObservableArray<number>>(hookSeededList.value);
+assignableTo<true>(hookSeededList.loaded);
+
+// --- narrowed lazies remain usable everywhere an unnarrowed one is --------
+
+// the narrowed type is one arm of the union, so nothing typed against the union breaks
+assignableTo<LazyObservable<number>>(seededScalar);
+assignableTo<LazyObservableArray<number>>(seededList);
+// the table takes a row source structurally, and a seeded list still satisfies it
+assignableTo<RowSource<number>>(seededList);
+assignableTo<RowSource<number>>(list);
+// and the full API is still there
+void seededScalar.reload();
+seededScalar.invalidate({ discard: true });
+seededList.set([9]);
 
 export {};

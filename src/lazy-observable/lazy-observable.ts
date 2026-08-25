@@ -107,6 +107,13 @@ export type LazyObservable<T = any> =
   | (LazyObservableApi<T> & { loaded: true; value: T })
   | (LazyObservableApi<T> & { loaded: false; value: undefined });
 
+/**
+ * The `loaded: true` arm of {@link LazyObservable} — a lazy that is known to hold a value, so
+ * `value` reads as `T` with no check. What a seeded `lazyObservable` hands back, and what a
+ * `loaded` check narrows an ordinary one to.
+ */
+export type LoadedLazyObservable<T = any> = Extract<LazyObservable<T>, { loaded: true }>;
+
 export interface LazyObservableOptions {
   /**
    * Whether the value's contents are made observable recursively, as in mobx's own `deep` option.
@@ -163,6 +170,16 @@ export interface LazyObservableOptionsWithInitialValue<T> extends LazyObservable
    *
    * Without it a lazy holds nothing (`loaded: false`, `value: undefined`) until a load lands. That
    * distinction is the point: an empty array means "there are none", not "not known yet".
+   *
+   * Passing this narrows the result to {@link LoadedLazyObservable}, so `value` reads as `T`
+   * without a `loaded` check — the seed is restored by a discard, so a seeded lazy can never go
+   * back to holding nothing.
+   *
+   * Presence is what counts, not the value: for a `T` that includes `undefined`, seeding with
+   * `undefined` is a real value and reports `loaded`, matching a fetch that resolves `undefined`.
+   * That is why the unseeded overload has no `initialValue` at all — `{ initialValue: maybe }`
+   * where `maybe` might be `undefined` is the one state that cannot be represented, so it is
+   * rejected at the call site rather than guessed at.
    */
   initialValue?: T;
 }
@@ -193,9 +210,19 @@ export type LazyFetch<T> = (options: LazyFetchOptions) => Promise<T>;
 
 export function lazyObservable<T>(
   fetch: LazyFetch<T>,
+  options: LazyObservableOptionsWithInitialValue<T> & { initialValue: T },
+): LoadedLazyObservable<T>;
+export function lazyObservable<T>(
+  fetch: LazyFetch<T>,
+  options?: LazyObservableOptions,
+): LazyObservable<T>;
+export function lazyObservable<T>(
+  fetch: LazyFetch<T>,
   options?: LazyObservableOptionsWithInitialValue<T>,
 ): LazyObservable<T> {
-  return createLazy(fetch, options);
+  // Presence, not value: `undefined` is a legitimate seed when `T` admits it, and the overloads
+  // above are what stop an ambiguous `T | undefined` from reaching here in the first place.
+  return createLazy(fetch, options, !!options && "initialValue" in options);
 }
 
 /**
@@ -206,7 +233,15 @@ export function lazyObservable<T>(
  */
 function createLazy<T>(
   fetch: LazyFetch<T>,
-  options?: LazyObservableOptionsWithInitialValue<T>,
+  options: LazyObservableOptionsWithInitialValue<T> | undefined,
+  /**
+   * Whether `options` carried a seed. Passed in rather than derived here, because the two callers
+   * decide it differently and only they can: a scalar seed of `undefined` is a real value, while
+   * for a list `undefined` is never one — and `lazyObservableArray` rebuilds the options bag on
+   * the way through, so an `in` test here would read its own reconstruction rather than what the
+   * caller wrote.
+   */
+  seeded: boolean,
   ownedArray?: IObservableArray<unknown>,
 ): LazyObservable<T> {
   /**
@@ -227,7 +262,8 @@ function createLazy<T>(
   /**
    * What a discard returns to. Arrays are snapshotted at construction, because the caller keeps a
    * reference to the array they passed and mutating it must not change what a discard restores.
-   * Scalars are held as given, matching how the box would have stored them anyway.
+   * Scalars are held as given, matching how the box would have stored them anyway. Whether there
+   * *is* a seed is `seeded`, not `seed !== undefined` — see above.
    */
   const seed = (
     Array.isArray(options?.initialValue) ? [...options.initialValue] : options?.initialValue
@@ -246,7 +282,7 @@ function createLazy<T>(
    * Only `applyValue` and `clearValue` below write to it, which is what keeps it in step with
    * whichever container is holding the value.
    */
-  const hasValue = observable.box(seed !== undefined);
+  const hasValue = observable.box(seeded);
 
   /** The observable that observation hooks attach to: the array itself, or the box. */
   const valueSource = (ownedArray ?? box) as IObservableArray<unknown>;
@@ -277,8 +313,10 @@ function createLazy<T>(
    * array is emptied rather than replaced, so a reference taken earlier stays valid.
    */
   const clearValue = (): void => {
-    if (seed !== undefined) {
-      applyValue(seed);
+    if (seeded) {
+      // `seed` is `T` whenever `seeded` — including a deliberate `undefined` for a `T` that
+      // admits one. A list can never reach here with an undefined seed: see `seeded` above.
+      applyValue(seed as T);
       return;
     }
     if (ownedArray) ownedArray.clear();
@@ -690,10 +728,33 @@ export type LazyObservableArray<T = any> =
   | (LazyArrayApi<T> & { loaded: true; value: IObservableArray<T> })
   | (LazyArrayApi<T> & { loaded: false; value: undefined });
 
+/**
+ * The `loaded: true` arm of {@link LazyObservableArray} — the list counterpart of
+ * {@link LoadedLazyObservable}. What a seeded `lazyObservableArray` hands back, including one
+ * seeded with `[]`: "there are none" is a fact, and a fact is loaded.
+ */
+export type LoadedLazyObservableArray<T = any> = Extract<LazyObservableArray<T>, { loaded: true }>;
+
 export interface LazyObservableArrayOptions<T> extends LazyObservableOptions {
+  /**
+   * Rows to start with — see {@link LazyObservableOptionsWithInitialValue.initialValue}, of which
+   * this is the list form. Passing it narrows the result to {@link LoadedLazyObservableArray}.
+   *
+   * Unlike the scalar case there is nothing ambiguous to guard against, because `undefined` is
+   * never a list: `{ initialValue: maybeRows }` is accepted and simply does not narrow, since a
+   * seed that might not be there cannot promise a value.
+   */
   initialValue?: T[];
 }
 
+export function lazyObservableArray<T>(
+  fetch: LazyFetch<T[]>,
+  options: LazyObservableArrayOptions<T> & { initialValue: T[] },
+): LoadedLazyObservableArray<T>;
+export function lazyObservableArray<T>(
+  fetch: LazyFetch<T[]>,
+  options?: LazyObservableArrayOptions<T>,
+): LazyObservableArray<T>;
 export function lazyObservableArray<T>(
   fetch: LazyFetch<T[]>,
   options?: LazyObservableArrayOptions<T>,
@@ -711,6 +772,9 @@ export function lazyObservableArray<T>(
   return createLazy<T[]>(
     fetch,
     { ...rest, initialValue: options?.initialValue },
+    // A list is seeded by *having* rows, never by the key being present: `undefined` is not a
+    // list, so an explicit `initialValue: undefined` means the same as omitting it.
+    options?.initialValue !== undefined,
     items as unknown as IObservableArray<unknown>,
   ) as unknown as LazyObservableArray<T>;
 }

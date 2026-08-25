@@ -158,6 +158,7 @@ an explicit write.
 ```ts
 lazyObservable(fetch, {
   initialValue: seed, // start loaded with this, and still revalidate — default: none
+  //                    (narrows the result — see “A seed narrows the type”)
   deep: false, // convert the value's contents to observables? — default: true
   keepOnUnobserved: true, // false | true | { for: ms } — default: false
   trackDependencies: true, // false | true | { throttle: ms } — default: false
@@ -325,6 +326,71 @@ If you want that behaviour on purpose, ask for it — and it means what it says:
 lazyObservableArray(api.listSurveys, { initialValue: [] }); // loaded, zero rows, still revalidates
 ```
 
+## A seed narrows the type
+
+Seeding is a promise the lazy can keep: a discard restores the seed rather than dropping to
+nothing, so a seeded lazy is `loaded` from construction and can never go back. The type says so,
+which means no guard at the call site:
+
+```ts
+const rows = lazyObservableArray(api.listSurveys, { initialValue: [] });
+rows.value.length; // IObservableArray<Survey> — no `loaded` check, no `?.`, no `?? []`
+
+const count = lazyObservable(api.countSurveys, { initialValue: 0 });
+count.value * 2; // number
+```
+
+Without a seed you get the union, and the `loaded` guard is still how you read it:
+
+```ts
+const rows = lazyObservableArray(api.listSurveys);
+rows.value; // IObservableArray<Survey> | undefined
+```
+
+This works through `useLazy` and `useLazyArray` too, and the narrowed type is just the `loaded:
+true` arm of the union — so anything that accepts a `LazyObservable` still accepts a seeded one,
+`<LazyObserver>` and table `rows={...}` included. Name it `LoadedLazyObservable<T>` or
+`LoadedLazyObservableArray<T>` if you need to write it down.
+
+### `undefined` can be a seed, when it can be a value
+
+For a lazy whose `T` includes `undefined`, seeding with `undefined` means "I already know there
+isn't one" — and it reports `loaded`, exactly as a fetch resolving `undefined` always has:
+
+```ts
+lazyObservable<Session | undefined>(api.getSession, { initialValue: undefined });
+// loaded: true, value: undefined — no spinner, and still revalidates on first observation
+```
+
+What separates that from an unseeded lazy is the _presence of the option_, not its value:
+
+```ts
+lazyObservable<Session | undefined>(api.getSession); // loaded: false — nothing known yet
+```
+
+The consequence is that a seed which _might_ be `undefined` can't be taken at face value, because
+nothing can tell it apart from a deliberate one. With the type free, TypeScript widens it and both
+readings stay true:
+
+```ts
+declare const maybe: number | undefined;
+const c = lazyObservable(api.countSurveys, { initialValue: maybe });
+// LoadedLazyObservable<number | undefined> — loaded, and `value` still admits undefined
+```
+
+Pin the type and there is nothing left to widen, so it is rejected instead:
+
+```ts
+lazyObservable<number>(api.countSurveys, { initialValue: maybe });
+// ✗ 'initialValue' does not exist in type 'LazyObservableOptions'
+```
+
+Resolve it at the call site — `initialValue: maybe ?? 0`, or branch — rather than handing the lazy
+a seed it can't describe.
+
+Lists have none of this to worry about, since `undefined` is never a list. `{ initialValue:
+maybeRows }` is accepted and simply doesn't narrow.
+
 ## `useLazy` / `useLazyArray`
 
 A lazy that belongs to one component, for an async read whose inputs are the component's own — a
@@ -355,6 +421,10 @@ you that abort.
 > everything else: a count, a summary, an endpoint with no model behind it.
 
 `useLazyArray` is the same for a list-shaped value, and returns a `lazyObservableArray`.
+
+Both take an `initialValue`, and narrow when you pass one, exactly as the factories do — see
+[A seed narrows the type](#a-seed-narrows-the-type). The seed belongs to _this_ lazy, so a
+`deps` change builds a new one starting from the seed again.
 
 **`deps` say _which_ lazy this is.** Changing them builds a new one, exactly as constructing a second
 lazy by hand would: the value starts empty and loads again. For a single record that is the point —
@@ -444,7 +514,10 @@ import type {
   LazyObservable, // the object returned by lazyObservable() and useLazy()
   LazyObservableApi, // the half of it that doesn't depend on `loaded`
   LazyObservableArray, // the object returned by lazyObservableArray() and useLazyArray()
+  LoadedLazyObservable, // its `loaded: true` arm — what a seeded lazyObservable() returns
+  LoadedLazyObservableArray, // the same for a seeded lazyObservableArray()
   LazyObservableOptions, // options for lazyObservable()
+  LazyObservableOptionsWithInitialValue, // ...plus the seed, for the seeded overload
   LazyInvalidateOptions, // options for invalidate()
   LazyFetch, // ({ signal }: LazyFetchOptions) => Promise<T>
   LazyFetchOptions, // what a fetch is handed — currently { signal }

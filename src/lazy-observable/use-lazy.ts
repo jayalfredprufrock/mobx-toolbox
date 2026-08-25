@@ -7,6 +7,9 @@ import {
   type LazyObservableArray,
   type LazyObservableArrayOptions,
   type LazyObservableOptions,
+  type LazyObservableOptionsWithInitialValue,
+  type LoadedLazyObservable,
+  type LoadedLazyObservableArray,
 } from "./lazy-observable";
 
 /**
@@ -29,12 +32,29 @@ import {
  *
  * Held through {@link useStable} rather than `useMemo`, which React may discard — that would rebuild
  * the lazy and silently drop what it had loaded.
+ *
+ * An `initialValue` seeds it, exactly as it does for a hand-built lazy, and narrows the result so
+ * `value` reads without a `loaded` check. The seed belongs to *this* lazy, so changing `deps`
+ * builds a new one starting from the seed again — which is what you want, since the seed describes
+ * the inputs it was written for.
  */
 export function useLazy<T>(
   fetch: LazyFetch<T>,
   deps: React.DependencyList,
+  options: LazyObservableOptionsWithInitialValue<T> & { initialValue: T },
+): LoadedLazyObservable<T>;
+export function useLazy<T>(
+  fetch: LazyFetch<T>,
+  deps: React.DependencyList,
   options?: LazyObservableOptions,
+): LazyObservable<T>;
+export function useLazy<T>(
+  fetch: LazyFetch<T>,
+  deps: React.DependencyList,
+  options?: LazyObservableOptionsWithInitialValue<T>,
 ): LazyObservable<T> {
+  // `?? {}` rather than passing `options` straight through: the seed is read off the presence of
+  // the key, which an absent bag and an empty one answer the same way.
   return useStable(() => lazyObservable(fetch, options ?? {}), deps);
 }
 
@@ -48,7 +68,21 @@ export function useLazy<T>(
  * The lazy owns one observable array for its lifetime, so loads replace its *contents* — but `deps`
  * changing ends that lifetime and builds a new lazy with a new array, just as constructing one by
  * hand would. Anything watching array identity should watch the lazy's `loadedAt` instead.
+ *
+ * An `initialValue` seeds the list and narrows the result, so `value` reads without a `loaded`
+ * check — `initialValue: []` included, which is how you say "there are none yet, and that is a
+ * fact" rather than "not known yet".
  */
+export function useLazyArray<T>(
+  fetch: LazyFetch<T[]>,
+  deps: React.DependencyList,
+  options: LazyObservableArrayOptions<T> & { initialValue: T[] },
+): LoadedLazyObservableArray<T>;
+export function useLazyArray<T>(
+  fetch: LazyFetch<T[]>,
+  deps: React.DependencyList,
+  options?: LazyObservableArrayOptions<T>,
+): LazyObservableArray<T>;
 export function useLazyArray<T>(
   fetch: LazyFetch<T[]>,
   deps: React.DependencyList,

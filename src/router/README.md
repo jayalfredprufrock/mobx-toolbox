@@ -419,6 +419,63 @@ A redirect that can't be carried out — a function that throws or returns an un
 
 Static targets never reach this path — boot validation rejects them first. It covers exactly the two cases that validation can't see: function targets and thrown `redirect()`s.
 
+### URLs that do something and leave
+
+A logout URL, an email confirmation link, an OAuth callback: it does some work and sends the user
+somewhere else, with no UI of its own.
+
+**A node with only a `[GUARD]` is not addressable.** Every navigable path in this router addresses a
+page, so `logout: { [GUARD]: doLogout }` never matches — the URL 404s and the guard never runs.
+That is the same rule that makes `RouteLevel.pattern` optional.
+
+Three ways to model it, in the order worth trying:
+
+**1. Don't make it a route.** Most of these are a button, not a destination:
+
+```tsx
+const onLogout = async () => {
+  await auth.logout();
+  router.navigate({ to: "/login", replace: true });
+};
+```
+
+Nothing to configure, and the ordering is explicit. Reach for a URL only when something _outside_
+your app has to link to it — an email, a plain `<a href>`, an identity provider's return URL.
+
+**2. It must be a URL, and the work needn't be awaited** — a `[REDIRECT]` function:
+
+```ts
+logout: {
+  [REDIRECT]: () => {
+    void auth.logout();
+    return "/login";
+  },
+},
+```
+
+No placeholder component: this URL genuinely _is_ a redirect, one that does a little work on the way.
+Two things to know — a `[REDIRECT]` function runs during **matching**, so it fires before any
+ancestor `[GUARD]` (fine for logout, which should work whether or not the session is still valid),
+and it is synchronous, so the work cannot be awaited.
+
+**3. The work must finish before the next route loads** — a `[GUARD]`, with a page that renders
+nothing:
+
+```ts
+logout: {
+  [PAGE]: () => null, // no UI: you are leaving immediately
+  [GUARD]: async () => {
+    await auth.logout();
+    throw redirect({ to: "/login" });
+  },
+},
+```
+
+The `() => null` looks like a placeholder but is an accurate statement, and **it never renders**:
+guards run before the route swaps, so the page the user came from stays on screen until the redirect
+lands. Reach for this when the next route depends on the work having completed — clearing a token
+before `/login`, so it doesn't bounce straight back.
+
 ## `[CONTEXT]` — static route data
 
 `[CONTEXT]` attaches a plain object to a route subtree. It merges down through nesting and is accessible on `route.context` in guards and loaders. Useful for role tags, feature flags, or section metadata.

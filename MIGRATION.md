@@ -280,6 +280,50 @@ hooks were attached, so the lazy was watched, never learned it, and never loaded
 that compiled and quietly fetched nothing will start fetching. A workaround that called `getOrLoad()`
 by hand is safe to leave in place: it joins the load rather than starting a second one.
 
+⚠️ **`initialValue` now narrows the result, and the unseeded overload no longer accepts it.**
+A seeded lazy is `loaded` from construction and a discard restores the seed, so it can never go
+back to holding nothing — the type now says so, and `value` reads without a guard:
+
+```ts
+const rows = lazyObservableArray(api.listSurveys, { initialValue: [] });
+rows.value.length; // was `IObservableArray<Survey> | undefined`, now the array itself
+```
+
+Nothing needs changing for that part: the narrowed type is the `loaded: true` arm of the same
+union, so every existing signature still accepts it. Redundant guards (`rows.loaded ? … : …`,
+`rows.value ?? []`) are now dead code you can delete, and `useLazy` / `useLazyArray` narrow the
+same way.
+
+`useLazy` also **gains** `initialValue`, which it never accepted before.
+
+The one thing to fix is a seed that might be `undefined` on a lazy whose type is pinned:
+
+```ts
+declare const maybe: number | undefined;
+
+lazyObservable<number>(api.count, { initialValue: maybe });
+// ✗ 'initialValue' does not exist in type 'LazyObservableOptions'
+```
+
+Nothing can tell that apart from a deliberate `undefined`, so it is rejected rather than guessed
+at. Resolve it at the call site — `initialValue: maybe ?? 0`, or branch on it. Where the type is
+_not_ pinned, TypeScript widens it to include `undefined` and the call keeps working; and lists
+are unaffected either way, since `undefined` is never a list.
+
+⚠️ **Seeding a scalar with `undefined` now reports `loaded`.** For a `T` that includes `undefined`,
+`{ initialValue: undefined }` is a real value — the same answer a fetch resolving `undefined` has
+always given. It previously read as unseeded. Presence of the option is what counts:
+
+```ts
+lazyObservable<Session | undefined>(api.getSession, { initialValue: undefined });
+// before: loaded false. now: loaded true, value undefined — no spinner, still revalidates
+lazyObservable<Session | undefined>(api.getSession);
+// unchanged: loaded false — nothing known yet
+```
+
+If you were passing an explicit `undefined` to mean "no seed", drop the option instead. Lists are
+unchanged: `{ initialValue: undefined }` on a `lazyObservableArray` still means unseeded.
+
 **Keyed collections.** If you used `lazyObservableArrayMap` to hold one list per key over a single
 resource, the replacement is `collectionMap` on a store — one list per key, built on first use, each
 one an ordinary collection with the store's mutation handling:

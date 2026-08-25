@@ -14,14 +14,15 @@ The fetch function runs the first time the observable is accessed inside a react
 
 ### Properties
 
-| Property    | Type                  | Description                                             |
-| ----------- | --------------------- | ------------------------------------------------------- |
-| `value`     | `T \| undefined`      | The value, or `undefined` when there isn't one          |
-| `loaded`    | `boolean`             | Whether there is a value — **narrows `value`**          |
-| `fetching`  | `boolean`             | A request is in flight, refreshes included              |
-| `error`     | `unknown`             | How the last request ended; `undefined` if it succeeded |
-| `fetchedAt` | `number \| undefined` | When a request last succeeded                           |
-| `observed`  | `boolean`             | `true` while something is observing this lazy           |
+| Property     | Type                  | Description                                             |
+| ------------ | --------------------- | ------------------------------------------------------- |
+| `value`      | `T \| undefined`      | The value, or `undefined` when there isn't one          |
+| `loaded`     | `boolean`             | Whether there is a value — **narrows `value`**          |
+| `fetching`   | `boolean`             | A request is in flight, refreshes included              |
+| `refreshing` | `boolean`             | A request is in flight _behind an existing value_       |
+| `error`      | `unknown`             | How the last request ended; `undefined` if it succeeded |
+| `fetchedAt`  | `number \| undefined` | When a request last succeeded                           |
+| `observed`   | `boolean`             | `true` while something is observing this lazy           |
 
 Three facts vary independently here, and none is derivable from the others:
 
@@ -29,9 +30,9 @@ Three facts vary independently here, and none is derivable from the others:
 - **`fetching`** — is a request running?
 - **`error`** — how did the last request end?
 
-There is deliberately no fourth property combining them. A first load is `!loaded && fetching`; a
-refresh is `loaded && fetching`. Spell whichever you mean — it is shorter than looking up which of
-two similar names meant which, and it can't be confused with the other.
+A first load is `!loaded && fetching`. A refresh — a request behind data already on screen — is
+`loaded && fetching`, which is what **`refreshing`** is. It exists as its own property for a reason
+that has nothing to do with brevity: see [below](#what-you-read-is-what-keeps-a-lazy-alive).
 
 A refresh that fails while data is on screen is `loaded: true` _and_ has an `error`. Both are true
 statements, and there is no single enum value that says so — which is why there isn't one.
@@ -71,21 +72,60 @@ const SurveyList = observer(() => {
 });
 ```
 
-| situation                  | `value`     | `loaded` | `fetching` | `error` |
-| -------------------------- | ----------- | -------- | ---------- | ------- |
-| nothing yet                | `undefined` | `false`  | `false`    | —       |
-| first load                 | `undefined` | `false`  | `true`     | —       |
-| first load failed          | `undefined` | `false`  | `false`    | set     |
-| loaded, idle               | value       | `true`   | `false`    | —       |
-| refreshing (default)       | value       | `true`   | `true`     | —       |
-| refreshing after `discard` | `undefined` | `false`  | `true`     | —       |
-| **refresh failed**         | **value**   | **true** | `false`    | **set** |
+| situation                  | `value`     | `loaded` | `fetching` | `refreshing` | `error` |
+| -------------------------- | ----------- | -------- | ---------- | ------------ | ------- |
+| nothing yet                | `undefined` | `false`  | `false`    | `false`      | —       |
+| first load                 | `undefined` | `false`  | `true`     | `false`      | —       |
+| first load failed          | `undefined` | `false`  | `false`    | `false`      | set     |
+| loaded, idle               | value       | `true`   | `false`    | `false`      | —       |
+| refreshing (default)       | value       | `true`   | `true`     | `true`       | —       |
+| refreshing after `discard` | `undefined` | `false`  | `true`     | `false`      | —       |
+| **refresh failed**         | **value**   | **true** | `false`    | `false`      | **set** |
 
 That last row is the one worth reading twice. A failed refresh keeps the previous value readable and
 records the error — so `error` alone never means "there is nothing to show". Check `loaded` for that.
 
 Pass `{ discard: true }` when stale data would be misleading rather than helpful — a filter change,
 or switching to a different record.
+
+#### What you read is what keeps a lazy alive
+
+A lazy loads when something observes it and drops its value when nothing does. "Observing" means
+reading **`value`**, **`loaded`**, **`error`** or **`refreshing`** — and deliberately _not_
+`fetching` or `fetchedAt`, so that a header "syncing…" indicator can watch a store's lazy without
+pinning it in memory or kicking off a fetch just by rendering.
+
+The cost of that exclusion is one sharp edge, and it is worth knowing before you meet it:
+
+```tsx
+// ✗ renders forever, and fetches forever
+const SurveyList = observer(() => {
+  if (surveys.fetching) return <Skeleton />; // reads nothing that observes
+  return <List items={surveys.value} />;
+});
+```
+
+The skeleton branch observes nothing, so the lazy is dropped, which aborts the load, which clears
+`fetching`, which renders the other branch, which observes again — a loop that spins as fast as the
+event loop allows. Nothing throws; the tab just gets hot. Development warns once when it detects
+this, naming the lazy if you gave it a `debugName`.
+
+Use `refreshing`, which asks the same question and observes while it does:
+
+```tsx
+// ✓
+const SurveyList = observer(() => {
+  if (surveys.refreshing) return <Skeleton />;
+  return <List items={surveys.value} />;
+});
+```
+
+`fetching` is still the right thing to read _alongside_ something that observes — `dimmed={surveys.fetching}`
+in the example above is fine, because the same expression reads `value`. The rule is only that it
+must never be the sole read on a path that renders no data.
+
+This matters most with `initialValue`: a seeded lazy is `loaded` from construction, so the usual
+`if (!loaded)` gate is dead code and the obvious replacement is the broken one.
 
 #### Demand vs. staleness
 

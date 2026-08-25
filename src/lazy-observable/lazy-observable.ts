@@ -25,6 +25,15 @@ export interface LazyInvalidateOptions {
  * whether a request is running; `error` says how the last request ended. A refresh that fails while
  * a value is on screen is `loaded: true` *and* has an `error`, and both are true statements.
  */
+/**
+ * How many times a lazy may go from unobserved to observed inside {@link THRASH_WINDOW_MS} before
+ * the dev-only warning fires. Well above ordinary churn — a StrictMode double-mount is two, and a
+ * list remounting on every keystroke is still single digits per second — and well below the
+ * hundreds a runaway produces.
+ */
+const THRASH_LIMIT = 20;
+const THRASH_WINDOW_MS = 1000;
+
 export interface LazyObservableApi<T> {
   /**
    * How the last request ended, or `undefined` if it succeeded (or none has run). Cleared when a
@@ -40,11 +49,29 @@ export interface LazyObservableApi<T> {
    * its previous value.
    *
    * Orthogonal to `loaded`, deliberately: the two together describe every state without overlapping.
-   * A first load is `!loaded && fetching`; a refresh is `loaded && fetching`. There is no third
-   * property combining them, because the one that used to exist was the easiest thing here to
-   * confuse with this one — and the obvious use for it silently mishandled a failed first load.
+   * A first load is `!loaded && fetching`; a refresh is {@link LazyObservableApi.refreshing}.
+   *
+   * ⚠️ **Reading this does not observe the lazy.** It is not one of the observation sources, so a
+   * render that decides what to show from `fetching` alone subscribes to nothing — see
+   * {@link LazyObservableApi.refreshing}, which is the safe way to ask the same question.
    */
   fetching: boolean;
+  /**
+   * A request is in flight behind a value that is already there — a refresh, as opposed to a first
+   * load. Exactly `loaded && fetching`.
+   *
+   * **Prefer this to a bare `fetching` for anything that decides what to render.** Reading it
+   * touches whether there *is* a value, which is one of the reads that marks a lazy observed, so a
+   * placeholder branch gated on it keeps the lazy alive. A branch gated on `fetching` alone
+   * observes nothing: the lazy is dropped, its load aborted, `fetching` cleared — and the branch
+   * renders itself away again, as fast as the event loop allows. Development warns once when it
+   * sees that happening.
+   *
+   * (The `loading` property this resembles was removed for a different reason: it read as the
+   * opposite of `loaded` while actually meaning "a request is in flight", and mishandled a failed
+   * first load. This one is a conjunction of the two facts rather than a substitute for either.)
+   */
+  refreshing: boolean;
   /**
    * When a request last succeeded, as epoch milliseconds, or `undefined` if none ever has.
    *
@@ -604,12 +631,55 @@ function createLazy<T>(
     );
   }
 
+  /** Dev-only; see `warnOnThrash`. */
+  let observeTimes: number[] = [];
+  let thrashWarned = false;
+
+  /**
+   * A lazy that keeps being observed, dropped, and observed again is almost always a render gating
+   * on `fetching` without reading anything that observes. The cycle is self-sustaining and silent —
+   * no error, no failed request, just a component that renders forever and a server that gets hit
+   * forever — so it is worth spending a timestamp per transition to name it. Fires once per lazy,
+   * and only in development.
+   *
+   * Counted on the transition *into* observation, which is the edge that starts a load.
+   */
+  const warnOnThrash = (): void => {
+    if (thrashWarned) return;
+    const now = Date.now();
+    observeTimes = observeTimes.filter((t) => now - t < THRASH_WINDOW_MS);
+    observeTimes.push(now);
+    if (observeTimes.length <= THRASH_LIMIT) return;
+
+    thrashWarned = true;
+    const name = options?.debugName ? ` "${options.debugName}"` : "";
+    console.warn(
+      `[mobx-toolbox] lazyObservable${name} was observed ${observeTimes.length} times in ` +
+        `under ${THRASH_WINDOW_MS}ms, and is probably in a reload loop.\n\n` +
+        "This happens when a render decides what to show from `fetching` or `fetchedAt` alone. " +
+        "Neither one observes the lazy, so the branch that shows a placeholder drops it — which " +
+        "aborts the load, clears `fetching`, and renders the other branch again, forever.\n\n" +
+        "Gate on `refreshing` (a request behind an existing value) or `!loaded && fetching` (a " +
+        "first load) instead. Both read whether there is a value, which is what keeps the lazy " +
+        "observed while the placeholder is up.",
+    );
+  };
+
   const syncObserved = (): void => {
     const next = observedBoxes.size > 0;
     if (next === observed.get()) return;
 
     log(next ? "observed" : "unobserved");
     write(() => observed.set(next));
+
+    // Development only, and the spelling is load-bearing: `process.env.NODE_ENV` is what mobx
+    // uses, so a consumer already has it defined, and keeping the comparison inline and literal
+    // is what lets their bundler drop `warnOnThrash` and its bookkeeping entirely. This survives
+    // into the published chunk only because `pack` builds with `platform: "neutral"` — under
+    // `"browser"`, rolldown rewrites `process.env` in shared chunks and the guard folds to `true`.
+    if (process.env.NODE_ENV !== "production") {
+      if (next) warnOnThrash();
+    }
 
     if (next) {
       clearTimeout(keepTimer);
@@ -629,7 +699,10 @@ function createLazy<T>(
   };
 
   // What counts as "observing": the value itself, whether there is one, and how the last request
-  // ended. `fetching` is deliberately not here — a spinner watching it must not keep a lazy alive.
+  // ended. `fetching` is deliberately not here — it would let a header "syncing…" indicator both
+  // pin a value in memory and *start* a fetch merely by rendering, since becoming observed is what
+  // triggers a load. The cost of that exclusion is that `fetching` cannot safely gate a render on
+  // its own, which is what `refreshing` and the thrash warning above exist to handle.
   for (const source of [valueSource, hasValue, error]) {
     onBecomeObserved(source, () => {
       observedBoxes.add(source);
@@ -653,6 +726,16 @@ function createLazy<T>(
     },
     get fetching() {
       return fetching.get();
+    },
+    get refreshing() {
+      // `hasValue` is an observation source and `fetching` is not, which is what makes this safe
+      // to gate a render on where a bare `fetching` is not.
+      //
+      // The operand order matters, and only in one case: reading this when it is *false* because
+      // nothing is in flight. Written the other way round, `fetching` short-circuits and nothing
+      // is read at all — so a component whose only read is `refreshing` would observe nothing and
+      // never load. Leading with `hasValue` means every path through this getter observes.
+      return hasValue.get() && fetching.get();
     },
     get fetchedAt() {
       return fetchedAt.get();

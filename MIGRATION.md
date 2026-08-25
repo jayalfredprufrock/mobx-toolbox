@@ -280,6 +280,34 @@ hooks were attached, so the lazy was watched, never learned it, and never loaded
 that compiled and quietly fetched nothing will start fetching. A workaround that called `getOrLoad()`
 by hand is safe to leave in place: it joins the load rather than starting a second one.
 
+**New: `refreshing`, and a warning for the gate it replaces.** `refreshing` is `loaded && fetching`
+— a request in flight behind data already on screen. It exists because `fetching` alone is unsafe
+to gate a render on, which is worth checking your call sites for:
+
+```tsx
+// ✗ renders and fetches forever
+if (surveys.fetching) return <Skeleton />;
+return <List items={surveys.value} />;
+
+// ✓
+if (surveys.refreshing) return <Skeleton />;
+return <List items={surveys.value} />;
+```
+
+A lazy is observed by reads of `value`, `loaded`, `error` or `refreshing` — never by `fetching` or
+`fetchedAt`, so that a header "syncing…" indicator cannot pin a value in memory or start a fetch
+just by rendering. The consequence is that a placeholder branch reading _only_ `fetching` observes
+nothing: the lazy is dropped, the load aborted, `fetching` cleared, the other branch rendered, and
+round again. Development now warns once when it sees that happening, naming the lazy if it has a
+`debugName`.
+
+Reading `fetching` alongside something that observes is still fine — `dimmed={surveys.fetching}` on
+an element that also reads `value` was never affected. Grep for renders where `fetching` or
+`fetchedAt` is the _only_ thing read on a path.
+
+This is most likely to bite where you have just added an `initialValue`: a seeded lazy is `loaded`
+from construction, so `if (!loaded)` becomes dead code and `fetching` is the obvious replacement.
+
 ⚠️ **`initialValue` now narrows the result, and the unseeded overload no longer accepts it.**
 A seeded lazy is `loaded` from construction and a discard restores the seed, so it can never go
 back to holding nothing — the type now says so, and `value` reads without a guard:

@@ -105,7 +105,11 @@ Whether a wait has gone on long enough to be worth telling the user about.
 ```tsx
 import { useSlowLoading } from "@jayalfredprufrock/mobx-toolbox/util";
 
-const showSkeleton = useSlowLoading(!list.loaded);
+const slow = useSlowLoading(!list.loaded);
+
+if (slow) return <Skeleton />;
+if (!list.loaded) return null; // loading, but too early to say so
+return <Content rows={list.value} />;
 ```
 
 Loading UI flashes on fast responses: a request that resolves in 60 ms produces a 60 ms skeleton —
@@ -118,10 +122,37 @@ two-part fix, in one place:
 Both halves are needed. A threshold alone turns a 320 ms wait into a 20 ms flash, which is worse than
 either extreme.
 
+### Three states, not two
+
+The example above has three branches on purpose. A threshold means there is a window where the wait
+is real but not yet worth mentioning, so **"not slow" does not mean "ready"** — the value can still
+be missing:
+
+| value   | `slow`  | render                          |
+| ------- | ------- | ------------------------------- |
+| missing | `false` | nothing — inside the threshold  |
+| missing | `true`  | the skeleton                    |
+| present | `true`  | the skeleton, held by the floor |
+| present | `false` | the content                     |
+
+Both orderings in that snippet are load-bearing:
+
+- **`slow` is tested first**, because the floor outlives the wait. Once up, it stays for
+  `minDuration` even after the value lands — and testing the value first would swap the content in
+  the moment it arrived, which is the flash the floor exists to prevent.
+- **The `null` branch is what makes the threshold real.** Drop it and the first 300 ms render the
+  content branch with nothing to put in it — a crash, or an empty screen that then fills in.
+
+`LazyObserver` and `<Table.Loading>` are this same sequence already wired up. Reach for the hook
+directly where a component renders its own skeleton.
+
 ```tsx
 useSlowLoading(active, { after: 100, minDuration: 500 });
 useSlowLoading(active, { after: 0, minDuration: 0 }); // the escape hatch: raw flag
 ```
+
+With both at zero there is no threshold and no floor, so the third state collapses and two branches
+are enough — which is exactly what makes it the escape hatch.
 
 Plain boolean in, plain boolean out, so it works the same inside an `observer()` and outside one —
 pass it a prop, a piece of React state, or something read off a lazy or a store.

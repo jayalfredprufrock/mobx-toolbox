@@ -173,6 +173,121 @@ describe("useSlowLoading", () => {
     expect(probe.shown()).toBe(false);
   });
 
+  /**
+   * The documented render pattern, exercised end to end. `slow` has three meaningful states against
+   * a value that arrives, and a component that branches on two of them is wrong in a way no timing
+   * test above would catch — so this pins the sequence the README and JSDoc tell people to write.
+   */
+  describe("the documented three-branch pattern", () => {
+    const mountPattern = async () => {
+      let setLoaded!: (v: boolean) => void;
+      const frames: string[] = [];
+
+      const Probe = () => {
+        const [loaded, setter] = useState(false);
+        setLoaded = setter;
+        const slow = useSlowLoading(!loaded);
+
+        // exactly what the docs prescribe, in the prescribed order
+        const rendered = slow ? "skeleton" : !loaded ? "nothing" : "content";
+        frames.push(rendered);
+        return <span>{rendered}</span>;
+      };
+
+      const container = document.createElement("div");
+      document.body.appendChild(container);
+      containers.push(container);
+      const root = createRoot(container);
+      await act(async () => {
+        root.render(<Probe />);
+      });
+
+      return {
+        frames,
+        rendered: () => container.textContent,
+        load: async () => {
+          await act(async () => setLoaded(true));
+        },
+        advance: async (ms: number) => {
+          await act(async () => {
+            vi.advanceTimersByTime(ms);
+          });
+        },
+      };
+    };
+
+    test("a fast load renders nothing, then content — never a skeleton", async () => {
+      vi.useFakeTimers();
+      const probe = await mountPattern();
+
+      expect(probe.rendered()).toBe("nothing"); // the state a two-branch version gets wrong
+      await probe.advance(120);
+      await probe.load();
+
+      expect(probe.rendered()).toBe("content");
+      expect(probe.frames).not.toContain("skeleton");
+    });
+
+    test("a slow load renders nothing, then the skeleton, then content", async () => {
+      vi.useFakeTimers();
+      const probe = await mountPattern();
+
+      expect(probe.rendered()).toBe("nothing");
+      await probe.advance(300);
+      expect(probe.rendered()).toBe("skeleton");
+
+      await probe.load();
+      await probe.advance(300);
+      expect(probe.rendered()).toBe("content");
+    });
+
+    test("the skeleton outlives the wait, which is why `slow` is tested first", async () => {
+      vi.useFakeTimers();
+      const probe = await mountPattern();
+
+      await probe.advance(300);
+      expect(probe.rendered()).toBe("skeleton");
+
+      // value present *and* still slow — the state that a value-first branch order would drop
+      await probe.load();
+      expect(probe.rendered()).toBe("skeleton");
+
+      await probe.advance(299);
+      expect(probe.rendered()).toBe("skeleton");
+      await probe.advance(1);
+      expect(probe.rendered()).toBe("content");
+    });
+
+    test("with `after: 0` there is no third state to handle", async () => {
+      vi.useFakeTimers();
+      let setLoaded!: (v: boolean) => void;
+      const frames: string[] = [];
+
+      const Probe = () => {
+        const [loaded, setter] = useState(false);
+        setLoaded = setter;
+        const slow = useSlowLoading(!loaded, { after: 0, minDuration: 0 });
+        const rendered = slow ? "skeleton" : !loaded ? "nothing" : "content";
+        frames.push(rendered);
+        return <span>{rendered}</span>;
+      };
+
+      const container = document.createElement("div");
+      document.body.appendChild(container);
+      containers.push(container);
+      const root = createRoot(container);
+      await act(async () => {
+        root.render(<Probe />);
+      });
+      await act(async () => setLoaded(true));
+
+      // "nothing" appears only on the very first render, before the effect has run — never as a
+      // state the pattern has to hold, which is what makes two branches sufficient here
+      expect(frames.filter((f) => f === "nothing").length).toBeLessThanOrEqual(1);
+      expect(container.textContent).toBe("content");
+    });
+  });
+
   test("unmounting clears the pending timer", async () => {
     vi.useFakeTimers();
     const probe = await mount();

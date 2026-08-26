@@ -518,7 +518,9 @@ and then kept up for at least 300 ms. A fast load renders **nothing at all** in 
 With the tuple form the clock runs off the _combined_ gate — it starts when the first value is
 missing and resets once they are all present — rather than per-lazy. The timing is
 [`useSlowLoading`](../util/README.md#useslowloading), which you can use directly for a component
-that renders its own skeleton.
+that renders its own skeleton — note that doing it by hand needs
+[three branches](../util/README.md#three-states-not-two), which is what this component is doing for
+you above.
 
 ### What it throws, and what it doesn't
 

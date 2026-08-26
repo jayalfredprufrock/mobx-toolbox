@@ -35,15 +35,42 @@ export interface SlowLoadingOptions {
  * Both halves are needed. A threshold alone turns a 320 ms wait into a 20 ms flash, which is worse
  * than either extreme.
  *
+ * **This returns a third state, and a caller that renders two will be wrong.** The point of the
+ * threshold is that there is a window where the wait is real but not yet worth mentioning — so
+ * "not slow" does not mean "ready", and the data may still be missing:
+ *
  * ```tsx
- * const showSkeleton = useSlowLoading(!list.loaded);
+ * const slow = useSlowLoading(!list.loaded);
+ *
+ * if (slow) return <Skeleton />;
+ * if (!list.loaded) return null; // loading, but too early to say so
+ * return <Content rows={list.value} />;
  * ```
+ *
+ * Both branch orders matter:
+ *
+ * - `slow` is tested **first** because the floor outlives the wait. Once surfaced, this stays true
+ *   for `minDuration` even after the value has landed, and testing the value first would swap the
+ *   content in immediately — which is the flash the floor exists to prevent.
+ * - The `null` branch is what makes the threshold real. Drop it and the first `after` milliseconds
+ *   render the content branch with nothing to put in it.
+ *
+ * | value    | `slow` | render                              |
+ * | -------- | ------ | ----------------------------------- |
+ * | missing  | false  | nothing — inside the threshold      |
+ * | missing  | true   | the skeleton                        |
+ * | present  | true   | the skeleton, held by the floor     |
+ * | present  | false  | the content                         |
+ *
+ * `LazyObserver` and `<Table.Loading>` are this same sequence, already wired up; reach for the hook
+ * where a component renders its own skeleton.
  *
  * Plain boolean in, plain boolean out, so it works the same inside an `observer()` and outside one —
  * pass it anything, including a value read from a lazy or a store.
  *
- * `after: 0` surfaces immediately and `minDuration: 0` hides immediately, which together are the
- * escape hatch when a caller wants the raw flag.
+ * `after: 0` surfaces immediately and `minDuration: 0` hides immediately, which together collapse
+ * the third state away: with both at zero, `slow` and the wait are the same flag and two branches
+ * are enough.
  */
 export function useSlowLoading(active: boolean, options?: SlowLoadingOptions): boolean {
   const after = options?.after ?? LOADING_DELAY_MS;

@@ -18,6 +18,7 @@
   "sideEffects": false,
   "exports": {
     "./dialog": "./dist/dialog.mjs",
+    "./filter": "./dist/filter.mjs",
     "./form": "./dist/form.mjs",
     "./lazy-observable": "./dist/lazy-observable.mjs",
     "./model": "./dist/model.mjs",

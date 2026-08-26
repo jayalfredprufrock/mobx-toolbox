@@ -8,6 +8,7 @@ import {
   reaction,
 } from "mobx";
 import { ColumnModel } from "./column.model";
+import { TableSearch } from "./search.model";
 import type {
   ColumnDef,
   ColumnSort,
@@ -46,7 +47,14 @@ export class TableModel {
   private suppressedKeys = new Set<string>();
 
   // client-side filter sources (AND-composed); each exposes a reactive `predicate`. See setFilter.
+  // Page-level dimensions with no column behind them; per-column filters live on the columns.
   filterSources: FilterSource[] = [];
+
+  /**
+   * The built-in cross-column text search. Always present and inert until something is typed, so
+   * there is no config to switch it on. See {@link TableSearch}.
+   */
+  readonly search: TableSearch = new TableSearch(this);
 
   scrollX = 0;
   scrollY = 0;
@@ -294,11 +302,40 @@ export class TableModel {
     return this.orderedColumns.filter((c) => c.pinned === "right").reverse();
   }
 
+  /**
+   * Everything narrowing the rows client-side, AND-composed into one predicate: page-level
+   * `filterSources`, every active column filter, and the search. `undefined` when nothing is
+   * active — the pass-through convention `FilterSource` already uses.
+   *
+   * One predicate rather than several is the point: "what is hiding my rows" has a single answer.
+   * (A side effect worth knowing: `TableModel` therefore satisfies `FilterSource` itself.)
+   */
+  get predicate(): ((row: RowData) => boolean) | undefined {
+    return this.composePredicate();
+  }
+
   get filteredRows(): RowData[] {
-    // read each source's reactive predicate; skip sources with none (pass-through)
-    const predicates = this.filterSources.flatMap((s) => (s.predicate ? [s.predicate] : []));
-    if (!predicates.length) return this.rows;
-    return this.rows.filter((r) => predicates.every((p) => p(r)));
+    const predicate = this.predicate;
+    return predicate ? this.rows.filter(predicate) : this.rows;
+  }
+
+  /** Columns the built-in search reads — hidden ones included, since `searchable` describes data. */
+  get searchableColumns(): ColumnModel[] {
+    return this.allColumns.filter((c) => c.searchable);
+  }
+
+  /**
+   * How many filters are currently narrowing this table: one per active column filter, plus one if
+   * something is typed in the search. Page-level `filterSources` are not counted — the table cannot
+   * tell how many dimensions one of those represents.
+   *
+   * This is the disclosure for a filter that has no visible control: a hidden column, or a
+   * `filterable: false` one driven from a sidebar.
+   */
+  get activeFilterCount(): number {
+    let count = this.search.active ? 1 : 0;
+    for (const column of this.allColumns) if (column.filter?.active) count++;
+    return count;
   }
 
   // Rows in display order (filtered, then sorted by the active columns — first non-zero
@@ -483,6 +520,8 @@ export class TableModel {
       runtimeDefs: observable.ref,
       suppressedKeys: observable.ref,
       filterSources: observable.ref,
+      // Its own observable object, held by reference — mobx must not convert it.
+      search: false,
       scrollX: observable,
       scrollY: observable,
       height: observable,
@@ -517,7 +556,10 @@ export class TableModel {
       nextIdentityId: false,
       identityId: false,
 
+      predicate: computed,
       filteredRows: computed,
+      searchableColumns: computed,
+      activeFilterCount: computed,
       loading: computed,
       refreshing: computed,
       isEmpty: computed,
@@ -539,6 +581,7 @@ export class TableModel {
 
       applyState: action.bound,
       setFilter: action.bound,
+      clearFilters: action.bound,
       syncColumns: action,
       setColumns: action.bound,
       addColumn: action.bound,
@@ -703,9 +746,61 @@ export class TableModel {
     }
   }
 
-  /** Replace the client-side filter source(s). Pass `undefined` to clear. */
+  /**
+   * Replace the *page-level* filter source(s) — the row-level escape hatch for dimensions with no
+   * column behind them. Pass `undefined` to clear. Per-column filters are attached to their column
+   * defs instead and are untouched by this.
+   */
   setFilter(filter: FilterSource | FilterSource[] | undefined): void {
     this.filterSources = filter ? [filter].flat() : [];
+  }
+
+  /** The column under this key, if it exists. */
+  column(key: string): ColumnModel | undefined {
+    return this.columns.get(key);
+  }
+
+  /**
+   * `predicate` without the named column's own filter — what that column's facet counts are tallied
+   * over, so each option answers "how many rows would this add".
+   *
+   * Everything else stays in, including the search and page-level sources: a row those already
+   * exclude must not be counted, or the tally promises rows the selection could never surface.
+   */
+  predicateExcluding(key: string): ((row: RowData) => boolean) | undefined {
+    return this.composePredicate(key);
+  }
+
+  /**
+   * Reset every column filter.
+   *
+   * Deliberately leaves `search` alone (wiping text the user typed as a side effect is more
+   * surprising than leaving it — clear it explicitly with `search.clear()`), and *cannot* touch
+   * `filterSources`, since `FilterSource` is only a predicate and has nothing to reset.
+   */
+  clearFilters(): void {
+    for (const column of this.allColumns) column.filter?.clear();
+  }
+
+  // Reading each filter's `active` here tracks it; the returned closure reads the filter's own
+  // state when it is invoked inside `filteredRows`, which is tracked there. So a change that leaves
+  // `active` alone — swapping one selected value for another — still invalidates the rows.
+  private composePredicate(excludeKey?: string): ((row: RowData) => boolean) | undefined {
+    const parts: ((row: RowData) => boolean)[] = [];
+
+    for (const source of this.filterSources) if (source.predicate) parts.push(source.predicate);
+
+    for (const column of this.allColumns) {
+      if (column.key === excludeKey) continue;
+      const filter = column.filter;
+      if (filter?.active) parts.push((row) => filter.matches(column.getValue(row)));
+    }
+
+    const search = this.search.predicate;
+    if (search) parts.push(search);
+
+    if (parts.length === 0) return undefined;
+    return (row) => parts.every((part) => part(row));
   }
 
   /**

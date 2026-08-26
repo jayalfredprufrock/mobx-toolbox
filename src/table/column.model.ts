@@ -1,6 +1,18 @@
 import { action, computed, makeObservable, observable } from "mobx";
+import type { Facet, SetFilterValue } from "../filter/filter.types";
+// Two pure functions, imported from the module rather than the `../filter` barrel so no filter class
+// is ever reachable from `src/table/index.ts`. `facetValues` in particular *must* be the same
+// function `SetFilter.matches` uses, or the facet list would offer a value that selects no rows.
+import { BLANK, facetValues } from "../filter/util";
 import type { TableModel } from "./table.model";
-import type { BaseColumnDef, ColumnConfig, ColumnDef, RowData, SortDirection } from "./table.types";
+import type {
+  BaseColumnDef,
+  ColumnConfig,
+  ColumnDef,
+  ColumnFilter,
+  RowData,
+  SortDirection,
+} from "./table.types";
 import { compareValues, getPath, titleCase } from "./util";
 
 const DEFAULT_MIN_WIDTH = 120;
@@ -119,6 +131,119 @@ export class ColumnModel {
     return index >= 0 ? index + 1 : undefined;
   }
 
+  /** The filter attached to this column's def, if any. See {@link BaseColumnDef.filter}. */
+  get filter(): ColumnFilter | undefined {
+    return this.config.filter;
+  }
+
+  /**
+   * Whether header UIs should offer a filter control. Advisory exactly like `sortable`: the model is
+   * never gated, so a `filterable: false` column with an active filter still narrows rows.
+   */
+  get filterable(): boolean {
+    return this.config.filterable !== false && this.config.filter !== undefined && !this.selection;
+  }
+
+  /**
+   * How a filter UI should label one facet value, if the def says. Callers apply the default
+   * themselves: `column.filterOption?.(v) ?? String(v)` — a view often wants its own fallback, and
+   * a blank facet is labelled off `facet.blank` rather than off the value.
+   */
+  get filterOption(): ((value: unknown) => any) | undefined {
+    return this.config.filterOption;
+  }
+
+  /** Whether the built-in search reads this column. See {@link BaseColumnDef.searchable}. */
+  get searchable(): boolean {
+    return this.config.searchable !== false && !this.selection;
+  }
+
+  /**
+   * The value this column's filter compares against — its own `facets` domain, in other words.
+   *
+   * `[]` when no filter is attached: a distinct-values API for every column would be a different
+   * (and much more expensive) feature, and nothing here should be mistaken for one.
+   *
+   * Three cost tiers, chosen by the filter rather than configured here:
+   *
+   * | tier | when | walk |
+   * | --- | --- | --- |
+   * | static | `options` declared, `counts` falsy | none |
+   * | values | the default | `rows`, invalidated by `rows` alone |
+   * | counted | `counts: true` | `rows` narrowed by every *other* active filter |
+   *
+   * The walk itself is not what costs — running every other filter per row is, plus the
+   * invalidation storm where one toggle dirties every other column's facets. That is what `counts`
+   * gates, and why the default tier still populates a checkbox list.
+   *
+   * Ordering is declared `options` first in declaration order, then discovered values sorted by
+   * value, blank last. Insertion order alone would be first-appearance-in-rows, which reshuffles
+   * the list every time the table is sorted.
+   *
+   * Zero-count entries are kept: a popover is exactly where you go to undo an over-narrowed filter.
+   * A standing facet rail drops them at the call site —
+   * `facets.filter((f) => f.count > 0 || filter.has(f.value))`.
+   */
+  get facets(): Facet[] {
+    const filter = this.config.filter;
+    if (!filter) return [];
+
+    const counts = filter.counts === true;
+    const tally = this.facetScan;
+    const declared = filter.options;
+
+    // static tier: the domain was declared and no counts were asked for, so the rows are never read
+    if (!tally) return (declared ?? []).map((value) => ({ value }));
+
+    const facets: Facet[] = [];
+    const seen = new Set<SetFilterValue>();
+
+    for (const value of declared ?? []) {
+      const key = value as SetFilterValue;
+      seen.add(key);
+      facets.push(counts ? { value, count: tally.get(key) ?? 0 } : { value });
+    }
+
+    const discovered = [...tally.keys()]
+      .filter((value) => value !== BLANK && !seen.has(value))
+      .sort(compareValues);
+    for (const value of discovered) {
+      facets.push(counts ? { value, count: tally.get(value) ?? 0 } : { value });
+    }
+
+    // blank is offered only where the walk actually found one, so the static tier never shows it
+    const blanks = tally.get(BLANK);
+    if (blanks !== undefined) {
+      facets.push(
+        counts ? { value: BLANK, blank: true, count: blanks } : { value: BLANK, blank: true },
+      );
+    }
+
+    return facets;
+  }
+
+  // The one pass over the rows behind `facets`. `undefined` marks the static tier — a declared
+  // domain with no counts asked for, where there is nothing to discover.
+  private get facetScan(): Map<SetFilterValue, number> | undefined {
+    const filter = this.config.filter;
+    if (!filter) return undefined;
+    if (filter.options && !filter.counts) return undefined;
+
+    // The cross-filter deliberately keeps the *other* filters, the search and every page-level
+    // `FilterSource`: a row those already exclude must not be counted, or the tally would promise
+    // rows that selecting the value could never surface.
+    const cross = filter.counts === true ? this.table.predicateExcluding(this.key) : undefined;
+
+    const tally = new Map<SetFilterValue, number>();
+    for (const row of this.table.rows) {
+      if (cross && !cross(row)) continue;
+      for (const value of facetValues(this.config.value(row))) {
+        tally.set(value, (tally.get(value) ?? 0) + 1);
+      }
+    }
+    return tally;
+  }
+
   // The rendered pinned block this column belongs to (outer-edge-first), or undefined when unpinned.
   private get pinnedSiblings(): ColumnModel[] | undefined {
     if (this.pinned === "left") return this.table.leftPinnedRenderedColumns;
@@ -130,7 +255,7 @@ export class ColumnModel {
     this.table = table;
     this.config = config;
 
-    makeObservable(this, {
+    makeObservable<this, "facetScan">(this, {
       pinned: observable,
       hidden: observable,
       manualWidth: observable,
@@ -145,6 +270,8 @@ export class ColumnModel {
       ariaColIndex: computed,
       sortDirection: computed,
       sortIndex: computed,
+      facets: computed,
+      facetScan: computed,
 
       setPinned: action,
       setManualWidth: action,
@@ -179,6 +306,20 @@ export class ColumnModel {
   /** Raw cell value for a row — what sorting compares and the default render displays. */
   getValue(row: RowData): unknown {
     return this.config.value(row);
+  }
+
+  /**
+   * What the built-in search matches this row against: the `searchable` projection when one is
+   * given, otherwise the raw cell value.
+   */
+  searchValue(row: RowData): unknown {
+    const searchable = this.config.searchable;
+    return typeof searchable === "function" ? searchable(row) : this.config.value(row);
+  }
+
+  /** Reset this column's filter, if it has one. A no-op otherwise. */
+  clearFilter(): void {
+    this.config.filter?.clear();
   }
 
   /** Ascending comparison of two rows by this column's extracted values (`compare` def or the default). */

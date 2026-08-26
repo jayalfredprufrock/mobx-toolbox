@@ -1,6 +1,6 @@
 # mobx-toolbox
 
-A collection of MobX + React utilities: lazy-loading observables, model/store factories, a client-side router, form state management, dialog management, a headless virtualized table, and general-purpose React hooks.
+A collection of MobX + React utilities: lazy-loading observables, model/store factories, a client-side router, form state management, dialog management, a headless virtualized table, reactive value filters, and general-purpose React hooks.
 
 ## Installation
 
@@ -19,6 +19,7 @@ Each module is its own entry point — import from `@jayalfredprufrock/mobx-tool
 | Module                                | Summary                                                                       | Requires                                      |
 | ------------------------------------- | ----------------------------------------------------------------------------- | --------------------------------------------- |
 | [`dialog`](#dialog)                   | Dialog/modal stack with state transitions for enter/exit animations           | `mobx`, `mobx-react-lite`, `react`            |
+| [`filter`](#filter)                   | Reactive value filters — set, range and text, with blank normalisation        | `mobx`                                        |
 | [`form`](#form)                       | Schema-driven form state with TypeBox validation and submit lifecycle         | `mobx`, `mobx-react-lite`, `react`, `typebox` |
 | [`lazy-observable`](#lazy-observable) | Observables that fetch on first observation and reset when unobserved         | `mobx`, `mobx-react-lite`, `react`            |
 | [`model`](#model)                     | Observable model classes and collection stores from TypeBox schemas           | `mobx`, `react`, `typebox`                    |
@@ -48,6 +49,23 @@ dialogs.open(ConfirmModal, { message: "Are you sure?" });
 → [Full docs](src/dialog/README.md)
 
 ---
+
+### [`filter`](src/filter/README.md)
+
+Reactive value filters. A filter is a predicate over one already-extracted **value**, not over a row, so the same instance works over an array, a sidebar rail, or a table column that feeds it the column's own accessor.
+
+```ts
+import { SetFilter, RangeFilter, BLANK } from "@jayalfredprufrock/mobx-toolbox/filter";
+
+const status = new SetFilter({ options: ["open", "closed"] });
+status.toggle("open");
+
+tickets.filter((t) => status.matches(t.status));
+```
+
+Missing and empty values normalise to one `BLANK` sentinel — shared by `matches` and by facet tallies, so a "(Blank)" option can never list a value that selects nothing.
+
+→ [Full docs](src/filter/README.md)
 
 ### [`form`](src/form/README.md)
 

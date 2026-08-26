@@ -28,6 +28,7 @@ export default defineConfig({
     sourcemap: true,
     entry: {
       dialog: "src/dialog/index.ts",
+      filter: "src/filter/index.ts",
       form: "src/form/index.ts",
       "lazy-observable": "src/lazy-observable/index.ts",
       model: "src/model/index.ts",

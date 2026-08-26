@@ -134,10 +134,16 @@ export interface TableConfig<T> {
    */
   getRowId?: (row: T, index: number) => RowId;
   /**
-   * Client-side row filtering. Pass anything exposing a reactive `predicate`; an array is
-   * AND-composed (a global search + a filter panel compose without knowing about each other).
-   * Filtering runs over `rows` without replacing them, so selection persists. Omit for
-   * server-side filtering — react to the source's serialized query and refetch instead.
+   * Page-level row filtering — the escape hatch for a dimension with no column behind it. Pass
+   * anything exposing a reactive `predicate`; an array is AND-composed.
+   *
+   * This is *not* where per-column filters go: those are attached to their column defs
+   * ({@link BaseColumnDef.filter}) so the table can feed each one the column's own accessor. Both
+   * compose into `TableModel.predicate`, along with the built-in search.
+   *
+   * Filtering runs over `rows` without replacing them, so selection persists. For server-side
+   * filtering, react to your controls' state, refetch, and `setRows` — client filters then narrow
+   * the server's results with no extra machinery.
    */
   filter?: FilterSource<T> | FilterSource<T>[];
   /**
@@ -156,9 +162,13 @@ export interface ColumnState {
 
 /**
  * JSON-serializable snapshot of the user-curated table arrangement: column order, per-column
- * visibility/pinning/manual widths, and the sort list. Ephemeral state (selection, scroll) and
- * anything owned elsewhere (filters) is deliberately excluded. Produced by `getState`, restored
- * by `applyState`, observed by `onStateChange`.
+ * visibility/pinning/manual widths, and the sort list. Ephemeral state (selection, scroll) is
+ * deliberately excluded, and so — for now — is filter state, even though the table owns filters
+ * now: it churns per keystroke where column arrangement barely churns at all, so it wants a
+ * separate `filters` key that `onStateChange` consumers can debounce differently. Every filter's
+ * `value`/`setValue` already round-trips through JSON, so adding it is additive.
+ *
+ * Produced by `getState`, restored by `applyState`, observed by `onStateChange`.
  */
 export interface TableState {
   columnOrder: string[];
@@ -173,6 +183,32 @@ export interface TableState {
  */
 export interface FilterSource<T = RowData> {
   readonly predicate?: (row: T) => boolean;
+}
+
+/**
+ * The table's contract with a *per-column* filter: a reactive predicate over one already-extracted
+ * value. The table calls `matches(column.getValue(row))`, so the filter needs no accessor, no path
+ * and no row type — which is what makes a computed column filterable with no extra config.
+ *
+ * Structural for the same reason as {@link RowSource}: `SetFilter` / `RangeFilter` / `TextFilter`
+ * from the `filter` subpath satisfy it, but `table` declares the shape rather than importing the
+ * classes, so a page's own `new SetFilter()` is the only thing that pulls them into the bundle. A
+ * string discriminant (`filter: "set"`) would force a `"set" -> SetFilter` map into the table and
+ * defeat exactly that.
+ *
+ * Not to be confused with {@link FilterSource}, the *row*-level contract behind `config.filter` —
+ * that one is for page dimensions with no column behind them, and both compose (see
+ * `TableModel.predicate`).
+ */
+export interface ColumnFilter {
+  /** Whether the filter is currently narrowing anything. Inactive filters are skipped entirely. */
+  readonly active: boolean;
+  matches(value: unknown): boolean;
+  clear(): void;
+  /** Seeds the facet domain; its presence also selects the no-walk tier. See `ColumnModel.facets`. */
+  readonly options?: readonly unknown[];
+  /** Whether facets should carry cross-filtered counts — the expensive tier. */
+  readonly counts?: boolean;
 }
 
 export interface ColumnConfig {
@@ -194,6 +230,14 @@ export interface ColumnConfig {
   sortable?: boolean;
   /** Marks the built-in row-selection column (rendered via `<Table.SelectionCell>`). */
   selection?: boolean;
+  /** See BaseColumnDef.filter. */
+  filter?: ColumnFilter;
+  /** See BaseColumnDef.filterable — advisory flag for header filter UIs. Defaults to true. */
+  filterable?: boolean;
+  /** See BaseColumnDef.filterOption. */
+  filterOption?: (value: unknown) => any;
+  /** See BaseColumnDef.searchable. Defaults to true. */
+  searchable?: boolean | ((row: RowData) => string);
 }
 
 export type ColumnWidth = number | `${number}fr`;
@@ -239,6 +283,41 @@ export interface BaseColumnDef<T> {
    * `setSort`/`applyState` still work.
    */
   sortable?: boolean;
+  /**
+   * A filter over this column's values. Attach an instance (`filter: new SetFilter()`), not a
+   * factory or a discriminant; the table feeds it `getValue(row)`, so it filters a computed column
+   * as readily as a field one.
+   *
+   * The instance survives everything that rebuilds column definitions — `setRows`, `appendRows`,
+   * `setColumns` — because `syncColumns` preserves the `ColumnModel` behind an existing key. It does
+   * *not* survive `removeColumn`, which destroys the model; the filter type on a key cannot be
+   * swapped at runtime, so use `removeColumn` + `addColumn` if you must.
+   */
+  filter?: ColumnFilter;
+  /**
+   * Whether header UIs should offer this column's filter control. Defaults to true wherever a
+   * `filter` is attached.
+   *
+   * Advisory in exactly the way `sortable` is: the model is never gated, so a `filterable: false`
+   * column whose filter is active still narrows rows. That is the point — it is how a filter driven
+   * from somewhere else (a sidebar, a route param) hides its funnel without giving up the column.
+   */
+  filterable?: boolean;
+  /**
+   * Label for one facet value in a filter UI. Defaults to `String(value)`.
+   *
+   * Typed `=> any` rather than `=> ReactNode` for the same reason as `render`: nothing in these
+   * types imports React.
+   */
+  filterOption?: (value: unknown) => any;
+  /**
+   * Whether the built-in cross-column search reads this column, or a text projection to search
+   * instead — `searchable: (r) => fmtTime(r.time)` searches a date column as text rather than as
+   * epoch millis. Defaults to true.
+   *
+   * Applies to hidden columns: it describes the data, not what is on screen.
+   */
+  searchable?: boolean | ((row: T) => string);
 }
 
 export interface FieldColumnDef<T> extends BaseColumnDef<T> {

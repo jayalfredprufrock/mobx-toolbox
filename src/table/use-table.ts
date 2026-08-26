@@ -20,7 +20,8 @@ import { isRowSource } from "./util";
  *
  * Everything else (`columns`, `getRowId`, `onStateChange`, `filter`) is captured at construction;
  * change them through the model (`setColumns`/`addColumn`/`removeColumn`, `setFilter`, `applyState`)
- * rather than by re-rendering.
+ * rather than by re-rendering. Per-column filters need none of that — they are instances the caller
+ * holds and mutates directly, and the model reads through to them.
  */
 export const useTable = <T>(config?: TableConfig<T>): TableModel => {
   const tableRef = useRef<TableModel | undefined>(undefined);

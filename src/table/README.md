@@ -87,9 +87,10 @@ fine") and exposes both populations; MUI's Data Grid clears filtered-out rows by
 `keepNonExistentRowsSelected` to opt out. This table takes the middle: persist through a _view_
 change, prune on a _dataset_ change.
 
-That distinction only stays decidable while filtering lives **inside** the table. Filter outside it —
+That distinction only stays decidable while filtering lives **inside** the table (a column's
+`filter`, the built-in `search`, or a `FilterSource`). Filter outside it —
 hand over `rows: () => all.filter(pred)` — and the table cannot tell "filtered out" from "deleted",
-so neither behaviour is right. Use `setFilter` / `config.filter` and keep `rows` as the dataset.
+so neither behaviour is right. Keep `rows` as the dataset and filter through the table.
 
 ### Row-keyed state across a refresh
 
@@ -205,7 +206,7 @@ fetch mostly-identical rows would throw away scroll position, column arrangement
 `table.refreshing` to indicate it somewhere that isn't the rows themselves — and don't dim them,
 which reads as _disabled_.
 
-Everything else (`columns`, `getRowId`, `onStateChange`, `filter`) is captured at construction. Change those through the model — `setFilter`, `applyState` — rather than by re-rendering.
+Everything else (`columns`, `getRowId`, `onStateChange`, `filter`) is captured at construction. Change those through the model — `setFilter`, `applyState` — rather than by re-rendering. Column filters need none of this: they are instances you hold, so you mutate them directly.
 
 ## Columns
 
@@ -467,23 +468,163 @@ Panel height is the fixed `expansionHeight` (default 320) — never measured, wh
 
 ## Filtering
 
-Pass anything exposing a reactive `predicate`; an array is AND-composed, so a global search box and a filter panel compose without knowing about each other.
+Attach a filter to the column it filters. The table feeds it that column's own value accessor, so a
+computed column is filterable with no extra config and there are no key-matching conventions to keep
+in sync by hand.
 
-```ts
-class Search {
-  term = "";
-  constructor() {
-    makeAutoObservable(this);
-  }
-  get predicate() {
-    return this.term ? (row) => row.name.includes(this.term) : undefined;
-  }
-}
+```tsx
+import { SetFilter, RangeFilter } from "@jayalfredprufrock/mobx-toolbox/filter";
 
-useTable({ rows, filter: [new Search(), statusFilter] });
+const table = useTable({
+  rows,
+  columns: [
+    { key: "category", filter: new SetFilter() },
+    { key: "name", value: (u) => `${u.first} ${u.last}`, filter: new TextFilter() },
+    { key: "score", filter: new RangeFilter() },
+  ],
+});
 ```
 
-Filtering runs over `rows` without replacing them, so selection persists through it. For server-side filtering, omit `filter` and refetch instead.
+Pass **instances**, not factories or string discriminants. A discriminant (`filter: "set"`) would
+force a `"set" -> SetFilter` map into the table, so every consumer would ship every filter type; with
+an instance, your page's own import is the only thing that pulls one in. The instance survives
+everything that rebuilds column defs — `setRows`, `appendRows`, `setColumns` — because `syncColumns`
+preserves the `ColumnModel` behind a key it already has. (Which is also why a _new_ def for an
+existing key is ignored wholesale: to swap a filter type at runtime, use `removeColumn` +
+`addColumn`.)
+
+Filters are plain value predicates — `matches(value)`, no accessor, no path, no row generic — so the
+same instance works over a table column, a sidebar rail or a bare `array.filter`. See
+[`filter`](../filter/README.md).
+
+### What narrows the rows
+
+`table.predicate` is the single answer: every active column filter, the built-in search, and any
+page-level `FilterSource`, AND-composed. `undefined` when nothing is active.
+
+| Member                    | Description                                                      |
+| ------------------------- | ---------------------------------------------------------------- |
+| `predicate`               | everything narrowing rows, composed; `undefined` = pass-through  |
+| `predicateExcluding(key)` | the same, minus that column's own filter — what facet counts use |
+| `activeFilterCount`       | active column filters + the search                               |
+| `clearFilters()`          | reset every column filter                                        |
+| `column(key)`             | the `ColumnModel` under that key                                 |
+
+Filtering runs over `rows` without replacing them, so selection persists through it.
+
+`clearFilters()` deliberately leaves `search` alone — wiping text the user typed as a side effect is
+more surprising than leaving it (`search.clear()` is explicit). It also _cannot_ touch
+`filterSources`, since `FilterSource` is only a predicate and has nothing to reset.
+
+**A hidden column keeps filtering.** So does a `filterable: false` one. That is intentional — it is
+how a filter driven from elsewhere (a sidebar, a route param) works without giving up the column —
+and `activeFilterCount` is the disclosure, the chip that tells the user something is narrowing the
+table that they cannot see a control for.
+
+### Header controls
+
+`column.filterable` is advisory in exactly the way `sortable` is: it tells a header UI whether to
+draw a funnel, and the model is never gated by it. It defaults to true wherever a `filter` is
+attached, and false where none is.
+
+```tsx
+<Table.ColumnHeader column={column}>
+  {column.title}
+  {column.filterable && <FilterPopover column={column} />}
+</Table.ColumnHeader>
+```
+
+The package ships no filter UI, for the same reason it ships no sort UI: a popover means owning
+focus, keyboard and positioning that your design system already owns. What it gives you is
+`column.filter`, `column.facets` and `column.filterOption` — plus, on a `SetFilter` itself,
+`multiValue`, which says whether offering the any/all toggle would mean anything here.
+
+### Facets
+
+`column.facets` is the value domain to render as a checkbox list — `[]` when the column has no
+filter. Three cost tiers, chosen by the filter rather than configured on the column:
+
+| tier    | how                                 | walk                                 | gives                   |
+| ------- | ----------------------------------- | ------------------------------------ | ----------------------- |
+| static  | `new SetFilter({ options: [...] })` | none                                 | a fixed list, no counts |
+| values  | `new SetFilter()` — the default     | `rows`, invalidated by `rows` alone  | a discovered list       |
+| counted | `new SetFilter({ counts: true })`   | `rows` × every _other_ active filter | the list plus counts    |
+
+The walk itself is not what costs — running every other filter per row is, plus the invalidation
+storm where one toggle dirties every other column's facets. That is what `counts` gates. The default
+tier still populates checkboxes, so a bare `new SetFilter()` works.
+
+Ordering is declared `options` first in declaration order, then discovered values sorted by value,
+blank last. (Insertion order alone would be first-appearance-in-rows, which reshuffles the list every
+time the table is sorted.)
+
+Zero-count entries are **kept**, because a popover is exactly where you go to undo an over-narrowed
+filter. A standing facet rail that would rather hide them drops them at the call site:
+
+```tsx
+facets.filter((f) => (f.count ?? 1) > 0 || filter.has(f.value));
+```
+
+```tsx
+{
+  column.facets.map((facet) => (
+    <label key={String(facet.value)}>
+      <input
+        type="checkbox"
+        checked={filter.has(facet.value)}
+        onChange={() => filter.toggle(facet.value)}
+      />
+      {facet.blank ? <em>(Blank)</em> : (column.filterOption?.(facet.value) ?? String(facet.value))}
+      {facet.count !== undefined && <span>{facet.count}</span>}
+    </label>
+  ));
+}
+```
+
+`facet.blank` is a render hint, so a view never compares against the blank sentinel itself. Blank is
+offered only where the row walk actually found one — the static tier never shows it, with no extra
+config.
+
+Counts are cross-filtered by every _other_ active filter, never by the column's own — otherwise the
+list could never be widened again. Page-level sources and the search count too: a row those already
+exclude must not be tallied, or the count promises rows the selection could never surface.
+
+### Search
+
+`table.search` is a cross-column text search, always present and inert until something is typed.
+
+```tsx
+<input value={table.search.text} onChange={(e) => table.search.setText(e.target.value)} />
+```
+
+It is table-owned rather than a `ColumnFilter` because matching one query against _many_ columns needs
+every column's accessor at once — the one thing a `matches(value)` predicate structurally cannot do.
+Everything else lines up: it joins `predicate` like any column filter and counts toward
+`activeFilterCount`.
+
+Per-column `searchable` decides what it reads, defaulting to true:
+
+```ts
+{ key: "secret", searchable: false }                              // never searched
+{ key: "joined", searchable: (r) => fmtDate(r.joined) }           // searched as text, not epoch millis
+```
+
+Hidden columns are searched: `searchable` describes the data, not what is on screen. Debouncing is
+deliberately not built in — like `onStateChange`, the cadence belongs to whoever owns the input, and
+a client-side search over rows already in memory usually wants none.
+
+### Page-level filters
+
+`config.filter` / `setFilter` still take anything exposing a reactive `predicate`, AND-composed with
+everything above. It is the escape hatch for a dimension with no column behind it.
+
+```ts
+useTable({ rows, filter: [dateRangeStore, permissionScope] });
+```
+
+For **server-side** filtering, react to whatever state your controls hold, refetch, and `setRows` —
+the table filters over `rows` without replacing them, so client filters narrow server results with
+no extra machinery.
 
 ## Persisting the arrangement
 
@@ -558,7 +699,9 @@ any rows at all mean the filter is what emptied it:
 
 There is no `isFiltered` flag on purpose. It would have to pick between "a filter is configured" and
 "a filter is currently excluding rows", and only the second is the question being asked here —
-which `rows.length` already answers exactly, without the ambiguity.
+which `rows.length` already answers exactly, without the ambiguity. (`activeFilterCount` answers the
+_first_ question, which is a different job: it is the chip telling a user something is narrowing the
+table, including from a control they cannot see.)
 
 One case it can't answer: if your filtering happens **server-side**, the rows never arrive in the
 first place, so `rows.length` is `0` and the slot reads as "no data". Track the query yourself
@@ -588,17 +731,19 @@ Drop a `<Table.Resizer>` inside a header cell. It handles the drag (on the corre
 
 `TableModel` state worth reading in an `observer`:
 
-| Member                                  | Description                              |
-| --------------------------------------- | ---------------------------------------- |
-| `rows` / `filteredRows` / `displayRows` | source → filtered → filtered + sorted    |
-| `renderedRows` / `renderedColumns`      | the current window                       |
-| `allColumns` / `orderedColumns`         | every column / the visible ones in order |
-| `selectedRows` / `selectedIds`          | selection                                |
-| `sorts`                                 | the sort priority list                   |
-| `virtualWidth` / `virtualHeight`        | full scroll extent                       |
+| Member                                  | Description                                |
+| --------------------------------------- | ------------------------------------------ |
+| `rows` / `filteredRows` / `displayRows` | source → filtered → filtered + sorted      |
+| `renderedRows` / `renderedColumns`      | the current window                         |
+| `allColumns` / `orderedColumns`         | every column / the visible ones in order   |
+| `selectedRows` / `selectedIds`          | selection                                  |
+| `sorts`                                 | the sort priority list                     |
+| `predicate` / `activeFilterCount`       | what is narrowing rows, and how much of it |
+| `search`                                | the built-in cross-column search           |
+| `virtualWidth` / `virtualHeight`        | full scroll extent                         |
 
-Mutations all go through actions: `setRows`, `appendRows`, `setFilter`, `setSort`/`setSorts`/`clearSort`, `toggleRow`/`selectAllRows`/`toggleAllRows`/`clearSelection`, `toggleRowExpanded`/`collapseAllRows`, `moveColumn`, `applyState`, `scrollToRow`/`scrollToEnd`.
+Mutations all go through actions: `setRows`, `appendRows`, `setFilter`, `clearFilters`, `setSort`/`setSorts`/`clearSort`, `toggleRow`/`selectAllRows`/`toggleAllRows`/`clearSelection`, `toggleRowExpanded`/`collapseAllRows`, `moveColumn`, `applyState`, `scrollToRow`/`scrollToEnd`.
 
-`ColumnModel`: `key`, `title`, `width`, `pinned`, `hidden`, `sortDirection`, `sortIndex`, `sortable`, `resizable`, `getValue(row)`, `setPinned`, `setHidden`, `setManualWidth`, `sortBy`, `clearSort`.
+`ColumnModel`: `key`, `title`, `width`, `pinned`, `hidden`, `sortDirection`, `sortIndex`, `sortable`, `resizable`, `getValue(row)`, `setPinned`, `setHidden`, `setManualWidth`, `sortBy`, `clearSort`, plus the filtering surface — `filter`, `filterable`, `filterOption`, `facets`, `searchable`, `searchValue(row)`, `clearFilter()`.
 
 When you build the model yourself rather than via `useTable`, call `dispose()` to drop the model's reactions — `onStateChange`, and the one tracking a getter `rows` — and `activate()` to re-arm them. A `TableModel` built directly with an **array** `rows` applies it once, at construction: identity-based syncing is `useTable`'s job, so update it with `setRows`. The getter form needs no such help; it tracks its source wherever the model lives.

@@ -1,4 +1,4 @@
-# Upgrade prompt: mobx-toolbox `model` / `lazy-observable` / `table` / `util` / `router` / `react-util`
+# Upgrade prompt: mobx-toolbox `model` / `lazy-observable` / `table` / `filter` / `util` / `router` / `react-util`
 
 Hand this file to a coding agent working in your repository. It describes a release with
 breaking changes to `@jayalfredprufrock/mobx-toolbox`, plus new capabilities that let a fair
@@ -514,6 +514,78 @@ are anchored regardless of order.
 
 ## Worth adopting (Phase 2 — propose first)
 
+### Column filtering, and the new `filter` subpath
+
+**This is additive — nothing breaks.** `config.filter` / `setFilter` / `FilterSource` are unchanged
+and still work. But if you have a filter set declared in parallel with your columns, this is what
+replaces it.
+
+The new `@jayalfredprufrock/mobx-toolbox/filter` module exports `SetFilter`, `RangeFilter`,
+`TextFilter`, `BLANK`, `isBlank` and `facetValues`. A filter is a predicate over one _already
+extracted value_ — `matches(value)`, not `matches(row)` — so it carries no accessor, no path string
+and no row generic.
+
+Attach instances to the column defs; the table feeds each one that column's own value accessor:
+
+```ts
+// before — keys line up by hand, and `path` is an unchecked string
+const filters = makeFilters({
+  category: new SetFilter({ path: "category" }),
+});
+const table = useTable({ rows, columns, filter: filters });
+<DataTable table={table} filters={filters} renderFilterOption={...} />;
+
+// after
+const table = useTable({
+  rows,
+  columns: [
+    { key: "category", filter: new SetFilter(), filterOption: (v) => <Badge value={v} /> },
+    // a computed column is filterable now — there was no path for this before
+    { key: "name", value: (u) => `${u.first} ${u.last}`, filter: new TextFilter() },
+  ],
+});
+<DataTable table={table} />;
+```
+
+What you get on the model:
+
+| Member                            | Description                                                |
+| --------------------------------- | ---------------------------------------------------------- |
+| `table.predicate`                 | everything narrowing rows, composed; `undefined` = nothing |
+| `table.activeFilterCount`         | active column filters + the search                         |
+| `table.clearFilters()`            | reset every column filter                                  |
+| `table.search`                    | built-in cross-column text search (`.text`, `.setText`)    |
+| `table.column(key)`               | the `ColumnModel` under a key                              |
+| `column.filter` / `column.facets` | the filter, and its value domain to render                 |
+| `column.filterable`               | advisory header-UI flag, exactly like `sortable`           |
+| `filter.multiValue`               | declares array values, so a UI can offer any/all           |
+
+Points worth checking by hand as you port:
+
+- **Facets have three cost tiers.** `new SetFilter()` discovers values with one row walk;
+  `{ options: [...] }` skips the walk entirely; `{ counts: true }` adds cross-filtered counts and is
+  the expensive one — O(rows × other active filters), recomputed on any toggle. Don't reach for
+  `counts` by default.
+- **Blanks are just a selected value.** `null`, `undefined`, `""` and `[]` all normalise to `BLANK`,
+  which sits inside `selected` like anything else. If you have special-cased "no value" state in a
+  filter UI, delete it. `facet.blank` is the render hint for the "(Blank)" label.
+- ⚠️ **A hidden or `filterable: false` column still filters.** That is deliberate — it is how a
+  sidebar-driven filter works — but if you were relying on hiding a column to disable its filter,
+  it no longer does. Use `activeFilterCount` to disclose it.
+- ⚠️ **`clearFilters()` does not clear the search**, and cannot clear `filterSources`. Call
+  `search.clear()` explicitly if you want both.
+- **Search reads hidden columns** by design (`searchable` describes the data, not visibility). Set
+  `searchable: false` per column to opt out, or `searchable: (row) => string` to search a projection
+  — e.g. a date column as formatted text rather than epoch millis.
+- **No filter UI ships.** Build the popover with your design system off `column.facets` /
+  `column.filter`, the same way you already build sort controls.
+- **Filter state is not in `getState()` yet.** Every filter's `value` / `setValue` round-trips
+  through JSON, so persist it yourself under your own key for now.
+
+Server-side filtering is unchanged in this release: react to your controls, refetch, `setRows`.
+Client filters then narrow the server's results, because the table filters over `rows` without
+replacing them.
+
 **Attach API client methods directly.** Config functions pass their signatures through, so a wrapper
 arrow that only forwards arguments can go:
 
@@ -688,10 +760,20 @@ all three surfaces agree at 300/300. Reach for it directly wherever a component 
 skeleton:
 
 ```tsx
-const showSkeleton = useSlowLoading(!list.loaded);
+const slow = useSlowLoading(!list.loaded);
+
+if (slow) return <Skeleton />;
+if (!list.loaded) return null; // loading, but too early to say so
+return <Content rows={list.value} />;
 ```
 
 Anything currently rendering a skeleton straight off `loading` is flashing it on fast responses.
+
+⚠️ **Three branches, not two.** "Not slow" does not mean "ready" — during the threshold the wait is
+real and the value is still missing, so a two-branch version renders the content with nothing to put
+in it. And test `slow` _before_ the value: the floor deliberately outlives the wait, so checking the
+value first swaps the content in the instant it lands and reintroduces the flash. See
+[`useSlowLoading`](src/util/README.md#three-states-not-two).
 
 **Hand a lazy to a table instead of `.slice()`.** `rows` now accepts a _row source_ — anything with
 `value` and `fetching`, which `LazyObservableArray` satisfies:
@@ -825,6 +907,15 @@ every render retriggering everything reading it.
 ---
 
 ## Code that can now be deleted (Phase 2 — propose first)
+
+- A parallel filter-set declaration whose keys had to match column keys by convention, and the
+  plumbing that threaded it into both `useTable` and the table component.
+- `path` options on filters, and any `getPath`-style resolver behind them — the column's own accessor
+  replaces both, including for computed columns that never had a path.
+- A `renderFilterOption` prop plus the `column.key === "..."` switch inside it — that is
+  `filterOption` on the column def now.
+- Hand-rolled "contains" search predicates across columns — `table.search` covers them.
+- Separate blank/"(No value)" filter state — `BLANK` is an ordinary selected value.
 
 - `Map`/`WeakMap` model caches, and any `instantiate`-like helper of your own.
 - `Map<key, Store>` or `Map<key, lazy>` caches keyed by tenant or parent id — `collectionMap` covers them.

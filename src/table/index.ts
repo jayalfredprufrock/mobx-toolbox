@@ -1,5 +1,6 @@
 export * from "./column.model";
 export * from "./components";
+export * from "./search.model";
 export * from "./table.context";
 export * from "./table.model";
 export * from "./table.types";

@@ -11,6 +11,13 @@ status.toggle("open");
 tickets.filter((t) => status.matches(t.status));
 ```
 
+On a table, attach one per column — as a factory when the defs live outside the component, so each
+table gets its own and a remount starts clean:
+
+```ts
+const columns = [{ key: "status", filter: () => new SetFilter() }];
+```
+
 That signature — `matches(value)` rather than `matches(row)` — is the whole design. A filter carries
 no accessor, no path string and no row generic, so the same instance works over an array, a MobX
 computed, a sidebar rail, or a table column that feeds it the column's own value accessor. The
@@ -29,6 +36,8 @@ Every filter satisfies `ValueFilter`:
 | `active`         | Whether it is narrowing anything. An inactive filter matches everything.   |
 | `matches(value)` | Whether one extracted value passes. Always `true` while `active` is false. |
 | `clear()`        | Reset to inactive.                                                         |
+| `condition`      | Its state as JSON, for a server to apply instead. `undefined` if inactive. |
+| `intersecting`   | Whether picking more narrows rather than widens. Only affects counts.      |
 
 `has` / `toggle` / `select` are deliberately **not** on the interface — they belong to a set filter
 alone, and a UI that needs them narrows by `instanceof`. Keeping them off is what stops
@@ -64,6 +73,7 @@ tags.matches(["urgent", "backlog"]); // true
 | `options`         | `readonly SetFilterValue[] \| undefined`    | Declared domain. Config, not state.             |
 | `counts`          | `boolean`                                   | Opt into facet counts. Config, not state.       |
 | `multiValue`      | `boolean`                                   | Values are arrays. Config, not state.           |
+| `intersecting`    | `boolean`                                   | `matchMode === "all"`. Derived, not config.     |
 | `value`           | `{ selected: SetFilterValue[]; matchMode }` |                                                 |
 
 `SetFilterValue` is `string | number | boolean` — primitives only, deliberately. The domain has to
@@ -91,6 +101,28 @@ nothing and the list empties out — a dead end with no explanation for whoever 
 it, and `setMatchMode("all")` still works without it. It also does **not** change matching —
 `matches` flattens arrays either way. It exists purely so the decision lives next to the filter's
 declaration instead of as a `column.key === "tags"` switch inside a popover.
+
+The mode also changes what a facet count means, which is what `intersecting` exists to tell whoever
+is counting. Under `"any"` each pick **widens** the result, so a count answers "how many rows carry
+this value". Under `"all"` each pick **narrows** it, so that number would describe a question the
+filter is no longer asking — read literally, it promises more rows than ticking the box actually
+gives you. The count becomes the size of the intersection with what is already picked instead:
+
+```
+tags = ["urgent", "automated", ...]        matchMode: "all", "urgent" picked -> 16 rows
+
+  urgent      16   <- what you have now
+  automated    4   <- what you would have if you picked this too
+                      (8 rows carry "automated"; only 4 of them also carry "urgent")
+```
+
+So under `"all"` a count is exactly predictive: tick the box and you get that many rows. Under
+`"any"` it stays the conventional facet number — rows carrying the value, among rows passing every
+_other_ filter — which is not the same as "rows this would add". Worth knowing if you put both modes
+in one UI.
+
+`intersecting` is a boolean rather than the mode itself so that the rule for deciding it stays here,
+with the filter that has the modes. Whoever computes facets never has to know what `"all"` means.
 
 ### `options` and `counts`
 
@@ -172,6 +204,40 @@ exported function rather than a rule written twice.
 Note the test is "contributed no non-blank values", not "the raw value is nullish". An empty array
 counts as blank, or a `tags: []` row would be unreachable through the "(Blank)" facet.
 
+## Handing the work to a server
+
+Every filter can either **evaluate** (`matches`) or **export itself** (`condition`) — the same state,
+read two ways. `condition` is a `FilterCondition`: what is being compared, and how.
+
+```ts
+const level = new SetFilter({ selected: ["error", "warn"] });
+level.condition; // { op: "in", value: ["error", "warn"] }
+
+const score = new RangeFilter({ min: 50 });
+score.condition; // { op: "range", value: { min: 50 } }
+
+new TextFilter({ text: "ab", match: "startsWith" }).condition;
+// { op: "startsWith", value: "ab" }
+```
+
+| Filter        | `op`                                     | `value`             |
+| ------------- | ---------------------------------------- | ------------------- |
+| `SetFilter`   | `"in"`, or `"all"` under that match mode | the selected values |
+| `RangeFilter` | `"range"`                                | `{ min?, max? }`    |
+| `TextFilter`  | its `match` — `"contains"` etc.          | the query text      |
+
+It is deliberately **not** a query language. `FilterCondition` names the comparison and leaves the
+translation to you, so one filter works against a REST endpoint, a typed POST body, or SQL without
+knowing which. A raw query-string fragment would presume GET, need hand-rolled escaping, and pin the
+filter to one endpoint's shape.
+
+`field` is absent on what a filter produces — a filter doesn't know the name its data goes by on the
+wire. Whoever does fills it in; for a table that is the column (`field` on the def, defaulting to
+`key`). See `filterMode` and `TableModel.filterQuery` in the [table docs](../table/README.md).
+
+`TextFilter` does not serialize `caseSensitive`: that describes how _this_ process compares, and a
+server's collation is its own business.
+
 ## `textMatches`
 
 ```ts
@@ -193,6 +259,14 @@ interface ValueFilter {
   readonly active: boolean;
   matches(value: unknown): boolean;
   clear(): void;
+  readonly condition?: FilterCondition | undefined;
+  readonly intersecting?: boolean;
+}
+
+interface FilterCondition {
+  field?: string; // filled in by the caller, not the filter
+  op: FilterOp; // "in" | "all" | "range" | "contains" | "startsWith" | "equals" | "search" | string
+  value: unknown; // JSON-safe
 }
 
 interface Facet {

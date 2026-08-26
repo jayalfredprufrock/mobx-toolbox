@@ -14,6 +14,8 @@ import type {
   ColumnSort,
   ColumnsDef,
   ColumnState,
+  FilterCondition,
+  FilterMode,
   FilterSource,
   RowData,
   RowId,
@@ -338,6 +340,36 @@ export class TableModel {
     return count;
   }
 
+  /**
+   * The conditions of every active **server-mode** filter, plus the search when it is server-mode
+   * too. `undefined` when there are none.
+   *
+   * Disjoint from `predicate` by construction — a filter is either evaluated here or serialized
+   * here, never both — so nothing is double-applied and there is nothing to reconcile.
+   *
+   * Plain JSON, so it compares with `comparer.structural`: react to it, map the conditions onto
+   * your endpoint's shape, refetch, and `setRows`. Debouncing and cursor invalidation are yours —
+   * the table has no idea what a request costs you.
+   *
+   * ```ts
+   * reaction(
+   *   () => table.filterQuery,
+   *   (query) => void refetch({ where: query?.map(toClause) }),
+   *   { equals: comparer.structural },
+   * );
+   * ```
+   */
+  get filterQuery(): FilterCondition[] | undefined {
+    const conditions: FilterCondition[] = [];
+    for (const column of this.allColumns) {
+      const condition = column.filterCondition;
+      if (condition) conditions.push(condition);
+    }
+    const search = this.search.condition;
+    if (search) conditions.push(search);
+    return conditions.length > 0 ? conditions : undefined;
+  }
+
   // Rows in display order (filtered, then sorted by the active columns — first non-zero
   // comparison in priority order wins). Comparison goes through each column's value accessor
   // (dot-paths, computed `value` fns) and optional `compare` def — never a raw `row[key]` lookup.
@@ -560,6 +592,7 @@ export class TableModel {
       filteredRows: computed,
       searchableColumns: computed,
       activeFilterCount: computed,
+      filterQuery: computed,
       loading: computed,
       refreshing: computed,
       isEmpty: computed,
@@ -772,14 +805,19 @@ export class TableModel {
   }
 
   /**
-   * Reset every column filter.
+   * Reset every column filter, or only those on one side of the client/server split
+   * (`clearFilters({ mode: "client" })`).
    *
    * Deliberately leaves `search` alone (wiping text the user typed as a side effect is more
    * surprising than leaving it — clear it explicitly with `search.clear()`), and *cannot* touch
    * `filterSources`, since `FilterSource` is only a predicate and has nothing to reset.
    */
-  clearFilters(): void {
-    for (const column of this.allColumns) column.filter?.clear();
+  clearFilters(opts?: { mode?: FilterMode }): void {
+    const mode = opts?.mode;
+    for (const column of this.allColumns) {
+      if (mode && column.filterMode !== mode) continue;
+      column.filter?.clear();
+    }
   }
 
   // Reading each filter's `active` here tracks it; the returned closure reads the filter's own
@@ -792,6 +830,9 @@ export class TableModel {
 
     for (const column of this.allColumns) {
       if (column.key === excludeKey) continue;
+      // a server-mode filter is already applied to `rows`; running it again would filter twice, and
+      // for facets it means the cross-filter predicate excludes them for free
+      if (column.filterMode === "server") continue;
       const filter = column.filter;
       if (filter?.active) parts.push((row) => filter.matches(column.getValue(row)));
     }
@@ -1109,15 +1150,21 @@ export class TableModel {
 
     // the factory form allows for dynamic columns, which use the first
     // row of data to construct the column definition(s)
-    const syncedColumns = columnsDef.flatMap((defOrFactory) => {
+    const syncedDefs = columnsDef.flatMap((defOrFactory) => {
       if (typeof defOrFactory === "function") {
         if (!firstRow) return [];
-        return [defOrFactory(firstRow)].flat().map((def) => ColumnModel.fromDef(this, def));
+        return [defOrFactory(firstRow)].flat();
       }
-      return ColumnModel.fromDef(this, defOrFactory);
+      return defOrFactory;
     });
 
-    const syncedKeys = new Set(syncedColumns.map((c) => c.config.key));
+    // Keys are derived from the defs rather than from built columns: this runs on every setRows and
+    // appendRows, and all but the first sync needs a `ColumnModel` only for keys it doesn't already
+    // have. `keyOf` is what `fromDef` itself uses to assign the key, so the two cannot disagree.
+    // Deduped because a repeated key collapses in `columns` below — leaving it twice in the display
+    // order would render that one column twice, under one React key.
+    const keys = [...new Set(syncedDefs.map((def) => ColumnModel.keyOf(def)))];
+    const syncedKeys = new Set(keys);
 
     // remove any stale
     for (const key of this.columns.keys()) {
@@ -1129,16 +1176,15 @@ export class TableModel {
     // add any new columns; freshly created ones pick up persisted state (applyState may have
     // run before they existed — e.g. before the first setRows)
     const firstSync = this.columns.size === 0;
-    for (const column of syncedColumns) {
-      if (!this.columns.has(column.config.key)) {
-        this.columns.set(column.config.key, column);
+    for (const def of syncedDefs) {
+      const key = ColumnModel.keyOf(def);
+      if (!this.columns.has(key)) {
+        const column = ColumnModel.fromDef(this, def);
+        this.columns.set(key, column);
         this.applyColumnState(column);
       }
     }
 
-    // Display order. Deduped because a repeated key already collapsed in `columns` above — leaving
-    // it twice here would render that one column twice, under one React key.
-    const keys = [...new Set(syncedColumns.map((c) => c.config.key))];
     const orderOf = (key: string) => this.columns.get(key)?.config.order ?? 0;
 
     if (firstSync) {

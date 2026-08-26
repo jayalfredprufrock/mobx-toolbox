@@ -1,5 +1,5 @@
 import { action, computed, makeObservable, observable } from "mobx";
-import type { Facet, SetFilterValue } from "../filter/filter.types";
+import type { Facet, FilterCondition, SetFilterValue } from "../filter/filter.types";
 // Two pure functions, imported from the module rather than the `../filter` barrel so no filter class
 // is ever reachable from `src/table/index.ts`. `facetValues` in particular *must* be the same
 // function `SetFilter.matches` uses, or the facet list would offer a value that selects no rows.
@@ -8,8 +8,10 @@ import type { TableModel } from "./table.model";
 import type {
   BaseColumnDef,
   ColumnConfig,
+  ColumnConfigPatch,
   ColumnDef,
   ColumnFilter,
+  FilterMode,
   RowData,
   SortDirection,
 } from "./table.types";
@@ -22,7 +24,11 @@ export const SELECTION_COLUMN_KEY = "__selection__";
 
 export class ColumnModel {
   readonly table: TableModel;
-  readonly config: ColumnConfig;
+  /**
+   * The resolved column configuration. An `observable.ref` — replaced wholesale by
+   * {@link setConfig}, never mutated in place — so every getter over it is genuinely reactive.
+   */
+  config: ColumnConfig;
 
   pinned: ColumnConfig["pinned"] = false;
 
@@ -131,7 +137,10 @@ export class ColumnModel {
     return index >= 0 ? index + 1 : undefined;
   }
 
-  /** The filter attached to this column's def, if any. See {@link BaseColumnDef.filter}. */
+  /**
+   * The filter attached to this column's def, if any — already resolved, so a factory def has been
+   * called exactly once, when this column was built. See {@link BaseColumnDef.filter}.
+   */
   get filter(): ColumnFilter | undefined {
     return this.config.filter;
   }
@@ -141,7 +150,7 @@ export class ColumnModel {
    * never gated, so a `filterable: false` column with an active filter still narrows rows.
    */
   get filterable(): boolean {
-    return this.config.filterable !== false && this.config.filter !== undefined && !this.selection;
+    return this.config.filterable !== false && this.filter !== undefined && !this.selection;
   }
 
   /**
@@ -151,6 +160,26 @@ export class ColumnModel {
    */
   get filterOption(): ((value: unknown) => any) | undefined {
     return this.config.filterOption;
+  }
+
+  /** Who applies this column's filter. See {@link BaseColumnDef.filterMode}. */
+  get filterMode(): FilterMode {
+    return this.config.filterMode ?? "client";
+  }
+
+  /** The name this column's data goes by on the server. Defaults to `key`. */
+  get field(): string {
+    return this.config.field ?? this.key;
+  }
+
+  /**
+   * This column's contribution to {@link TableModel.filterQuery} — its filter's condition tagged
+   * with `field`. `undefined` unless the column is server-mode with an active filter.
+   */
+  get filterCondition(): FilterCondition | undefined {
+    if (this.filterMode !== "server") return undefined;
+    const condition = this.filter?.condition;
+    return condition ? { field: this.field, ...condition } : undefined;
   }
 
   /** Whether the built-in search reads this column. See {@link BaseColumnDef.searchable}. */
@@ -180,15 +209,21 @@ export class ColumnModel {
    * value, blank last. Insertion order alone would be first-appearance-in-rows, which reshuffles
    * the list every time the table is sorted.
    *
+   * A count means "how many rows carry this value", among rows passing every *other* filter — so it
+   * previews what picking it gives you. Under a set filter's `"all"` mode, where each pick narrows
+   * instead of widening, it is the size of the intersection with the current selection instead.
+   *
    * Zero-count entries are kept: a popover is exactly where you go to undo an over-narrowed filter.
    * A standing facet rail drops them at the call site —
    * `facets.filter((f) => f.count > 0 || filter.has(f.value))`.
    */
   get facets(): Facet[] {
-    const filter = this.config.filter;
+    const filter = this.filter;
     if (!filter) return [];
 
-    const counts = filter.counts === true;
+    // server mode never counts: `rows` are already narrowed by this very filter, so any tally
+    // would describe the current selection rather than what selecting something else would give
+    const counts = filter.counts === true && this.filterMode !== "server";
     const tally = this.facetScan;
     const declared = filter.options;
 
@@ -225,8 +260,12 @@ export class ColumnModel {
   // The one pass over the rows behind `facets`. `undefined` marks the static tier — a declared
   // domain with no counts asked for, where there is nothing to discover.
   private get facetScan(): Map<SetFilterValue, number> | undefined {
-    const filter = this.config.filter;
+    const filter = this.filter;
     if (!filter) return undefined;
+    // Server mode is always the static tier. Walking would discover only the values that survived
+    // the current selection, so the list would collapse to what is already chosen and could never
+    // be widened again. A server-mode filter without `options` therefore has an empty facet list.
+    if (this.filterMode === "server") return undefined;
     if (filter.options && !filter.counts) return undefined;
 
     // The cross-filter deliberately keeps the *other* filters, the search and every page-level
@@ -234,11 +273,26 @@ export class ColumnModel {
     // rows that selecting the value could never surface.
     const cross = filter.counts === true ? this.table.predicateExcluding(this.key) : undefined;
 
+    // When picks intersect (a set filter in "all" mode) each extra one *narrows*, so a count of
+    // "rows carrying this value" answers a question the filter is no longer asking — it would read
+    // higher than the row count you actually get. Fold this column's own filter back in, and the
+    // count becomes the size of the intersection with what is already picked.
+    //
+    // Gated on `counts`, not on `cross`: `predicateExcluding` is undefined whenever no *other*
+    // filter is active, which is exactly the lone-filter case this still has to cover.
+    const intersecting = filter.counts === true && filter.intersecting === true;
+
     const tally = new Map<SetFilterValue, number>();
     for (const row of this.table.rows) {
-      if (cross && !cross(row)) continue;
-      for (const value of facetValues(this.config.value(row))) {
-        tally.set(value, (tally.get(value) ?? 0) + 1);
+      // Every row contributes its *keys* — only the count is gated by the cross-filter. Skipping
+      // excluded rows outright would build the domain out of the surviving rows, so a value found
+      // only in excluded ones would vanish from the list instead of sitting there at zero. If it
+      // were currently selected there would then be no way to untick it short of clearing
+      // everything: the funnel still narrows, but the checkbox is gone.
+      const raw = this.config.value(row);
+      const counted = (!cross || cross(row)) && (!intersecting || filter.matches(raw));
+      for (const value of facetValues(raw)) {
+        tally.set(value, (tally.get(value) ?? 0) + (counted ? 1 : 0));
       }
     }
     return tally;
@@ -256,6 +310,7 @@ export class ColumnModel {
     this.config = config;
 
     makeObservable<this, "facetScan">(this, {
+      config: observable.ref,
       pinned: observable,
       hidden: observable,
       manualWidth: observable,
@@ -272,10 +327,12 @@ export class ColumnModel {
       sortIndex: computed,
       facets: computed,
       facetScan: computed,
+      filterCondition: computed,
 
       setPinned: action,
       setManualWidth: action,
       setHidden: action,
+      setConfig: action,
     });
 
     this.setPinned(config.pinned);
@@ -291,6 +348,31 @@ export class ColumnModel {
 
   setHidden(hidden: boolean): void {
     this.hidden = hidden;
+  }
+
+  /**
+   * Patch this column's configuration — the way to drive a column option from something the table
+   * was not constructed with, such as React state or a prop:
+   *
+   * ```tsx
+   * useEffect(() => table.column("amount")?.setConfig({ title: label }), [label]);
+   * ```
+   *
+   * `setColumns` deliberately cannot do this: it preserves the `ColumnModel` behind a key it already
+   * has, so a new def for an existing key is ignored wholesale. That is what keeps a column's
+   * position, width, pinning and filter through a def change — and it is why patching is a separate
+   * operation rather than a side effect of redeclaring.
+   *
+   * Everything the user has done to the column survives: `hidden`, `pinned` and `manualWidth` are
+   * their own state, not configuration. `key`, `filter` and `selection` cannot be patched — see
+   * {@link ColumnConfigPatch}.
+   *
+   * One coupling worth knowing: a def with no `render` had it defaulted to `value` when the column
+   * was built, so patching `value` alone changes what is sorted and filtered but not what is
+   * displayed. Patch both to change both.
+   */
+  setConfig(patch: ColumnConfigPatch): void {
+    this.config = { ...this.config, ...patch };
   }
 
   /** Sort by this column — replaces the sort list unless `preserve: true` (see TableModel.setSort). */
@@ -319,7 +401,7 @@ export class ColumnModel {
 
   /** Reset this column's filter, if it has one. A no-op otherwise. */
   clearFilter(): void {
-    this.config.filter?.clear();
+    this.filter?.clear();
   }
 
   /** Ascending comparison of two rows by this column's extracted values (`compare` def or the default). */
@@ -340,7 +422,7 @@ export class ColumnModel {
 
   static fromDef(table: TableModel, def: ColumnDef<any>): ColumnModel {
     const normalizedDef = typeof def === "string" ? { key: def } : def;
-    const { render, ...config } = normalizedDef as BaseColumnDef<any> & {
+    const { render, filter, ...config } = normalizedDef as BaseColumnDef<any> & {
       key?: string;
       value?: (row: RowData) => unknown;
       selection?: boolean;
@@ -357,6 +439,11 @@ export class ColumnModel {
       value,
       // a custom render wins for display; sorting always goes through `value`
       render: render ?? value,
+      // A factory def is called here and only here. `syncColumns` builds a column only for a key it
+      // does not already have, so this runs once per column: each table gets its own filter and a
+      // remount starts clean, while `setRows`/`setColumns` — which preserve the `ColumnModel` —
+      // leave the user's selection alone.
+      filter: typeof filter === "function" ? filter() : filter,
     });
   }
 }

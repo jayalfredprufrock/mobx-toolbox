@@ -514,6 +514,33 @@ are anchored regardless of order.
 
 ## Worth adopting (Phase 2 — propose first)
 
+### `ColumnModel.setConfig` — change one column's options in place
+
+```ts
+table.column("amount")?.setConfig({ title: "Total", width: 320 });
+```
+
+Previously the only way to change a configured column was `removeColumn` + `addColumn`, which
+destroys the `ColumnModel` and everything on it. `setColumns` never worked for this: it keeps the
+model behind a key it already has, so a new def for an existing key is ignored wholesale.
+
+`ColumnModel.config` is now an `observable.ref`, so every getter over it — `title`, `width`,
+`sortable`, `filterable` — is genuinely reactive. (`title` was previously annotated `computed` over
+non-observable state, so it could never actually change.) The user's `hidden`, `pinned`,
+`manualWidth` and any filter selection survive a patch.
+
+`key`, `filter` and `selection` cannot be patched, and are compile errors rather than runtime guards.
+
+Useful mainly for driving a column option from React state or a prop, since `useTable` reads its
+config once:
+
+```tsx
+useEffect(() => table.column("amount")?.setConfig({ title: label }), [label]);
+```
+
+Function-valued options (`value`, `render`, `compare`, `searchable`, `filterOption`) never needed
+this — they are called fresh each time, so closing them over an observable already works.
+
 ### Column filtering, and the new `filter` subpath
 
 **This is additive — nothing breaks.** `config.filter` / `setFilter` / `FilterSource` are unchanged
@@ -536,14 +563,13 @@ const table = useTable({ rows, columns, filter: filters });
 <DataTable table={table} filters={filters} renderFilterOption={...} />;
 
 // after
-const table = useTable({
-  rows,
-  columns: [
-    { key: "category", filter: new SetFilter(), filterOption: (v) => <Badge value={v} /> },
-    // a computed column is filterable now — there was no path for this before
-    { key: "name", value: (u) => `${u.first} ${u.last}`, filter: new TextFilter() },
-  ],
-});
+const columns = [
+  { key: "category", filter: () => new SetFilter(), filterOption: (v) => <Badge value={v} /> },
+  // a computed column is filterable now — there was no path for this before
+  { key: "name", value: (u) => `${u.first} ${u.last}`, filter: () => new TextFilter() },
+];
+
+const table = useTable({ rows, columns });
 <DataTable table={table} />;
 ```
 
@@ -562,6 +588,22 @@ What you get on the model:
 
 Points worth checking by hand as you port:
 
+- ⚠️ **Use the factory form (`filter: () => new SetFilter()`) for defs hoisted out of the
+  component**, which is where column defs usually live. A bare instance there is constructed once per
+  module, so filter state is shared across every mount and across two tables built from the same
+  defs — a stale selection after navigating away and back. Pass an instance only when you want that
+  sharing or need a direct reference.
+
+- **Facet counts mean different things per match mode, and the filter decides which.** Under `"any"`
+  a count is the conventional "rows carrying this value". Under `"all"` each pick narrows, so it is
+  the size of the intersection with what is already picked — exactly predictive, tick it and you get
+  that many rows. `SetFilter.intersecting` is what signals this; the table never interprets match
+  modes itself. A custom `ColumnFilter` whose picks intersect must declare it or its counts will
+  read high.
+- **A value found only in rows the other filters exclude is still listed, at zero.** Do not filter
+  zero counts out of a popover — that is where someone goes to undo an over-narrowed filter, and
+  dropping them strands a ticked value with no checkbox to untick. A standing rail can drop them
+  with `facets.filter((f) => (f.count ?? 1) > 0 || filter.has(f.value))`.
 - **Facets have three cost tiers.** `new SetFilter()` discovers values with one row walk;
   `{ options: [...] }` skips the walk entirely; `{ counts: true }` adds cross-filtered counts and is
   the expensive one — O(rows × other active filters), recomputed on any toggle. Don't reach for
@@ -582,9 +624,32 @@ Points worth checking by hand as you port:
 - **Filter state is not in `getState()` yet.** Every filter's `value` / `setValue` round-trips
   through JSON, so persist it yourself under your own key for now.
 
-Server-side filtering is unchanged in this release: react to your controls, refetch, `setRows`.
-Client filters then narrow the server's results, because the table filters over `rows` without
-replacing them.
+**Server-side filtering** is now first-class. Set `filterMode: "server"` on a column and its filter
+stops narrowing rows locally, serializing into `table.filterQuery` instead:
+
+```ts
+{ key: "time", filter: new RangeFilter(), filterMode: "server", field: "created_at" }
+
+reaction(
+  () => table.filterQuery,
+  (query) => void refetch({ where: query?.map(toClause) }).then((r) => table.setRows(r)),
+  { equals: comparer.structural },
+);
+```
+
+`filterQuery` is a `FilterCondition[]` — `{ field?, op, value }`, plain JSON — not a query language.
+Map it onto whatever your endpoint speaks. `search: { mode: "server" }` does the same for the
+cross-column search, contributing `{ op: "search", value }` with no field.
+
+The client and server sets are **disjoint**: a server-mode filter is never evaluated locally, so
+nothing is applied twice. Client filters still narrow what the server returns, because the table
+filters over `rows` without replacing them.
+
+- ⚠️ **A server-mode column's facets never walk the rows and never carry counts.** Both would be
+  computed over rows that filter already narrowed — the list would collapse to whatever is selected
+  and could never be widened. Declare `options` on the filter; without one, the facet list is empty.
+- **`clearFilters({ mode: "client" })`** resets one side only.
+- Debouncing and cursor invalidation on `filterQuery` change are yours.
 
 **Attach API client methods directly.** Config functions pass their signatures through, so a wrapper
 arrow that only forwards arguments can go:

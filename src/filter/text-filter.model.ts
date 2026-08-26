@@ -1,5 +1,10 @@
 import { action, computed, makeObservable, observable } from "mobx";
-import type { TextFilterOptions, TextMatchMode, ValueFilter } from "./filter.types";
+import type {
+  FilterCondition,
+  TextFilterOptions,
+  TextMatchMode,
+  ValueFilter,
+} from "./filter.types";
 import { textMatches } from "./util";
 
 /**
@@ -26,6 +31,18 @@ export class TextFilter implements ValueFilter {
     return this.text;
   }
 
+  /**
+   * The query as a server condition. The op is the configured `match`, so `"contains"` /
+   * `"startsWith"` / `"equals"` carry across unchanged. `undefined` while inactive.
+   *
+   * `caseSensitive` is deliberately not serialized: it describes how *this* process compares, and
+   * a server's collation is its own business.
+   */
+  get condition(): FilterCondition | undefined {
+    if (this.text === "") return undefined;
+    return { op: this.match, value: this.text };
+  }
+
   constructor(options?: TextFilterOptions) {
     this.text = options?.text ?? "";
     this.match = options?.match ?? "contains";
@@ -36,6 +53,7 @@ export class TextFilter implements ValueFilter {
 
       active: computed,
       value: computed,
+      condition: computed,
 
       setText: action.bound,
       setValue: action.bound,

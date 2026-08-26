@@ -262,6 +262,7 @@ fixed set, use an allowlist inside the function.
 table.setColumns(defs); // replace the curated set
 table.addColumn(def, index?); // add one, optionally at a display position
 table.removeColumn(key); // take one out
+table.column(key)?.setConfig(patch); // change one column's options in place
 ```
 
 Columns that survive a change keep everything the user did to them — display position, visibility,
@@ -284,6 +285,48 @@ replace the first.
 One thing to know: `removeColumn` destroys the `ColumnModel`, so `addColumn` rebuilds it from the def.
 Runtime tweaks to that column (a `setPinned`, a `setManualWidth`) are lost; only a persisted snapshot
 is re-applied.
+
+### Changing one column's options
+
+`setColumns` deliberately **cannot** do this: it keeps the `ColumnModel` behind a key it already has,
+so a new def for an existing key is ignored wholesale. That is exactly what preserves the column's
+position, width, pinning and filter through a def change — so patching is a separate operation:
+
+```ts
+table.column("amount")?.setConfig({ title: "Total", width: 320 });
+```
+
+This is how you drive a column option from something the table wasn't constructed with — React state
+or a prop, which `useTable` reads only once:
+
+```tsx
+useEffect(() => table.column("amount")?.setConfig({ title: label }), [label]);
+```
+
+`config` is an `observable.ref` replaced wholesale by the patch, so every getter over it —
+`title`, `width`, `sortable`, `filterable`, the lot — is genuinely reactive. Everything the user has
+done to the column survives, because `hidden`, `pinned` and `manualWidth` are state rather than
+configuration, and so is a filter's selection.
+
+Three options can't be patched, and are compile errors rather than runtime guards:
+
+| Option      | Why                                                                               |
+| ----------- | --------------------------------------------------------------------------------- |
+| `key`       | identifies the column in `columns`, `columnOrder`, the sort list and any snapshot |
+| `filter`    | holds the user's live selection; replacing the instance would silently discard it |
+| `selection` | decides which components render the column at all                                 |
+
+To change a filter's _type_, use `removeColumn` + `addColumn`. To change its _state_, set it on the
+filter.
+
+One coupling worth knowing: a def with no `render` had it defaulted to `value` when the column was
+built, so patching `value` alone changes what is sorted and filtered but not what is displayed. Patch
+both to change both.
+
+**Function-valued options are the other route**, and need no patching at all — `value`, `render`,
+`compare`, `searchable` and `filterOption` are called fresh every time, so closing them over
+something observable (see [`useObservableBox`](../util/README.md)) makes them follow it. Reach for
+`setConfig` for the scalar options, which have no such escape.
 
 ### Ordering
 
@@ -473,23 +516,40 @@ computed column is filterable with no extra config and there are no key-matching
 in sync by hand.
 
 ```tsx
-import { SetFilter, RangeFilter } from "@jayalfredprufrock/mobx-toolbox/filter";
+import { SetFilter, RangeFilter, TextFilter } from "@jayalfredprufrock/mobx-toolbox/filter";
 
-const table = useTable({
-  rows,
-  columns: [
-    { key: "category", filter: new SetFilter() },
-    { key: "name", value: (u) => `${u.first} ${u.last}`, filter: new TextFilter() },
-    { key: "score", filter: new RangeFilter() },
-  ],
-});
+// hoisted out of the component, as column defs usually are
+const columns: ColumnsDef<User> = [
+  { key: "category", filter: () => new SetFilter() },
+  { key: "name", value: (u) => `${u.first} ${u.last}`, filter: () => new TextFilter() },
+  { key: "score", filter: () => new RangeFilter() },
+];
+
+const table = useTable({ rows, columns });
 ```
 
-Pass **instances**, not factories or string discriminants. A discriminant (`filter: "set"`) would
-force a `"set" -> SetFilter` map into the table, so every consumer would ship every filter type; with
-an instance, your page's own import is the only thing that pulls one in. The instance survives
-everything that rebuilds column defs — `setRows`, `appendRows`, `setColumns` — because `syncColumns`
-preserves the `ColumnModel` behind a key it already has. (Which is also why a _new_ def for an
+**Use the factory form for defs declared outside the component.** A bare `new SetFilter()` in a
+module-level `const` is built once for the module's lifetime, so it is shared by every table built
+from those defs and by every mount of the same one: the user's selection survives navigating away
+and back, and two tables on screen at once fight over it. `() => new SetFilter()` is called once per
+`ColumnModel`, so each table gets its own and a remount starts clean.
+
+Pass an instance when you want exactly that sharing, or when you need a direct reference to drive the
+filter from outside the table. Otherwise reach it through `table.column(key)?.filter`, narrowing by
+`instanceof`:
+
+```ts
+const filter = table.column("category")?.filter;
+if (filter instanceof SetFilter) filter.toggle("books");
+```
+
+A discriminant (`filter: "set"`) is the one form deliberately unsupported: it would force a
+`"set" -> SetFilter` map into the table, so every consumer would ship every filter type. Both
+supported forms keep your page's own import as the only thing that pulls one in.
+
+Either way the filter survives everything that rebuilds column defs — `setRows`, `appendRows`,
+`setColumns` — because `syncColumns` preserves the `ColumnModel` behind a key it already has, and the
+factory is not called again for a key that already has one. (Which is also why a new def for an
 existing key is ignored wholesale: to swap a filter type at runtime, use `removeColumn` +
 `addColumn`.)
 
@@ -558,8 +618,23 @@ Ordering is declared `options` first in declaration order, then discovered value
 blank last. (Insertion order alone would be first-appearance-in-rows, which reshuffles the list every
 time the table is sorted.)
 
+A count means "how many rows carry this value", among rows passing every _other_ filter — so it
+previews what picking it gives you. Counts are cross-filtered by every other active filter, never by
+the column's own; otherwise the list could never be widened again.
+
+One exception, and it is the filter that decides it: when picking **narrows** rather than widens
+(a `SetFilter` in `matchMode: "all"`), that number would describe a question the filter is no longer
+asking, promising more rows than ticking the box actually gives. There the count is the size of the
+intersection with what is already picked, so it stays exactly predictive — tick it and you get that
+many rows. A filter signals this with `intersecting`; the table never interprets match modes itself.
+
 Zero-count entries are **kept**, because a popover is exactly where you go to undo an over-narrowed
-filter. A standing facet rail that would rather hide them drops them at the call site:
+filter. That matters more than it sounds: a value that appears only in rows the _other_ filters
+exclude is still listed, at zero. Without it, ticking a value and then narrowing another column past
+it would leave the funnel filtering while its checkbox had vanished from the list — no way to untick
+it short of clearing everything.
+
+A standing facet rail that would rather hide them drops them at the call site:
 
 ```tsx
 facets.filter((f) => (f.count ?? 1) > 0 || filter.has(f.value));
@@ -585,9 +660,8 @@ facets.filter((f) => (f.count ?? 1) > 0 || filter.has(f.value));
 offered only where the row walk actually found one — the static tier never shows it, with no extra
 config.
 
-Counts are cross-filtered by every _other_ active filter, never by the column's own — otherwise the
-list could never be widened again. Page-level sources and the search count too: a row those already
-exclude must not be tallied, or the count promises rows the selection could never surface.
+Page-level sources and the search are cross-filtered in too: a row those already exclude must not be
+tallied, or the count promises rows the selection could never surface.
 
 ### Search
 
@@ -622,9 +696,77 @@ everything above. It is the escape hatch for a dimension with no column behind i
 useTable({ rows, filter: [dateRangeStore, permissionScope] });
 ```
 
-For **server-side** filtering, react to whatever state your controls hold, refetch, and `setRows` —
-the table filters over `rows` without replacing them, so client filters narrow server results with
-no extra machinery.
+### Server-side filtering
+
+Set `filterMode: "server"` on a column and its filter stops narrowing rows here. Instead it
+serializes into `table.filterQuery` for you to send onward.
+
+```ts
+const table = useTable({
+  rows,
+  columns: [
+    { key: "time", filter: () => new RangeFilter(), filterMode: "server", field: "created_at" },
+    { key: "level", filter: () => new SetFilter({ options: LEVELS }), filterMode: "server" },
+    { key: "message", filter: () => new TextFilter() }, // client-side, over what came back
+  ],
+});
+
+reaction(
+  () => table.filterQuery,
+  (query) => void refetch({ where: query?.map(toClause) }).then((r) => table.setRows(r)),
+  { equals: comparer.structural },
+);
+```
+
+The two sets are **disjoint**, and that is what makes a mixed table cheap: a server-mode filter is
+never evaluated client-side, so every filter is applied exactly once, in exactly one place. There is
+no double-filtering and nothing to reconcile. `predicate` holds the client half, `filterQuery` the
+server half, and `activeFilterCount` counts both — they all narrow the table, just in different
+places.
+
+Applying client filters _on top of_ server results needs no new machinery either: the table filters
+over `rows` without replacing them, so `setRows(serverResults)` followed by a client filter is the
+behaviour you already have.
+
+`filterQuery` is a `FilterCondition[]` — plain JSON, so it compares with `comparer.structural` and
+unrelated churn (sorting, hiding a column) won't fire a refetch.
+
+```ts
+{ field: "created_at", op: "range", value: { min: 1700000000, max: 1700086400 } }
+{ field: "level",      op: "in",    value: ["error", "warn"] }
+{                      op: "search", value: "timeout" }   // no field: not tied to one column
+```
+
+`field` is the name the data goes by on the wire, defaulting to the column's `key` — usually right
+for a field column and usually wrong for a computed one. The conditions are deliberately not a query
+language: they name the comparison and leave the translation to you, so the same column defs work
+against REST, a typed POST body, or SQL. See [`filter`](../filter/README.md) for the op table.
+
+**Debouncing and cursor invalidation are yours.** The table has no idea what a request costs you.
+
+Two things change for a server-mode column's facets, both because `rows` are _already narrowed by
+that very filter_:
+
+- It **never walks the rows.** A walk would discover only the values that survived the current
+  selection, so the list would collapse to what is already chosen and could never be widened again.
+  Declare `options` on the filter to give it a domain — without one, its facet list is empty.
+- It **never carries counts**, even with `counts: true`. They would be counts of an already-filtered
+  set, describing the current selection rather than the alternatives.
+
+Server filters are also excluded from every _other_ column's cross-filter tally, since they are
+already applied to `rows`. That falls out of the partition rather than being a special case.
+
+`clearFilters({ mode: "client" })` resets one side and leaves the other alone, which is what a
+"clear filters" button next to a sidebar of server-driven controls usually wants.
+
+The search has its own mode:
+
+```ts
+useTable({ rows, search: { mode: "server" } });
+```
+
+In server mode the query stops narrowing rows and becomes a `{ op: "search" }` condition instead.
+Per-column `searchable` then has no effect — the server decides what it searches.
 
 ## Persisting the arrangement
 
@@ -739,11 +881,12 @@ Drop a `<Table.Resizer>` inside a header cell. It handles the drag (on the corre
 | `selectedRows` / `selectedIds`          | selection                                  |
 | `sorts`                                 | the sort priority list                     |
 | `predicate` / `activeFilterCount`       | what is narrowing rows, and how much of it |
+| `filterQuery`                           | the server half, as plain JSON conditions  |
 | `search`                                | the built-in cross-column search           |
 | `virtualWidth` / `virtualHeight`        | full scroll extent                         |
 
 Mutations all go through actions: `setRows`, `appendRows`, `setFilter`, `clearFilters`, `setSort`/`setSorts`/`clearSort`, `toggleRow`/`selectAllRows`/`toggleAllRows`/`clearSelection`, `toggleRowExpanded`/`collapseAllRows`, `moveColumn`, `applyState`, `scrollToRow`/`scrollToEnd`.
 
-`ColumnModel`: `key`, `title`, `width`, `pinned`, `hidden`, `sortDirection`, `sortIndex`, `sortable`, `resizable`, `getValue(row)`, `setPinned`, `setHidden`, `setManualWidth`, `sortBy`, `clearSort`, plus the filtering surface — `filter`, `filterable`, `filterOption`, `facets`, `searchable`, `searchValue(row)`, `clearFilter()`.
+`ColumnModel`: `key`, `title`, `width`, `pinned`, `hidden`, `sortDirection`, `sortIndex`, `sortable`, `resizable`, `getValue(row)`, `setPinned`, `setHidden`, `setManualWidth`, `sortBy`, `clearSort`, `setConfig`, plus the filtering surface — `filter`, `filterable`, `filterOption`, `facets`, `filterMode`, `field`, `filterCondition`, `searchable`, `searchValue(row)`, `clearFilter()`.
 
 When you build the model yourself rather than via `useTable`, call `dispose()` to drop the model's reactions — `onStateChange`, and the one tracking a getter `rows` — and `activate()` to re-arm them. A `TableModel` built directly with an **array** `rows` applies it once, at construction: identity-based syncing is `useTable`'s job, so update it with `setRows`. The getter form needs no such help; it tracks its source wherever the model lives.

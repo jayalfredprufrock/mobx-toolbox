@@ -1,5 +1,10 @@
 import { action, computed, makeObservable, observable } from "mobx";
-import type { RangeFilterOptions, RangeFilterState, ValueFilter } from "./filter.types";
+import type {
+  FilterCondition,
+  RangeFilterOptions,
+  RangeFilterState,
+  ValueFilter,
+} from "./filter.types";
 
 /**
  * Coerce a value to the number the bounds are compared against. `Date` goes through `getTime()`, so
@@ -43,6 +48,15 @@ export class RangeFilter implements ValueFilter {
     return state;
   }
 
+  /**
+   * The bounds as a server condition. `value` is the same `{ min?, max? }` pair `value` returns —
+   * plain numbers, inclusive on both ends. `undefined` while inactive.
+   */
+  get condition(): FilterCondition | undefined {
+    if (this.min === undefined && this.max === undefined) return undefined;
+    return { op: "range", value: this.value };
+  }
+
   constructor(options?: RangeFilterOptions) {
     this.min = options?.min;
     this.max = options?.max;
@@ -53,6 +67,7 @@ export class RangeFilter implements ValueFilter {
 
       active: computed,
       value: computed,
+      condition: computed,
 
       setMin: action.bound,
       setMax: action.bound,

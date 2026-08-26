@@ -1,3 +1,9 @@
+import type { FilterCondition } from "../filter/filter.types";
+
+// Re-exported so a consumer reading `table.filterQuery` gets the type from `/table` rather than
+// having to reach into `/filter` for it. Type-only, so nothing is pulled into the bundle.
+export type { FilterCondition, FilterOp } from "../filter/filter.types";
+
 export type RowData = Record<string, any>;
 export type TableData = RowData[];
 
@@ -147,6 +153,17 @@ export interface TableConfig<T> {
    */
   filter?: FilterSource<T> | FilterSource<T>[];
   /**
+   * Configures the built-in cross-column search (`TableModel.search`).
+   *
+   * `mode: "server"` means the server does the searching: the query stops narrowing rows here and
+   * becomes a `{ op: "search" }` entry in `filterQuery` instead. Per-column `searchable` is then
+   * irrelevant — the server decides what it searches.
+   *
+   * Debouncing is deliberately not offered. Like `onStateChange`, the cadence belongs to whoever
+   * owns the input.
+   */
+  search?: { mode?: FilterMode };
+  /**
    * Fires whenever persisted table state changes (see `getState`) — including as a result of
    * `applyState`. The snapshot is JSON-serializable; debouncing/storage is the consumer's job.
    */
@@ -209,7 +226,21 @@ export interface ColumnFilter {
   readonly options?: readonly unknown[];
   /** Whether facets should carry cross-filtered counts — the expensive tier. */
   readonly counts?: boolean;
+  /**
+   * Whether picking more narrows rather than widens. When true, this column's facet counts are taken
+   * against its own selection as well as the other filters — see `ColumnModel.facets`.
+   */
+  readonly intersecting?: boolean;
+  /**
+   * The filter's state as plain JSON, for a column set to `filterMode: "server"`. The table adds
+   * the column's `field` and collects these into `TableModel.filterQuery`; it never calls `matches`
+   * on such a column.
+   */
+  readonly condition?: FilterCondition | undefined;
 }
+
+/** Where an active filter is applied. See {@link BaseColumnDef.filterMode}. */
+export type FilterMode = "client" | "server";
 
 export interface ColumnConfig {
   key: string;
@@ -230,7 +261,7 @@ export interface ColumnConfig {
   sortable?: boolean;
   /** Marks the built-in row-selection column (rendered via `<Table.SelectionCell>`). */
   selection?: boolean;
-  /** See BaseColumnDef.filter. */
+  /** See BaseColumnDef.filter — already resolved, so a factory def has been called by `fromDef`. */
   filter?: ColumnFilter;
   /** See BaseColumnDef.filterable — advisory flag for header filter UIs. Defaults to true. */
   filterable?: boolean;
@@ -238,7 +269,23 @@ export interface ColumnConfig {
   filterOption?: (value: unknown) => any;
   /** See BaseColumnDef.searchable. Defaults to true. */
   searchable?: boolean | ((row: RowData) => string);
+  /** See BaseColumnDef.filterMode. Defaults to "client". */
+  filterMode?: FilterMode;
+  /** See BaseColumnDef.field. Defaults to `key`. */
+  field?: string;
 }
+
+/**
+ * What `ColumnModel.setConfig` accepts — everything on {@link ColumnConfig} except the three that
+ * cannot be swapped after the fact:
+ *
+ * - `key` identifies the column in `columns`, `columnOrder`, the sort list and any persisted
+ *   snapshot; changing it would orphan all of them.
+ * - `filter` holds the user's live selection. Replacing the instance would silently discard it —
+ *   set the filter's own state instead, or `removeColumn` + `addColumn` to change its type.
+ * - `selection` decides which components render the column at all.
+ */
+export type ColumnConfigPatch = Partial<Omit<ColumnConfig, "key" | "filter" | "selection">>;
 
 export type ColumnWidth = number | `${number}fr`;
 
@@ -284,16 +331,36 @@ export interface BaseColumnDef<T> {
    */
   sortable?: boolean;
   /**
-   * A filter over this column's values. Attach an instance (`filter: new SetFilter()`), not a
-   * factory or a discriminant; the table feeds it `getValue(row)`, so it filters a computed column
-   * as readily as a field one.
+   * A filter over this column's values. The table feeds it `getValue(row)`, so it filters a computed
+   * column as readily as a field one.
    *
-   * The instance survives everything that rebuilds column definitions — `setRows`, `appendRows`,
-   * `setColumns` — because `syncColumns` preserves the `ColumnModel` behind an existing key. It does
-   * *not* survive `removeColumn`, which destroys the model; the filter type on a key cannot be
-   * swapped at runtime, so use `removeColumn` + `addColumn` if you must.
+   * **Prefer the factory form** — `filter: () => new SetFilter()` — whenever the column defs live
+   * outside the component, which is the usual place to put them:
+   *
+   * ```ts
+   * const columns = [{ key: "category", filter: () => new SetFilter() }];
+   * ```
+   *
+   * A bare instance in a module-level `const` is constructed once for the lifetime of the module, so
+   * it is shared by every table built from those defs and by every mount of the same one — the
+   * user's selection would survive navigating away and back, and two tables on screen at once would
+   * fight over it. The factory is called once per `ColumnModel`, so each table gets its own and a
+   * remount starts clean.
+   *
+   * Pass an instance when you want exactly that sharing, or when you need a direct reference to
+   * drive the filter from outside the table (a sidebar control). Otherwise reach it through
+   * `table.column(key)?.filter`.
+   *
+   * A discriminant (`filter: "set"`) is the one form deliberately not supported: it would force a
+   * `"set" -> SetFilter` map into the table, so every consumer would ship every filter type.
+   *
+   * Either way the filter survives everything that rebuilds column definitions — `setRows`,
+   * `appendRows`, `setColumns` — because `syncColumns` preserves the `ColumnModel` behind an
+   * existing key, and the factory is not called again for a key that already has one. It does *not*
+   * survive `removeColumn`, which destroys the model; the filter type on a key cannot be swapped at
+   * runtime, so use `removeColumn` + `addColumn` if you must.
    */
-  filter?: ColumnFilter;
+  filter?: ColumnFilter | (() => ColumnFilter);
   /**
    * Whether header UIs should offer this column's filter control. Defaults to true wherever a
    * `filter` is attached.
@@ -318,6 +385,29 @@ export interface BaseColumnDef<T> {
    * Applies to hidden columns: it describes the data, not what is on screen.
    */
   searchable?: boolean | ((row: T) => string);
+  /**
+   * Who applies this column's filter. `"client"` (the default) narrows rows here; `"server"` means
+   * whoever produced the rows already did.
+   *
+   * The two sets are **disjoint**, which is what makes a mixed table cheap: a server-mode filter is
+   * never evaluated client-side, so every filter is applied exactly once, in exactly one place. A
+   * server-mode filter contributes to `TableModel.filterQuery` instead of to `predicate`; react to
+   * that, refetch, and `setRows`. Client filters then narrow the server's results, because the
+   * table filters over `rows` without replacing them.
+   *
+   * Two consequences for facets, both because `rows` here are already narrowed by this very filter:
+   * a server-mode column never walks the rows (it would discover only the values that survived the
+   * current selection, and the list could never be widened again) and never carries counts (they
+   * would be counts of an already-filtered set). Declare `options` on the filter to give it a
+   * domain; without one its facet list is empty.
+   */
+  filterMode?: FilterMode;
+  /**
+   * The name this column's data goes by on the server — what lands in `FilterCondition.field`.
+   * Defaults to `key`, which is usually right for a field column and usually wrong for a computed
+   * one.
+   */
+  field?: string;
 }
 
 export interface FieldColumnDef<T> extends BaseColumnDef<T> {

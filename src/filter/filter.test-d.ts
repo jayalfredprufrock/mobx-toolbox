@@ -11,6 +11,7 @@
  *    would notice until a column silently stopped filtering.
  */
 import type { ColumnFilter } from "../table/table.types";
+import type { FilterCondition } from "./filter.types";
 import { RangeFilter } from "./range-filter.model";
 import { SetFilter } from "./set-filter.model";
 import { TextFilter } from "./text-filter.model";
@@ -37,6 +38,15 @@ new RangeFilter({ multiValue: true });
 new TextFilter({ counts: true });
 // @ts-expect-error
 new TextFilter({ options: ["a"] });
+
+// --- every filter can serialize itself for a server ------------------------
+
+assignableTo<FilterCondition | undefined>(new SetFilter().condition);
+assignableTo<FilterCondition | undefined>(new RangeFilter().condition);
+assignableTo<FilterCondition | undefined>(new TextFilter().condition);
+
+// `field` is filled in by whoever knows the wire name — a filter never sets it
+assignableTo<{ field?: string; op: string; value: unknown }>({ op: "in", value: [] });
 
 // --- the set domain is JSON-safe by construction ---------------------------
 

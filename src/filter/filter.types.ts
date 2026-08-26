@@ -19,6 +19,38 @@ export type SetMatchMode = "any" | "all";
 export type TextMatchMode = "contains" | "startsWith" | "equals";
 
 /**
+ * What kind of comparison a serialized condition describes. The built-ins cover `"in"` / `"all"`
+ * (set), `"range"`, `"contains"` / `"startsWith"` / `"equals"` (text) and `"search"` (a table's
+ * cross-column search). Open to arbitrary strings so a custom filter can name its own, while the
+ * built-in ops still autocomplete.
+ */
+export type FilterOp =
+  | "in"
+  | "all"
+  | "range"
+  | "contains"
+  | "startsWith"
+  | "equals"
+  | "search"
+  | (string & Record<never, never>);
+
+/**
+ * A filter's state as plain, JSON-safe data — what you send to a server that will do the filtering
+ * for you.
+ *
+ * Deliberately neutral rather than any particular query language: it names *what* is being compared
+ * and *how*, and the caller maps that onto whatever its endpoint speaks. A filter fills in `op` and
+ * `value`; `field` is added by whoever knows the name the data goes by on the wire (for a table,
+ * that is the column — see its `field` option).
+ */
+export interface FilterCondition {
+  /** The name this data goes by on the server. Absent when the filter is not tied to one field. */
+  field?: string;
+  op: FilterOp;
+  value: unknown;
+}
+
+/**
  * A reactive predicate over a single extracted value — the shape every filter in this module
  * satisfies.
  *
@@ -33,6 +65,30 @@ export interface ValueFilter {
   matches(value: unknown): boolean;
   /** Reset to the inactive state. */
   clear(): void;
+  /**
+   * Whether picking more narrows the result rather than widening it — whether the picks combine by
+   * intersection rather than union.
+   *
+   * Facet counts normally leave this filter out of their own tally, because the usual question is
+   * "how many rows carry this value", which is the right one while picking widens. When picking
+   * narrows, the question becomes "how many rows would be left if I picked this too", so the count
+   * has to be taken against the current selection as well.
+   *
+   * A boolean rather than the filter's own mode, so the rule for deciding it stays with the filter
+   * that has the modes; whoever computes facets never has to interpret them.
+   *
+   * Only affects counts, never which values are listed.
+   */
+  readonly intersecting?: boolean;
+  /**
+   * This filter's state as a {@link FilterCondition}, or `undefined` while inactive — for handing
+   * the work to a server instead of evaluating it here.
+   *
+   * Optional: a filter that only ever runs in-process has nothing to serialize. But a table column
+   * set to `filterMode: "server"` whose filter omits this contributes nothing to `filterQuery` and
+   * is not applied client-side either, so it would silently do nothing.
+   */
+  readonly condition?: FilterCondition | undefined;
 }
 
 /**

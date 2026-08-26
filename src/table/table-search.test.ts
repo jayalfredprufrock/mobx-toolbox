@@ -149,7 +149,11 @@ describe("built-in search", () => {
     ]);
 
     table.search.setText("ada");
-    expect(table.column("secret")?.facets).toEqual([{ value: "alpha", count: 1 }]);
+    expect(table.column("secret")?.facets).toEqual([
+      { value: "alpha", count: 1 },
+      // "beta" survives at zero so it can still be ticked
+      { value: "beta", count: 0 },
+    ]);
   });
 
   test("is reactive", () => {

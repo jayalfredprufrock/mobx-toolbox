@@ -1,5 +1,6 @@
 import { action, computed, makeObservable, observable } from "mobx";
 import type {
+  FilterCondition,
   SetFilterOptions,
   SetFilterState,
   SetFilterValue,
@@ -55,6 +56,24 @@ export class SetFilter implements ValueFilter {
     return { selected: [...this.selected], matchMode: this.matchMode };
   }
 
+  /**
+   * True under `matchMode: "all"`, where each additional pick narrows the result instead of widening
+   * it — so facet counts have to be taken against the current selection rather than ignoring it.
+   * See {@link ValueFilter.intersecting}.
+   */
+  get intersecting(): boolean {
+    return this.matchMode === "all";
+  }
+
+  /**
+   * The selection as a server condition: `"in"` for the default match mode, `"all"` when every
+   * selection must be present. `undefined` while inactive.
+   */
+  get condition(): FilterCondition | undefined {
+    if (this.selected.size === 0) return undefined;
+    return { op: this.matchMode === "all" ? "all" : "in", value: [...this.selected] };
+  }
+
   constructor(options?: SetFilterOptions) {
     this.options = options?.options;
     this.counts = options?.counts === true;
@@ -69,6 +88,8 @@ export class SetFilter implements ValueFilter {
       active: computed,
       selectedCount: computed,
       value: computed,
+      condition: computed,
+      intersecting: computed,
 
       toggle: action.bound,
       select: action.bound,

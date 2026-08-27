@@ -1,6 +1,7 @@
 import { autorun } from "mobx";
 import { afterEach, describe, expect, test } from "vite-plus/test";
-import { RangeFilter } from "../filter/range-filter.model";
+import { DateFilter } from "../filter/date-filter.model";
+import { BucketFilter } from "../filter/bucket-filter.model";
 import { SetFilter } from "../filter/set-filter.model";
 import { TextFilter } from "../filter/text-filter.model";
 import { BLANK } from "../filter/util";
@@ -84,7 +85,7 @@ describe("column filters", () => {
 
   test("filters AND together across columns", () => {
     const category = new SetFilter({ selected: ["a", "b"] });
-    const score = new RangeFilter({ min: 15 });
+    const score = new DateFilter({ min: 15 });
     const table = makeTable([
       { key: "category", filter: category },
       { key: "score", filter: score },
@@ -217,7 +218,7 @@ describe("column filters across the column lifecycle", () => {
     expect(table.column("category")).toBeUndefined();
     expect(ids(table.filteredRows)).toEqual([1, 2, 3, 4, 5]);
 
-    const replacement = new RangeFilter({ min: 40 });
+    const replacement = new DateFilter({ min: 40 });
     table.addColumn({ key: "score2", value: (p: Person) => p.score, filter: replacement });
     expect(table.column("score2")?.filter).toBe(replacement);
     expect(ids(table.filteredRows)).toEqual([4, 5]);
@@ -225,7 +226,7 @@ describe("column filters across the column lifecycle", () => {
 
   test("clearFilters resets every column filter", () => {
     const category = new SetFilter({ selected: ["a"] });
-    const score = new RangeFilter({ min: 25 });
+    const score = new DateFilter({ min: 25 });
     const table = makeTable([
       { key: "category", filter: category },
       { key: "score", filter: score },
@@ -248,13 +249,16 @@ describe("column filters across the column lifecycle", () => {
     expect(ids(table.filteredRows)).toEqual([2, 3, 4, 5]);
   });
 
-  test("filter state is not part of the persisted snapshot", () => {
+  test("only active filters reach the snapshot", () => {
     const filter = new SetFilter();
     const table = makeTable([{ key: "category", filter }]);
-    const before = JSON.stringify(table.getState());
+    // always present, like `columns` and `sorts` — but empty until something is active
+    expect(table.getState().filters).toEqual({});
 
     filter.toggle("a");
-    expect(JSON.stringify(table.getState())).toBe(before);
+    expect(table.getState().filters).toEqual({
+      category: { selected: ["a"], matchMode: "any" },
+    });
   });
 });
 
@@ -494,7 +498,7 @@ describe("facets", () => {
 
   test("predicateExcluding drops only the named column's filter", () => {
     const category = new SetFilter({ selected: ["a"] });
-    const score = new RangeFilter({ min: 25 });
+    const score = new DateFilter({ min: 25 });
     const table = makeTable([
       { key: "category", filter: category },
       { key: "score", filter: score },
@@ -518,7 +522,7 @@ describe("all four filter kinds on one table", () => {
   const build = () => {
     const category = new SetFilter();
     const tags = new SetFilter({ counts: true });
-    const score = new RangeFilter();
+    const score = new DateFilter();
     const name = new TextFilter();
     const table = makeTable([
       { key: "category", filter: category },
@@ -594,7 +598,7 @@ describe("filterOption", () => {
   test("is exposed off the column, with the default left to the caller", () => {
     const table = makeTable([
       { key: "category", filter: new SetFilter(), filterOption: (v) => `<${String(v)}>` },
-      { key: "score", filter: new RangeFilter() },
+      { key: "score", filter: new DateFilter() },
     ]);
 
     const category = table.column("category");
@@ -624,7 +628,7 @@ describe("filter factories", () => {
   // lifetime of the module.
   const columns: ColumnsDef<Person> = [
     { key: "category", filter: () => new SetFilter() },
-    { key: "score", filter: () => new RangeFilter() },
+    { key: "score", filter: () => new DateFilter() },
   ];
 
   test("each table gets its own filter", () => {
@@ -695,13 +699,13 @@ describe("filter factories", () => {
         key: "score",
         filter: () => {
           built++;
-          return new RangeFilter();
+          return new DateFilter();
         },
       },
     ]);
 
     expect(built).toBe(1);
-    expect(table.column("score")?.filter).toBeInstanceOf(RangeFilter);
+    expect(table.column("score")?.filter).toBeInstanceOf(DateFilter);
   });
 
   test("state survives setRows, as with an instance", () => {
@@ -724,8 +728,124 @@ describe("filter factories", () => {
       { value: BLANK, blank: true },
     ]);
 
-    filterOf(table, "score", RangeFilter).setRange(25, undefined);
+    filterOf(table, "score", DateFilter).setRange(25, undefined);
     expect(ids(table.filteredRows)).toEqual([3, 4, 5]);
     expect(table.activeFilterCount).toBe(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// projected domains
+// ---------------------------------------------------------------------------
+
+describe("BucketFilter on a column", () => {
+  interface Student {
+    id: number;
+    name: string;
+    score: number | null;
+  }
+
+  const students: Student[] = [
+    { id: 1, name: "a", score: 95 },
+    { id: 2, name: "b", score: 84 },
+    { id: 3, name: "c", score: 81 },
+    { id: 4, name: "d", score: 72 },
+    { id: 5, name: "e", score: 55 },
+    { id: 6, name: "f", score: null },
+  ];
+
+  const grades = [
+    { label: "A", min: 90 },
+    { label: "B", min: 80, max: 90 },
+    { label: "C", min: 70, max: 80 },
+    { label: "D", min: 60, max: 70 },
+    { label: "F", max: 60 },
+  ];
+
+  const build = (opts: { counts?: boolean } = {}) => {
+    const filter = new BucketFilter({ buckets: grades, counts: opts.counts });
+    const table = new TableModel({
+      rows: students,
+      columns: [{ key: "score", filter }, "name"] as ColumnsDef<Student>,
+      getRowId: (s: Student) => s.id,
+    });
+    table.setWidth(1000);
+    table.setHeight(200);
+    return { table, filter };
+  };
+
+  test("filters by bucket while the column keeps the raw value", () => {
+    const { table, filter } = build();
+
+    filter.toggle("B");
+    expect(ids(table.filteredRows)).toEqual([2, 3]);
+    // the cell still shows 84, not "B"
+    expect(table.column("score")?.getValue(students[1] as RowData)).toBe(84);
+  });
+
+  test("sorting stays on the raw value, so it orders within a bucket", () => {
+    const { table, filter } = build();
+    filter.toggle("B");
+    table.setSort("score", "desc");
+    expect(ids(table.displayRows)).toEqual([2, 3]);
+    table.setSort("score", "asc");
+    expect(ids(table.displayRows)).toEqual([3, 2]);
+  });
+
+  test("facets list the projected domain, not every distinct score", () => {
+    // the reason `project` is on the interface: the table walks rows itself and never calls matches
+    const { table } = build();
+    expect(table.column("score")?.facets).toEqual([
+      { value: "A" },
+      { value: "B" },
+      { value: "C" },
+      { value: "D" },
+      { value: "F" },
+    ]);
+  });
+
+  test("counts tally per bucket, and blanks stay their own facet", () => {
+    const { table } = build({ counts: true });
+    expect(table.column("score")?.facets).toEqual([
+      { value: "A", count: 1 },
+      { value: "B", count: 2 },
+      { value: "C", count: 1 },
+      { value: "D", count: 0 },
+      { value: "F", count: 1 },
+      // a missing score is not a low one
+      { value: BLANK, blank: true, count: 1 },
+    ]);
+  });
+
+  test("counts cross-filter like any other set filter", () => {
+    const name = new SetFilter();
+    const filter = new BucketFilter({ buckets: grades, counts: true });
+    const table = new TableModel({
+      rows: students,
+      columns: [
+        { key: "score", filter },
+        { key: "name", filter: name },
+      ] as ColumnsDef<Student>,
+      getRowId: (s: Student) => s.id,
+    });
+
+    name.select(["a", "b"]);
+    expect(table.column("score")?.facets).toEqual([
+      { value: "A", count: 1 },
+      { value: "B", count: 1 },
+      { value: "C", count: 0 },
+      { value: "D", count: 0 },
+      { value: "F", count: 0 },
+      { value: BLANK, blank: true, count: 0 },
+    ]);
+  });
+
+  test("bucket selections survive a state round-trip", () => {
+    const { table, filter } = build();
+    filter.select(["A", "C"]);
+
+    const restored = build();
+    restored.table.applyState(JSON.parse(JSON.stringify(table.getState())) as never);
+    expect(ids(restored.table.filteredRows)).toEqual([1, 4]);
   });
 });

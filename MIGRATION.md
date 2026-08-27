@@ -31,6 +31,57 @@ these are right.
 
 ## Breaking changes
 
+### filter — `RangeFilter` is now `DateFilter`, plus two new filter types
+
+⚠️ **`RangeFilter` is gone.** It was only ever a date range wearing a generic name, so it has been
+renamed and taught to absorb the shapes a date column actually arrives in. Numeric ranges move to the
+new `NumberFilter`.
+
+```ts
+// before
+new RangeFilter({ min: 0, max: 100 }); // a numeric range
+new RangeFilter({ min: someDate.getTime() }); // a date range, hand-coerced
+
+// after
+new NumberFilter({ op: "between", operand: [0, 100] });
+new DateFilter({ min: someDate }); // Date, epoch seconds/millis, or an ISO string
+```
+
+⚠️ **Check every `RangeFilter` over a numeric column.** `DateFilter` reads a bare number as epoch
+seconds or milliseconds by magnitude, so a bound of `2` becomes 2 _seconds_ after the epoch. If the
+column is not a date, it wants `NumberFilter`. If it is a date and your data sits near the epoch, pin
+`unit: "ms"`.
+
+`DateFilter` keeps `min`/`max`/`setRange`/`setMin`/`setMax` and adds `range` (the bounds as `Date`s,
+for a picker) and `unit`. Bounds are stored as epoch milliseconds, so persisted state stays a pair of
+plain numbers.
+
+**`NumberFilter`** carries `eq`, `neq`, `gt`, `lt`, `gte`, `lte`, `between` (inclusive) and
+`betweenExclusive`. The operand's shape follows the operator — a number, or a `[low, high]` pair —
+and the types enforce it. Changing the operator alone can leave the filter inactive by design; use
+`set(op, operand)` from an operator dropdown.
+
+**`BucketFilter`** filters a numeric column by named range while the column keeps showing and sorting
+the raw value — the "show the score, filter by grade" case:
+
+```ts
+{
+  key: "score",
+  filter: () => new BucketFilter({
+    buckets: [{ label: "A", min: 90 }, { label: "B", min: 80, max: 90 }, { label: "F", max: 60 }],
+  }),
+}
+```
+
+It **extends `SetFilter`**, so an existing checkbox popover that narrows by `instanceof SetFilter`
+renders it with no changes, and facets/counts/blanks/serialization all work as they already did.
+Ranges are `[min, max)`. Its condition carries the selected **labels**, so a server needs the same
+bucket definitions — map them yourself or keep bucket filters client-side.
+
+The underlying hook is public: `SetFilter`'s new `project` option groups raw values before comparing
+them, for any grouping (month-of-date, initials, case-folded). It is on the `ValueFilter` interface
+because facet walking has to project identically or the list offers values that select nothing.
+
 ### router
 
 No API changed here — one default did.
@@ -547,7 +598,7 @@ this — they are called fresh each time, so closing them over an observable alr
 and still work. But if you have a filter set declared in parallel with your columns, this is what
 replaces it.
 
-The new `@jayalfredprufrock/mobx-toolbox/filter` module exports `SetFilter`, `RangeFilter`,
+The new `@jayalfredprufrock/mobx-toolbox/filter` module exports `SetFilter`, `DateFilter`,
 `TextFilter`, `BLANK`, `isBlank` and `facetValues`. A filter is a predicate over one _already
 extracted value_ — `matches(value)`, not `matches(row)` — so it carries no accessor, no path string
 and no row generic.
@@ -621,14 +672,23 @@ Points worth checking by hand as you port:
   — e.g. a date column as formatted text rather than epoch millis.
 - **No filter UI ships.** Build the popover with your design system off `column.facets` /
   `column.filter`, the same way you already build sort controls.
-- **Filter state is not in `getState()` yet.** Every filter's `value` / `setValue` round-trips
-  through JSON, so persist it yourself under your own key for now.
+- ⚠️ **`getState()` now includes `filters` and `search`, and `onStateChange` fires on every
+  keystroke.** If you write to `localStorage` straight from `onStateChange`, debounce it. They are
+  separate top-level keys so you can split them from the arrangement and debounce the halves apart:
+  `const { filters, search, ...arrangement } = state`.
+- **`filters` is a complete picture when present**, so `applyState` clears any filter it does not
+  mention — restoring a view saved with nothing filtered clears filters applied since. `getState`
+  always emits the key, empty included, exactly as it does `columns` and `sorts`. Snapshots written
+  before this release simply have no `filters` key and still apply.
+- **`setValue` now takes `unknown` and validates.** Persisted state crosses app versions and gets
+  hand-edited in URLs, so a snapshot of the wrong shape resets the filter rather than corrupting it.
+  If you were calling `setValue` with a typed value, nothing changes.
 
 **Server-side filtering** is now first-class. Set `filterMode: "server"` on a column and its filter
 stops narrowing rows locally, serializing into `table.filterQuery` instead:
 
 ```ts
-{ key: "time", filter: new RangeFilter(), filterMode: "server", field: "created_at" }
+{ key: "time", filter: new DateFilter(), filterMode: "server", field: "created_at" }
 
 reaction(
   () => table.filterQuery,

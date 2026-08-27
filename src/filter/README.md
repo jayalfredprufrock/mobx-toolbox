@@ -3,7 +3,12 @@
 Reactive value filters — a filter is a predicate over one _already-extracted value_, not over a row.
 
 ```ts
-import { SetFilter, RangeFilter, TextFilter, BLANK } from "@jayalfredprufrock/mobx-toolbox/filter";
+import {
+  SetFilter,
+  NumberFilter,
+  DateFilter,
+  BucketFilter,
+} from "@jayalfredprufrock/mobx-toolbox/filter";
 
 const status = new SetFilter({ options: ["open", "closed"] });
 status.toggle("open");
@@ -43,8 +48,26 @@ Every filter satisfies `ValueFilter`:
 alone, and a UI that needs them narrows by `instanceof`. Keeping them off is what stops
 `ValueFilter` becoming a bag of optional capabilities every consumer has to sniff for.
 
-Each filter also exposes `value` / `setValue`, which round-trip through `JSON.stringify` so filter
-state can be persisted or put in a URL without restructuring anything.
+### Saving and restoring
+
+`value` / `setValue` round-trip through `JSON.stringify`, so filter state can go into storage, a URL,
+or a saved view:
+
+```ts
+const saved = JSON.stringify(filter.value);
+filter.setValue(JSON.parse(saved));
+```
+
+`value` is typed per filter; `setValue` takes `unknown` on purpose. What comes back was written by
+some earlier version of your app or typed by hand into a URL, so each filter validates it and falls
+back to cleared rather than trusting the shape — a `DateFilter` snapshot handed to a `SetFilter`
+resets it instead of corrupting it, and unusable entries inside an otherwise valid snapshot are
+dropped.
+
+Calling `setValue()` with nothing resets to the default, so it doubles as `clear()` plus a mode reset.
+
+A table persists these for you into `TableState.filters` — see the
+[table docs](../table/README.md#persisting-the-view). Storage stays the consumer's job either way.
 
 ## `SetFilter`
 
@@ -129,27 +152,141 @@ with the filter that has the modes. Whoever computes facets never has to know wh
 Both are configuration for whoever computes facets — a list of values with tallies. They live here
 rather than on a table column def because faceting is a _set-filter_ concept, not a table one: a
 numeric range's equivalent would be a histogram (buckets, not values) and free text has no domain at
-all. `RangeFilterOptions` and `TextFilterOptions` therefore don't declare them, so a meaningless
+all. `DateFilterOptions` and `TextFilterOptions` therefore don't declare them, so a meaningless
 `counts: true` on a range is a compile error rather than a silent no-op.
 
 See `ColumnModel.facets` in the `table` docs for the three cost tiers these select.
 
-## `RangeFilter`
+## `DateFilter`
 
-An inclusive numeric range, either bound optional.
+An inclusive date range, either bound optional.
 
 ```ts
-const score = new RangeFilter({ min: 0, max: 100 });
-score.setRange(50, undefined); // 50 and up
+const joined = new DateFilter();
+joined.setRange("2020-01-01", new Date());
 ```
 
-Works over dates as well as numbers — values are coerced through `getTime()`, so a date column and a
-numeric column are the same code path and the **bounds stay plain numbers**. That is what lets state
-round-trip through JSON with no date-string handling: pass epoch millis for a date column.
+It absorbs the three shapes a date column actually arrives in — a hydrated `Date`, an epoch number,
+an ISO string — on **both** sides: the values it compares and the bounds you hand it. So the example
+above works over a column of unix timestamps, and you never write the same three-branch coercion
+again.
+
+| Input            | Read as                                                 |
+| ---------------- | ------------------------------------------------------- |
+| `Date`           | `getTime()`; an invalid Date matches nothing            |
+| `number`         | epoch seconds or milliseconds — see below               |
+| all-digit string | the same, since a timestamp often survives JSON as text |
+| other string     | `Date.parse`; unparseable matches nothing               |
+
+Bounds are stored as epoch **milliseconds**, which keeps `value` a pair of plain numbers and the JSON
+round-trip free of date-string parsing. `range` hands them back as `Date`s for a picker.
+
+### Seconds or milliseconds
+
+A bare number is ambiguous, so `unit` decides. The default, `"auto"`, reads anything below `1e11` as
+seconds and the rest as milliseconds. That boundary is 1973 read as milliseconds and the year 5138
+read as seconds, so no plausible modern date falls on the wrong side of it.
+
+```ts
+new DateFilter({ min: 1_700_000_000 }); // seconds  -> 2023
+new DateFilter({ min: 1_700_000_000_000 }); // millis -> the same instant
+new DateFilter({ min: 2, unit: "ms" }); // pin it when guessing would be wrong
+```
+
+Pin `unit` if your data sits near the epoch, or anywhere a wrong guess would be worse than being
+explicit — a silently misread date is a bad failure, and it should not be unfixable.
+
+## `NumberFilter`
+
+A numeric comparison: an operator plus its operand.
+
+```ts
+new NumberFilter({ op: "gte", operand: 60 });
+new NumberFilter({ op: "between", operand: [60, 80] });
+```
+
+| `op`                        | matches                |
+| --------------------------- | ---------------------- |
+| `eq` / `neq`                | `n === x` / `n !== x`  |
+| `gt` / `gte` / `lt` / `lte` | the obvious comparison |
+| `between`                   | `x <= n <= y`          |
+| `betweenExclusive`          | `x < n < y`            |
+
+The operand's shape follows the operator — a single number for the unary ops, a `[low, high]` pair
+for the two interval ops — and the types tie them together, so `{ op: "eq", operand: [1, 2] }` is a
+compile error rather than something `active` has to reject.
+
+Changing the operator alone can therefore leave the filter **inactive**, which is deliberate: a
+`[60, 80]` pair means nothing to `gte`, and silently keeping the first element would filter by
+something nobody asked for. An operator dropdown should set both at once:
+
+```ts
+filter.set("gte", 60); // operator and operand together
+filter.setOp("between"); // inactive until an operand fits
+```
 
 Numeric strings are accepted, because a column of `"42"` is a data shape rather than a mistake. A
-blank value fails while the filter is active — a missing cell is outside every bound, which is what
-a range control implies.
+blank value satisfies **no** comparison while the filter is active — not even `neq`, which would
+otherwise quietly include every empty row. `clear()` drops the operand and keeps the operator.
+
+## `BucketFilter`
+
+A set filter over named ranges — pick "B" rather than typing 80 to 90.
+
+```ts
+{
+  key: "score",
+  filter: () => new BucketFilter({
+    buckets: [
+      { label: "A", min: 90 },
+      { label: "B", min: 80, max: 90 },
+      { label: "C", min: 70, max: 80 },
+      { label: "D", min: 60, max: 70 },
+      { label: "F", max: 60 },
+    ],
+  }),
+}
+```
+
+The column keeps showing and **sorting the raw value** — 84 still sorts above 81 inside "B" — while
+only the filter sees the buckets. That is the whole point of it.
+
+Ranges are `[min, max)`: inclusive lower, exclusive upper, so two adjacent buckets sharing a number
+don't both claim it. Omit either bound for an open end. The first matching bucket wins, so
+overlapping definitions resolve by declaration order instead of being an error you can't act on.
+
+It **extends `SetFilter`**, which is not an implementation detail but the reason it's cheap: it _is_
+a checkbox list, so facets, counts, blanks, match modes and serialization all already apply, and a
+popover narrowing by `instanceof SetFilter` renders it with no changes. `options` is derived from the
+labels rather than declared twice, so the two can't drift.
+
+A blank stays blank rather than falling into the bottom bucket — a missing score is not a low one —
+so it gets its own `(Blank)` facet as usual. A value outside every bucket keeps itself, appearing in
+the facet list as the raw number instead of vanishing.
+
+`bucketOf(value)` reports which bucket a value fell in, and `bucketProjection(buckets)` is exported
+on its own: the same function labels a value for a cell renderer or a chart legend, and reusing it is
+what keeps everything agreeing on which bucket a score is in.
+
+⚠️ Server mode: the condition carries the selected **labels**, which a server can only act on if it
+knows the same bucket definitions. Map labels to ranges yourself when building the request, or keep
+bucket filters client-side.
+
+### Grouping without buckets
+
+`BucketFilter` is `SetFilter` with one option set, and that option is public:
+
+```ts
+new SetFilter({
+  options: ["Jan", "Feb", "Mar"],
+  project: (v) => MONTHS[new Date(v as string).getMonth()],
+});
+```
+
+`project` maps a raw value to the value the filter compares. `matches` applies it itself, so callers
+pass raw values in. It is on the `ValueFilter` interface because whoever computes facets walks the
+data separately and has to project identically — otherwise the list offers raw values that select
+nothing, which reads as a broken filter rather than a missing projection.
 
 ## `TextFilter`
 
@@ -213,18 +350,18 @@ read two ways. `condition` is a `FilterCondition`: what is being compared, and h
 const level = new SetFilter({ selected: ["error", "warn"] });
 level.condition; // { op: "in", value: ["error", "warn"] }
 
-const score = new RangeFilter({ min: 50 });
+const score = new DateFilter({ min: 50 });
 score.condition; // { op: "range", value: { min: 50 } }
 
 new TextFilter({ text: "ab", match: "startsWith" }).condition;
 // { op: "startsWith", value: "ab" }
 ```
 
-| Filter        | `op`                                     | `value`             |
-| ------------- | ---------------------------------------- | ------------------- |
-| `SetFilter`   | `"in"`, or `"all"` under that match mode | the selected values |
-| `RangeFilter` | `"range"`                                | `{ min?, max? }`    |
-| `TextFilter`  | its `match` — `"contains"` etc.          | the query text      |
+| Filter       | `op`                                     | `value`             |
+| ------------ | ---------------------------------------- | ------------------- |
+| `SetFilter`  | `"in"`, or `"all"` under that match mode | the selected values |
+| `DateFilter` | `"range"`                                | `{ min?, max? }`    |
+| `TextFilter` | its `match` — `"contains"` etc.          | the query text      |
 
 It is deliberately **not** a query language. `FilterCondition` names the comparison and leaves the
 translation to you, so one filter works against a REST endpoint, a typed POST body, or SQL without
@@ -255,11 +392,27 @@ type SetFilterValue = string | number | boolean;
 type SetMatchMode = "any" | "all";
 type TextMatchMode = "contains" | "startsWith" | "equals";
 
+type UnaryNumberOp = "eq" | "neq" | "gt" | "lt" | "gte" | "lte";
+type IntervalNumberOp = "between" | "betweenExclusive";
+type NumberOp = UnaryNumberOp | IntervalNumberOp;
+
+type DateUnit = "s" | "ms" | "auto";
+type DateLike = Date | number | string;
+
+interface Bucket {
+  label: SetFilterValue;
+  min?: number; // inclusive
+  max?: number; // exclusive
+}
+
 interface ValueFilter {
   readonly active: boolean;
   matches(value: unknown): boolean;
   clear(): void;
+  readonly value?: unknown;
+  setValue?(value?: unknown): void;
   readonly condition?: FilterCondition | undefined;
+  readonly project?: (value: unknown) => unknown;
   readonly intersecting?: boolean;
 }
 

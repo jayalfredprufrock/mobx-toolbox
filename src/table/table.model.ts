@@ -544,6 +544,7 @@ export class TableModel {
       | "identityIds"
       | "nextIdentityId"
       | "identityId"
+      | "applyFilterState"
     >(this, {
       rows: observable.ref,
       columns: observable,
@@ -613,6 +614,7 @@ export class TableModel {
       someRowsSelected: computed,
 
       applyState: action.bound,
+      applyFilterState: action,
       setFilter: action.bound,
       clearFilters: action.bound,
       syncColumns: action,
@@ -753,11 +755,27 @@ export class TableModel {
       if (col.manualWidth !== undefined) entry.width = col.manualWidth;
       columns[col.key] = entry;
     }
-    return {
+    const state: TableState = {
       columnOrder: this.columnOrder.slice(),
       columns,
       sorts: this.sorts.map((s) => ({ ...s })),
     };
+
+    // Only *active* filters get an entry, so the map stays small — but it is always present, even
+    // empty, exactly as `columns` and `sorts` are. That is what lets restoring a view saved with
+    // nothing filtered actually clear filters applied since; omit it and a snapshot could only ever
+    // add them.
+    const filters: Record<string, unknown> = {};
+    for (const col of this.allColumns) {
+      const filter = col.filter;
+      if (filter?.active && filter.value !== undefined && filter.setValue) {
+        filters[col.key] = filter.value;
+      }
+    }
+    state.filters = filters;
+    state.search = this.search.text;
+
+    return state;
   }
 
   /**
@@ -777,6 +795,29 @@ export class TableModel {
     if (state.sorts) {
       this.sorts = state.sorts.map((s) => ({ ...s }));
     }
+    // Present means complete: a filter the map doesn't mention is cleared, which is what makes
+    // getState -> applyState exact. Keys with no column yet land when one appears, via
+    // applyColumnState — same as column state applied before the first setRows.
+    if (state.filters) {
+      for (const col of this.columns.values()) this.applyFilterState(col);
+    }
+    if (state.search !== undefined) {
+      this.search.setText(state.search);
+    }
+  }
+
+  // Restore (or clear) one column's filter from the last applied snapshot. Split out from
+  // applyColumnState because it also runs for columns that already exist, where column state
+  // deliberately does not — a later user change to hidden/pinned/width outranks the snapshot,
+  // whereas re-applying a filter snapshot is the whole point of applying one.
+  private applyFilterState(col: ColumnModel): void {
+    const filters = this.appliedState?.filters;
+    if (!filters) return;
+    const filter = col.filter;
+    if (!filter?.setValue) return;
+    const value = filters[col.key];
+    if (value === undefined) filter.clear();
+    else filter.setValue(value);
   }
 
   /**
@@ -1213,6 +1254,9 @@ export class TableModel {
   }
 
   private applyColumnState(col: ColumnModel): void {
+    // A snapshot may have been applied before this column existed — before the first setRows, or
+    // before a factory def had a row to build from — so both halves are re-consulted here.
+    this.applyFilterState(col);
     const state = this.appliedState?.columns?.[col.key];
     if (!state) return;
     col.setHidden(state.hidden);

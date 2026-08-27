@@ -19,7 +19,7 @@ Each module is its own entry point — import from `@jayalfredprufrock/mobx-tool
 | Module                                | Summary                                                                       | Requires                                      |
 | ------------------------------------- | ----------------------------------------------------------------------------- | --------------------------------------------- |
 | [`dialog`](#dialog)                   | Dialog/modal stack with state transitions for enter/exit animations           | `mobx`, `mobx-react-lite`, `react`            |
-| [`filter`](#filter)                   | Reactive value filters — set, range and text, with blank normalisation        | `mobx`                                        |
+| [`filter`](#filter)                   | Reactive value filters — set, number, date, bucket and text                   | `mobx`                                        |
 | [`form`](#form)                       | Schema-driven form state with TypeBox validation and submit lifecycle         | `mobx`, `mobx-react-lite`, `react`, `typebox` |
 | [`lazy-observable`](#lazy-observable) | Observables that fetch on first observation and reset when unobserved         | `mobx`, `mobx-react-lite`, `react`            |
 | [`model`](#model)                     | Observable model classes and collection stores from TypeBox schemas           | `mobx`, `react`, `typebox`                    |
@@ -55,13 +55,15 @@ dialogs.open(ConfirmModal, { message: "Are you sure?" });
 Reactive value filters. A filter is a predicate over one already-extracted **value**, not over a row, so the same instance works over an array, a sidebar rail, or a table column that feeds it the column's own accessor.
 
 ```ts
-import { SetFilter, RangeFilter, BLANK } from "@jayalfredprufrock/mobx-toolbox/filter";
+import { SetFilter, NumberFilter, BucketFilter } from "@jayalfredprufrock/mobx-toolbox/filter";
 
 const status = new SetFilter({ options: ["open", "closed"] });
 status.toggle("open");
 
 tickets.filter((t) => status.matches(t.status));
 ```
+
+`NumberFilter` carries the usual operators, `DateFilter` absorbs `Date`s / epoch numbers / ISO strings, and `BucketFilter` filters a numeric column by named range ("B") while the column goes on showing and sorting the raw value.
 
 Missing and empty values normalise to one `BLANK` sentinel — shared by `matches` and by facet tallies, so a "(Blank)" option can never list a value that selects nothing.
 

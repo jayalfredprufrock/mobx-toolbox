@@ -33,6 +33,12 @@ export class SetFilter implements ValueFilter {
   /** Declared value domain, in declaration order. See {@link SetFilterOptions.options}. */
   readonly options: readonly SetFilterValue[] | undefined;
 
+  /**
+   * Groups raw values before they are compared. See {@link SetFilterOptions.project} — and note
+   * `matches` applies it itself, so callers pass raw values in.
+   */
+  readonly project: ((value: unknown) => unknown) | undefined;
+
   /** Whether facet counts were asked for. See {@link SetFilterOptions.counts}. */
   readonly counts: boolean;
 
@@ -76,6 +82,7 @@ export class SetFilter implements ValueFilter {
 
   constructor(options?: SetFilterOptions) {
     this.options = options?.options;
+    this.project = options?.project;
     this.counts = options?.counts === true;
     this.multiValue = options?.multiValue === true;
     if (options?.matchMode) this.matchMode = options.matchMode;
@@ -102,7 +109,7 @@ export class SetFilter implements ValueFilter {
   matches(value: unknown): boolean {
     if (this.selected.size === 0) return true;
 
-    const values = facetValues(value);
+    const values = facetValues(this.project ? this.project(value) : value);
     if (this.matchMode === "all") {
       for (const s of this.selected) if (!values.has(s)) return false;
       return true;
@@ -130,9 +137,21 @@ export class SetFilter implements ValueFilter {
     this.matchMode = matchMode;
   }
 
-  setValue(value?: SetFilterState): void {
-    this.select(value?.selected);
-    this.matchMode = value?.matchMode ?? "any";
+  /**
+   * Restore state from {@link value}. Anything that is not a recognisable set-filter snapshot —
+   * a range filter's state left in storage under this key, a hand-edited URL — resets rather than
+   * being trusted, and unusable entries within a valid one are dropped.
+   */
+  setValue(value?: unknown): void {
+    const state = (value ?? {}) as Partial<SetFilterState>;
+    const selected = Array.isArray(state.selected)
+      ? state.selected.filter(
+          (v): v is SetFilterValue =>
+            typeof v === "string" || typeof v === "number" || typeof v === "boolean",
+        )
+      : undefined;
+    this.select(selected);
+    this.matchMode = state.matchMode === "all" ? "all" : "any";
   }
 
   /**

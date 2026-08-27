@@ -178,12 +178,13 @@ export interface ColumnState {
 }
 
 /**
- * JSON-serializable snapshot of the user-curated table arrangement: column order, per-column
- * visibility/pinning/manual widths, and the sort list. Ephemeral state (selection, scroll) is
- * deliberately excluded, and so — for now — is filter state, even though the table owns filters
- * now: it churns per keystroke where column arrangement barely churns at all, so it wants a
- * separate `filters` key that `onStateChange` consumers can debounce differently. Every filter's
- * `value`/`setValue` already round-trips through JSON, so adding it is additive.
+ * JSON-serializable snapshot of what the user has done to the table: column order, per-column
+ * visibility/pinning/manual widths, the sort list, active filters and the search query. Ephemeral
+ * state (selection, scroll, expansion) is deliberately excluded.
+ *
+ * Note that `filters` and `search` change far more often than the rest — per keystroke rather than
+ * per drag — so `onStateChange` now fires that often too. They are separate top-level keys so a
+ * consumer can debounce them apart from the arrangement; debouncing and storage remain its job.
  *
  * Produced by `getState`, restored by `applyState`, observed by `onStateChange`.
  */
@@ -191,6 +192,23 @@ export interface TableState {
   columnOrder: string[];
   columns: Record<string, ColumnState>;
   sorts: ColumnSort[];
+  /**
+   * Per-column filter state, keyed by column key. Only columns whose filter is **active** get an
+   * entry, so the map stays small — but `getState` always emits the key, even empty, exactly as it
+   * does `columns` and `sorts`.
+   *
+   * That matters for restoring: the map is a *complete picture*, so `applyState` clears any filter
+   * it does not mention. Restoring a view saved with nothing filtered therefore clears filters the
+   * user applied since — which is what "restore that view" has to mean. (Omitting the key entirely,
+   * as a hand-built partial snapshot may, still leaves filters alone.)
+   *
+   * Kept apart from `columns` on purpose: filter state churns per keystroke where an arrangement
+   * barely churns at all, so a consumer wanting to debounce the two differently can split them
+   * without unpicking one object.
+   */
+  filters?: Record<string, unknown>;
+  /** The built-in search query. Always emitted by `getState`, empty string included. */
+  search?: string;
 }
 
 /**
@@ -207,7 +225,7 @@ export interface FilterSource<T = RowData> {
  * value. The table calls `matches(column.getValue(row))`, so the filter needs no accessor, no path
  * and no row type — which is what makes a computed column filterable with no extra config.
  *
- * Structural for the same reason as {@link RowSource}: `SetFilter` / `RangeFilter` / `TextFilter`
+ * Structural for the same reason as {@link RowSource}: `SetFilter` / `NumberFilter` / `DateFilter` / `TextFilter`
  * from the `filter` subpath satisfy it, but `table` declares the shape rather than importing the
  * classes, so a page's own `new SetFilter()` is the only thing that pulls them into the bundle. A
  * string discriminant (`filter: "set"`) would force a `"set" -> SetFilter` map into the table and
@@ -227,10 +245,20 @@ export interface ColumnFilter {
   /** Whether facets should carry cross-filtered counts — the expensive tier. */
   readonly counts?: boolean;
   /**
+   * Groups raw values before comparing them (scores into grades). `matches` applies it itself; the
+   * table applies it when walking rows for facets, so the list offers projected values rather than
+   * raw ones that would select nothing.
+   */
+  readonly project?: (value: unknown) => unknown;
+  /**
    * Whether picking more narrows rather than widens. When true, this column's facet counts are taken
    * against its own selection as well as the other filters — see `ColumnModel.facets`.
    */
   readonly intersecting?: boolean;
+  /** JSON-serializable state, persisted into `TableState.filters`. See `ValueFilter.value`. */
+  readonly value?: unknown;
+  /** Restore state produced by `value`. A filter missing either is not persisted at all. */
+  setValue?(value?: unknown): void;
   /**
    * The filter's state as plain JSON, for a column set to `filterMode: "server"`. The table adds
    * the column's `field` and collects these into `TableModel.filterQuery`; it never calls `matches`

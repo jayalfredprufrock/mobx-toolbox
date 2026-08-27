@@ -1,6 +1,9 @@
 import { autorun } from "mobx";
 import { afterEach, describe, expect, test } from "vite-plus/test";
-import { RangeFilter } from "./range-filter.model";
+import { BucketFilter, bucketProjection } from "./bucket-filter.model";
+import { DateFilter } from "./date-filter.model";
+import type { UnaryNumberOp } from "./filter.types";
+import { NumberFilter } from "./number-filter.model";
 import { SetFilter } from "./set-filter.model";
 import { TextFilter } from "./text-filter.model";
 import { BLANK, facetValues, isBlank, textMatches } from "./util";
@@ -239,67 +242,92 @@ describe("SetFilter", () => {
 });
 
 // ---------------------------------------------------------------------------
-// RangeFilter
+// DateFilter
 // ---------------------------------------------------------------------------
 
-describe("RangeFilter", () => {
+describe("DateFilter", () => {
+  const jan1 = Date.UTC(2020, 0, 1);
+  const jun1 = Date.UTC(2020, 5, 1);
+  const dec31 = Date.UTC(2020, 11, 31);
+
   test("is inactive with neither bound set", () => {
-    const filter = new RangeFilter();
+    const filter = new DateFilter();
     expect(filter.active).toBe(false);
-    expect(filter.matches(5)).toBe(true);
+    expect(filter.matches(jun1)).toBe(true);
     expect(filter.matches(null)).toBe(true);
   });
 
+  test("accepts Dates, ISO strings and epoch numbers as bounds", () => {
+    // the three shapes a date column actually arrives in, interchangeably
+    for (const min of [new Date(jan1), "2020-01-01T00:00:00.000Z", jan1, jan1 / 1000]) {
+      const filter = new DateFilter({ min });
+      expect(filter.value).toEqual({ min: jan1 });
+    }
+  });
+
+  test("compares against all three shapes too", () => {
+    const filter = new DateFilter({ min: "2020-01-01", max: "2020-12-31" });
+    expect(filter.matches(new Date(jun1))).toBe(true);
+    expect(filter.matches(jun1)).toBe(true);
+    expect(filter.matches(jun1 / 1000)).toBe(true);
+    expect(filter.matches("2020-06-01")).toBe(true);
+    expect(filter.matches("2021-06-01")).toBe(false);
+  });
+
+  test("reads a bare number as seconds or milliseconds by magnitude", () => {
+    const filter = new DateFilter({ min: jan1, max: dec31 });
+    // the same instant, either unit
+    expect(filter.matches(jun1)).toBe(true);
+    expect(filter.matches(Math.floor(jun1 / 1000))).toBe(true);
+    // and a numeric string, which is how a timestamp survives JSON as text
+    expect(filter.matches(String(jun1))).toBe(true);
+  });
+
+  test("unit pins the interpretation when guessing would be wrong", () => {
+    // 2 milliseconds after the epoch — auto would read it as 2 seconds
+    expect(new DateFilter({ min: 2, unit: "ms" }).value).toEqual({ min: 2 });
+    expect(new DateFilter({ min: 2, unit: "s" }).value).toEqual({ min: 2000 });
+    expect(new DateFilter({ min: 2 }).value).toEqual({ min: 2000 });
+  });
+
   test("bounds are inclusive and independently optional", () => {
-    expect(new RangeFilter({ min: 2 }).matches(2)).toBe(true);
-    expect(new RangeFilter({ min: 2 }).matches(1)).toBe(false);
-    expect(new RangeFilter({ max: 2 }).matches(2)).toBe(true);
-    expect(new RangeFilter({ max: 2 }).matches(3)).toBe(false);
-
-    const both = new RangeFilter({ min: 2, max: 4 });
-    expect([1, 2, 3, 4, 5].filter((n) => both.matches(n))).toEqual([2, 3, 4]);
+    expect(new DateFilter({ min: jun1 }).matches(jun1)).toBe(true);
+    expect(new DateFilter({ min: jun1 }).matches(jan1)).toBe(false);
+    expect(new DateFilter({ max: jun1 }).matches(jun1)).toBe(true);
+    expect(new DateFilter({ max: jun1 }).matches(dec31)).toBe(false);
   });
 
-  test("a blank value is outside every bound while active", () => {
-    const filter = new RangeFilter({ min: 0 });
+  test("a blank or unparseable value is outside every range while active", () => {
+    const filter = new DateFilter({ min: jan1 });
     expect(filter.matches(null)).toBe(false);
-    expect(filter.matches(undefined)).toBe(false);
     expect(filter.matches("")).toBe(false);
+    expect(filter.matches("not a date")).toBe(false);
+    expect(filter.matches(new Date("nonsense"))).toBe(false);
   });
 
-  test("compares Dates through getTime, so bounds stay plain numbers", () => {
-    const filter = new RangeFilter({
-      min: new Date("2020-01-01").getTime(),
-      max: new Date("2020-12-31").getTime(),
-    });
-    expect(filter.matches(new Date("2020-06-01"))).toBe(true);
-    expect(filter.matches(new Date("2021-06-01"))).toBe(false);
+  test("value round-trips through JSON as plain millis", () => {
+    const filter = new DateFilter({ min: "2020-01-01", max: new Date(dec31) });
+    const json = JSON.parse(JSON.stringify(filter.value)) as { min?: number; max?: number };
+    expect(json).toEqual({ min: jan1, max: dec31 });
+
+    const restored = new DateFilter();
+    restored.setValue(json);
+    expect(restored.value).toEqual({ min: jan1, max: dec31 });
   });
 
-  test("accepts numeric strings", () => {
-    const filter = new RangeFilter({ min: 2, max: 4 });
-    expect(filter.matches("3")).toBe(true);
-    expect(filter.matches("9")).toBe(false);
-    expect(filter.matches("abc")).toBe(false);
-  });
-
-  test("value round-trips through JSON and omits unset bounds", () => {
-    const filter = new RangeFilter({ min: 2 });
-    expect(filter.value).toEqual({ min: 2 });
-
-    const json = JSON.parse(JSON.stringify(new RangeFilter({ min: 2, max: 4 }).value));
-    const restored = new RangeFilter();
-    restored.setValue(json as { min?: number; max?: number });
-    expect(restored.value).toEqual({ min: 2, max: 4 });
+  test("range hands back Dates for a picker", () => {
+    const filter = new DateFilter({ min: jan1 });
+    expect(filter.range.min?.getTime()).toBe(jan1);
+    expect(filter.range.max).toBeUndefined();
   });
 
   test("setRange / clear are reactive", () => {
-    const filter = new RangeFilter();
+    const filter = new DateFilter();
     const seen: boolean[] = [];
-    observe(() => seen.push(filter.matches(5)));
+    observe(() => seen.push(filter.matches(jun1)));
     expect(seen).toEqual([true]);
 
-    filter.setRange(0, 3);
+    filter.setRange(undefined, "2020-01-31");
     expect(seen.at(-1)).toBe(false);
 
     filter.clear();
@@ -309,8 +337,206 @@ describe("RangeFilter", () => {
 });
 
 // ---------------------------------------------------------------------------
-// TextFilter
+// NumberFilter
 // ---------------------------------------------------------------------------
+
+describe("NumberFilter", () => {
+  test("is inactive without an operand", () => {
+    const filter = new NumberFilter({ op: "gte" });
+    expect(filter.active).toBe(false);
+    expect(filter.matches(5)).toBe(true);
+  });
+
+  test("every unary operator", () => {
+    const cases: [UnaryNumberOp, number[]][] = [
+      ["eq", [5]],
+      ["neq", [1, 3, 7, 9]],
+      ["gt", [7, 9]],
+      ["gte", [5, 7, 9]],
+      ["lt", [1, 3]],
+      ["lte", [1, 3, 5]],
+    ];
+    for (const [op, expected] of cases) {
+      const filter = new NumberFilter({ op, operand: 5 });
+      expect({ op, kept: [1, 3, 5, 7, 9].filter((n) => filter.matches(n)) }).toEqual({
+        op,
+        kept: expected,
+      });
+    }
+  });
+
+  test("between is inclusive, betweenExclusive is not", () => {
+    const inc = new NumberFilter({ op: "between", operand: [3, 7] });
+    expect([1, 3, 5, 7, 9].filter((n) => inc.matches(n))).toEqual([3, 5, 7]);
+
+    const exc = new NumberFilter({ op: "betweenExclusive", operand: [3, 7] });
+    expect([1, 3, 5, 7, 9].filter((n) => exc.matches(n))).toEqual([5]);
+  });
+
+  test("a blank value satisfies no comparison, not even neq", () => {
+    // otherwise "not 5" would quietly include every empty row
+    const filter = new NumberFilter({ op: "neq", operand: 5 });
+    expect(filter.matches(null)).toBe(false);
+    expect(filter.matches("")).toBe(false);
+    expect(filter.matches(undefined)).toBe(false);
+  });
+
+  test("accepts numeric strings", () => {
+    const filter = new NumberFilter({ op: "gte", operand: 5 });
+    expect(filter.matches("7")).toBe(true);
+    expect(filter.matches("1")).toBe(false);
+    expect(filter.matches("abc")).toBe(false);
+  });
+
+  test("an operand that does not fit the operator leaves it inactive", () => {
+    const filter = new NumberFilter({ op: "between", operand: [3, 7] });
+    expect(filter.active).toBe(true);
+
+    // switching operator alone: guessing which end of the pair to keep would filter by something
+    // the user never asked for
+    filter.setOp("gte");
+    expect(filter.active).toBe(false);
+    expect(filter.matches(1)).toBe(true);
+
+    filter.set("gte", 5);
+    expect(filter.active).toBe(true);
+    expect(filter.matches(1)).toBe(false);
+  });
+
+  test("value round-trips through JSON, both shapes", () => {
+    for (const filter of [
+      new NumberFilter({ op: "lte", operand: 5 }),
+      new NumberFilter({ op: "betweenExclusive", operand: [3, 7] }),
+    ]) {
+      const json = JSON.parse(JSON.stringify(filter.value)) as unknown;
+      const restored = new NumberFilter();
+      restored.setValue(json);
+      expect(restored.value).toEqual(filter.value);
+      expect(restored.active).toBe(true);
+    }
+  });
+
+  test("setValue drops an operand that does not fit the restored operator", () => {
+    const filter = new NumberFilter();
+    filter.setValue({ op: "gte", operand: [3, 7] });
+    expect(filter.op).toBe("gte");
+    expect(filter.active).toBe(false);
+  });
+
+  test("clear keeps the operator", () => {
+    const filter = new NumberFilter({ op: "gte", operand: 5 });
+    filter.clear();
+    expect(filter.active).toBe(false);
+    expect(filter.op).toBe("gte");
+  });
+
+  test("condition carries the operator through to a server", () => {
+    expect(new NumberFilter({ op: "lte", operand: 5 }).condition).toEqual({
+      op: "lte",
+      value: 5,
+    });
+    expect(new NumberFilter({ op: "between", operand: [3, 7] }).condition).toEqual({
+      op: "between",
+      value: [3, 7],
+    });
+    expect(new NumberFilter({ op: "gte" }).condition).toBeUndefined();
+  });
+
+  test("is reactive", () => {
+    const filter = new NumberFilter({ op: "gte" });
+    const seen: boolean[] = [];
+    observe(() => seen.push(filter.matches(5)));
+    expect(seen).toEqual([true]);
+
+    filter.setOperand(7);
+    expect(seen.at(-1)).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// BucketFilter
+// ---------------------------------------------------------------------------
+
+describe("BucketFilter", () => {
+  const grades = [
+    { label: "A", min: 90 },
+    { label: "B", min: 80, max: 90 },
+    { label: "C", min: 70, max: 80 },
+    { label: "D", min: 60, max: 70 },
+    { label: "F", max: 60 },
+  ];
+
+  test("derives its domain from the bucket labels, in order", () => {
+    const filter = new BucketFilter({ buckets: grades });
+    expect(filter.options).toEqual(["A", "B", "C", "D", "F"]);
+    expect(filter.labels).toEqual(["A", "B", "C", "D", "F"]);
+  });
+
+  test("matches a raw number against the selected labels", () => {
+    const filter = new BucketFilter({ buckets: grades, selected: ["B"] });
+    expect(filter.matches(85)).toBe(true);
+    expect(filter.matches(80)).toBe(true);
+    // upper bounds are exclusive, so 90 is an A and adjacent buckets never both claim a number
+    expect(filter.matches(90)).toBe(false);
+    expect(filter.matches(42)).toBe(false);
+  });
+
+  test("open-ended buckets at either end", () => {
+    const filter = new BucketFilter({ buckets: grades, selected: ["A", "F"] });
+    expect(filter.matches(1000)).toBe(true);
+    expect(filter.matches(-5)).toBe(true);
+    expect(filter.matches(75)).toBe(false);
+  });
+
+  test("bucketOf reports which bucket a value fell in", () => {
+    const filter = new BucketFilter({ buckets: grades });
+    expect(filter.bucketOf(85)?.label).toBe("B");
+    expect(filter.bucketOf(59)?.label).toBe("F");
+    expect(filter.bucketOf(null)).toBeUndefined();
+  });
+
+  test("a blank stays blank rather than falling into the bottom bucket", () => {
+    // a missing score is not a low one
+    const filter = new BucketFilter({ buckets: grades, selected: ["F"] });
+    expect(filter.matches(null)).toBe(false);
+    expect(filter.matches("")).toBe(false);
+
+    const blanks = new BucketFilter({ buckets: grades, selected: [BLANK] });
+    expect(blanks.matches(null)).toBe(true);
+    expect(blanks.matches(30)).toBe(false);
+  });
+
+  test("is a SetFilter, so an existing checkbox UI narrows to it", () => {
+    const filter = new BucketFilter({ buckets: grades });
+    expect(filter).toBeInstanceOf(SetFilter);
+
+    filter.toggle("A");
+    expect(filter.has("A")).toBe(true);
+    expect(filter.selectedCount).toBe(1);
+    expect(filter.value).toEqual({ selected: ["A"], matchMode: "any" });
+  });
+
+  test("serializes the labels, not the ranges", () => {
+    const filter = new BucketFilter({ buckets: grades, selected: ["B", "C"] });
+    expect(filter.condition).toEqual({ op: "in", value: ["B", "C"] });
+
+    const restored = new BucketFilter({ buckets: grades });
+    restored.setValue(JSON.parse(JSON.stringify(filter.value)) as unknown);
+    expect(restored.matches(85)).toBe(true);
+    expect(restored.matches(95)).toBe(false);
+  });
+
+  test("bucketProjection is usable on its own", () => {
+    const grade = bucketProjection(grades);
+    expect([95, 85, 75, 65, 55].map(grade)).toEqual(["A", "B", "C", "D", "F"]);
+  });
+
+  test("a value outside every bucket keeps itself rather than vanishing", () => {
+    const sparse = bucketProjection([{ label: "mid", min: 10, max: 20 }]);
+    expect(sparse(15)).toBe("mid");
+    expect(sparse(99)).toBe(99);
+  });
+});
 
 describe("TextFilter", () => {
   test("is inactive with no text", () => {

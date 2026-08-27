@@ -516,13 +516,13 @@ computed column is filterable with no extra config and there are no key-matching
 in sync by hand.
 
 ```tsx
-import { SetFilter, RangeFilter, TextFilter } from "@jayalfredprufrock/mobx-toolbox/filter";
+import { SetFilter, DateFilter, TextFilter } from "@jayalfredprufrock/mobx-toolbox/filter";
 
 // hoisted out of the component, as column defs usually are
 const columns: ColumnsDef<User> = [
   { key: "category", filter: () => new SetFilter() },
   { key: "name", value: (u) => `${u.first} ${u.last}`, filter: () => new TextFilter() },
-  { key: "score", filter: () => new RangeFilter() },
+  { key: "score", filter: () => new DateFilter() },
 ];
 
 const table = useTable({ rows, columns });
@@ -628,6 +628,11 @@ asking, promising more rows than ticking the box actually gives. There the count
 intersection with what is already picked, so it stays exactly predictive — tick it and you get that
 many rows. A filter signals this with `intersecting`; the table never interprets match modes itself.
 
+A filter that groups values — a `BucketFilter` over score ranges, say — lists its **projected**
+domain here (grades, not every distinct score) while the column goes on showing and sorting the raw
+value. The table applies the projection when it walks the rows, which is why `project` is on the
+filter contract at all.
+
 Zero-count entries are **kept**, because a popover is exactly where you go to undo an over-narrowed
 filter. That matters more than it sounds: a value that appears only in rows the _other_ filters
 exclude is still listed, at zero. Without it, ticking a value and then narrowing another column past
@@ -705,7 +710,7 @@ serializes into `table.filterQuery` for you to send onward.
 const table = useTable({
   rows,
   columns: [
-    { key: "time", filter: () => new RangeFilter(), filterMode: "server", field: "created_at" },
+    { key: "time", filter: () => new DateFilter(), filterMode: "server", field: "created_at" },
     { key: "level", filter: () => new SetFilter({ options: LEVELS }), filterMode: "server" },
     { key: "message", filter: () => new TextFilter() }, // client-side, over what came back
   ],
@@ -768,9 +773,11 @@ useTable({ rows, search: { mode: "server" } });
 In server mode the query stops narrowing rows and becomes a `{ op: "search" }` condition instead.
 Per-column `searchable` then has no effect — the server decides what it searches.
 
-## Persisting the arrangement
+## Persisting the view
 
-`getState()` returns a JSON-serializable snapshot of the _user-curated_ arrangement: column order, per-column visibility/pinning/manual widths, and the sort list. Ephemeral state (selection, scroll, expansion) is deliberately excluded.
+`getState()` returns a JSON-serializable snapshot of what the user has done to the table: column order, per-column visibility/pinning/manual widths, the sort list, active filters and the search query. Ephemeral state (selection, scroll, expansion) is deliberately excluded.
+
+Storage is entirely yours — the library only hands you a snapshot and takes one back.
 
 ```ts
 const table = useTable({
@@ -785,6 +792,36 @@ useMountEffect(() => {
 ```
 
 `applyState` accepts partial snapshots and tolerates drift: keys with no matching column are held aside and applied if that column later appears (so restoring before the first `setRows` works), and columns the snapshot doesn't mention keep their state, ordered after the ones it does. Debouncing and storage are yours.
+
+### Filters and search in the snapshot
+
+```jsonc
+{
+  "columnOrder": ["name", "category"],
+  "columns": { "category": { "hidden": false, "pinned": false } },
+  "sorts": [{ "key": "name", "direction": "asc" }],
+  "filters": { "category": { "selected": ["books"], "matchMode": "any" } },
+  "search": "ada",
+}
+```
+
+`filters` is keyed by column key and holds each filter's own `value`. Only **active** filters get an entry, so the map stays small — but the key is always emitted, even empty, exactly as `columns` and `sorts` are. That is deliberate: the map is a _complete picture_, so `applyState` clears any filter it doesn't mention. Restoring a view saved with nothing filtered therefore clears filters applied since, which is what "restore that view" has to mean. (A hand-built partial snapshot that omits `filters` entirely still leaves filters alone.)
+
+They are separate top-level keys rather than folded into `columns` because they churn on a completely different cadence — per keystroke, against per-drag — so you can debounce them apart without unpicking one object:
+
+```ts
+onStateChange: (state) => {
+  const { filters, search, ...arrangement } = state;
+  saveArrangement(arrangement);
+  saveFiltersDebounced({ filters, search });
+};
+```
+
+⚠️ **`onStateChange` now fires on every keystroke** in the search box and on every filter toggle. If you write to `localStorage` straight from it, debounce first.
+
+Restoring is tolerant of state that has been sitting in storage across app versions, or typed into a URL by hand: each filter validates what it's given and falls back to cleared rather than trusting the shape. A snapshot whose column now holds a different _kind_ of filter resets that filter instead of corrupting it, and entries for columns that no longer exist are ignored.
+
+A filter can only be persisted if it exposes both `value` and `setValue` — the built-ins all do. A custom `ColumnFilter` offering neither is simply skipped; offering only one would be saveable but never restorable, so it's skipped too.
 
 ## Scrolling
 
@@ -881,6 +918,7 @@ Drop a `<Table.Resizer>` inside a header cell. It handles the drag (on the corre
 | `selectedRows` / `selectedIds`          | selection                                  |
 | `sorts`                                 | the sort priority list                     |
 | `predicate` / `activeFilterCount`       | what is narrowing rows, and how much of it |
+| `getState()` / `applyState()`           | snapshot the view, restore it              |
 | `filterQuery`                           | the server half, as plain JSON conditions  |
 | `search`                                | the built-in cross-column search           |
 | `virtualWidth` / `virtualHeight`        | full scroll extent                         |

@@ -69,8 +69,9 @@ export class TextFilter implements ValueFilter {
     this.text = text;
   }
 
-  setValue(value?: string): void {
-    this.text = value ?? "";
+  /** Restore state from {@link value}. Anything that is not a string clears the query. */
+  setValue(value?: unknown): void {
+    this.text = typeof value === "string" ? value : "";
   }
 
   clear(): void {

@@ -1,6 +1,6 @@
 import { autorun, comparer, reaction } from "mobx";
 import { afterEach, describe, expect, test } from "vite-plus/test";
-import { RangeFilter } from "../filter/range-filter.model";
+import { DateFilter } from "../filter/date-filter.model";
 import { SetFilter } from "../filter/set-filter.model";
 import { TextFilter } from "../filter/text-filter.model";
 import { BLANK } from "../filter/util";
@@ -22,11 +22,14 @@ interface Log {
   time: number;
 }
 
+// realistic epoch millis: a DateFilter reads a bare number by magnitude, so toy values like 100
+// would be interpreted as seconds
+const T = Date.UTC(2026, 0, 1);
 const logs: Log[] = [
-  { id: 1, level: "info", message: "started", time: 100 },
-  { id: 2, level: "error", message: "boom", time: 200 },
-  { id: 3, level: "warn", message: "slow", time: 300 },
-  { id: 4, level: "error", message: "boom again", time: 400 },
+  { id: 1, level: "info", message: "started", time: T },
+  { id: 2, level: "error", message: "boom", time: T + 60_000 },
+  { id: 3, level: "warn", message: "slow", time: T + 120_000 },
+  { id: 4, level: "error", message: "boom again", time: T + 180_000 },
 ];
 
 const ids = (rows: RowData[]): number[] => rows.map((r) => r.id as number);
@@ -92,25 +95,25 @@ describe("server-mode filters", () => {
   });
 
   test("field overrides the wire name; key is the default", () => {
-    const time = new RangeFilter();
+    const time = new DateFilter();
     const level = new SetFilter({ options: ["error"] });
     const table = makeTable([
       { key: "time", filter: time, filterMode: "server", field: "created_at" },
       { key: "level", filter: level, filterMode: "server" },
     ]);
 
-    time.setRange(150, 350);
+    time.setRange(T + 30_000, T + 150_000);
     level.toggle("error");
 
     expect(table.filterQuery).toEqual([
-      { field: "created_at", op: "range", value: { min: 150, max: 350 } },
+      { field: "created_at", op: "range", value: { min: T + 30_000, max: T + 150_000 } },
       { field: "level", op: "in", value: ["error"] },
     ]);
   });
 
   test("each filter kind names its own op", () => {
     const set = new SetFilter({ options: ["a"], matchMode: "all", selected: ["a"] });
-    const range = new RangeFilter({ min: 1 });
+    const range = new DateFilter({ min: T });
     const contains = new TextFilter({ text: "x" });
     const starts = new TextFilter({ text: "x", match: "startsWith" });
 

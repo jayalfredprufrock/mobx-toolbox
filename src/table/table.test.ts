@@ -948,7 +948,7 @@ describe("scroll intents", () => {
 // ---------------------------------------------------------------------------
 
 describe("table state", () => {
-  test("getState snapshots order, per-column arrangement and sorts", () => {
+  test("getState snapshots order, per-column arrangement, sorts and filters", () => {
     const table = makeTable([{ a: 1, b: 2 }]);
     table.allColumns[0]!.setHidden(true);
     table.allColumns[1]!.setPinned("left");
@@ -962,6 +962,9 @@ describe("table state", () => {
         b: { hidden: false, pinned: "left", width: 150 },
       },
       sorts: [{ key: "b", direction: "desc" }],
+      // always present, like `columns` and `sorts` — empty because nothing here filters
+      filters: {},
+      search: "",
     });
   });
 

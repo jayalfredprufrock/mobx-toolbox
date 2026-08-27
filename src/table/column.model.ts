@@ -193,6 +193,9 @@ export class ColumnModel {
    * `[]` when no filter is attached: a distinct-values API for every column would be a different
    * (and much more expensive) feature, and nothing here should be mistaken for one.
    *
+   * A filter with a `project` (a `BucketFilter`, say) lists its *projected* domain — grades rather
+   * than scores — while the column goes on showing and sorting the raw value.
+   *
    * Three cost tiers, chosen by the filter rather than configured here:
    *
    * | tier | when | walk |
@@ -291,7 +294,9 @@ export class ColumnModel {
       // everything: the funnel still narrows, but the checkbox is gone.
       const raw = this.config.value(row);
       const counted = (!cross || cross(row)) && (!intersecting || filter.matches(raw));
-      for (const value of facetValues(raw)) {
+      // `matches` projects internally, so it gets the raw value — but the walk has to project for
+      // itself, or the list would offer raw values that select nothing (see ValueFilter.project).
+      for (const value of facetValues(filter.project ? filter.project(raw) : raw)) {
         tally.set(value, (tally.get(value) ?? 0) + (counted ? 1 : 0));
       }
     }

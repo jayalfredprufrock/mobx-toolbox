@@ -12,7 +12,7 @@
  */
 import type { ColumnFilter } from "../table/table.types";
 import type { FilterCondition } from "./filter.types";
-import { RangeFilter } from "./range-filter.model";
+import { DateFilter } from "./date-filter.model";
 import { SetFilter } from "./set-filter.model";
 import { TextFilter } from "./text-filter.model";
 
@@ -21,7 +21,7 @@ const assignableTo = <Expected>(_value: Expected): void => {};
 // --- every filter satisfies the table's structural contract ----------------
 
 assignableTo<ColumnFilter>(new SetFilter());
-assignableTo<ColumnFilter>(new RangeFilter());
+assignableTo<ColumnFilter>(new DateFilter());
 assignableTo<ColumnFilter>(new TextFilter());
 
 // --- faceting belongs to SetFilter alone -----------------------------------
@@ -29,11 +29,11 @@ assignableTo<ColumnFilter>(new TextFilter());
 assignableTo<SetFilter>(new SetFilter({ options: ["a", "b"], counts: true, multiValue: true }));
 
 // @ts-expect-error -- a numeric range has no discrete domain to count
-new RangeFilter({ counts: true });
+new DateFilter({ counts: true });
 // @ts-expect-error -- nor one to enumerate
-new RangeFilter({ options: [1, 2] });
+new DateFilter({ options: [1, 2] });
 // @ts-expect-error -- nor is a range multi-valued; there is no any/all to offer
-new RangeFilter({ multiValue: true });
+new DateFilter({ multiValue: true });
 // @ts-expect-error -- free text has no enumerable domain either
 new TextFilter({ counts: true });
 // @ts-expect-error
@@ -42,7 +42,7 @@ new TextFilter({ options: ["a"] });
 // --- every filter can serialize itself for a server ------------------------
 
 assignableTo<FilterCondition | undefined>(new SetFilter().condition);
-assignableTo<FilterCondition | undefined>(new RangeFilter().condition);
+assignableTo<FilterCondition | undefined>(new DateFilter().condition);
 assignableTo<FilterCondition | undefined>(new TextFilter().condition);
 
 // `field` is filled in by whoever knows the wire name — a filter never sets it

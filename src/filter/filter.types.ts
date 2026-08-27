@@ -32,6 +32,7 @@ export type FilterOp =
   | "startsWith"
   | "equals"
   | "search"
+  | NumberOp
   | (string & Record<never, never>);
 
 /**
@@ -65,6 +66,29 @@ export interface ValueFilter {
   matches(value: unknown): boolean;
   /** Reset to the inactive state. */
   clear(): void;
+  /**
+   * This filter's state as JSON-serializable data — for persisting to storage or a URL, and
+   * restoring later through {@link setValue}.
+   *
+   * A pair: a filter offering one without the other can be saved but never restored, or the
+   * reverse. Whoever persists filters should skip a filter missing either.
+   */
+  readonly value?: unknown;
+  /**
+   * Restore state produced by {@link value}. Takes `unknown` on purpose — what comes back from
+   * storage was written by some earlier version of your app, or typed by hand into a URL, so each
+   * filter validates it and falls back to cleared rather than trusting the shape.
+   */
+  setValue?(value?: unknown): void;
+  /**
+   * Maps a raw value to the value this filter actually compares — grouping scores into grades,
+   * dates into months, names into initials.
+   *
+   * `matches` applies it itself, so nothing else has to. It is on the interface because whoever
+   * computes facets walks the data separately and has to project identically, or the list would
+   * offer raw values that select nothing. Same reason `facetValues` is one exported function.
+   */
+  readonly project?: (value: unknown) => unknown;
   /**
    * Whether picking more narrows the result rather than widening it — whether the picks combine by
    * intersection rather than union.
@@ -136,6 +160,12 @@ export interface SetFilterOptions {
   matchMode?: SetMatchMode;
   /** Initially selected values. */
   selected?: Iterable<SetFilterValue>;
+  /**
+   * Group raw values before matching them — the score-into-grades case. The column keeps showing and
+   * sorting the raw value; only the filter sees the projection, and the facet list becomes the
+   * projected domain. See {@link ValueFilter.project}, or `BucketFilter` for numeric ranges.
+   */
+  project?: (value: unknown) => unknown;
 }
 
 /** JSON-serializable `SetFilter` state. An object rather than a bare array so `matchMode` rides along. */
@@ -144,22 +174,81 @@ export interface SetFilterState {
   matchMode: SetMatchMode;
 }
 
+/** How a bare number in a date column should be read. See {@link DateFilterOptions.unit}. */
+export type DateUnit = "s" | "ms" | "auto";
+
 /**
- * Note the absence of `options` and `counts`: a numeric range has no discrete domain to enumerate
- * and no facet list to count, so a `counts: true` here is a type error rather than a runtime no-op.
+ * Anything `DateFilter` accepts as a bound or compares against: a `Date`, epoch seconds or
+ * milliseconds, or a date string.
  */
-export interface RangeFilterOptions {
+export type DateLike = Date | number | string;
+
+/**
+ * Note the absence of `options` and `counts`: a date range has no discrete domain to enumerate and
+ * no facet list to count, so a `counts: true` here is a type error rather than a runtime no-op.
+ */
+export interface DateFilterOptions {
+  min?: DateLike;
+  max?: DateLike;
+  /**
+   * How to read a bare number. `"auto"` (the default) decides on magnitude: below 1e11 is seconds,
+   * at or above is milliseconds. That boundary is 1973 read as milliseconds and the year 5138 read
+   * as seconds, so no plausible modern date is ambiguous — but pin it if your data is near the
+   * epoch, or if guessing wrong would be worse than being explicit.
+   */
+  unit?: DateUnit;
+}
+
+/** JSON-serializable `DateFilter` state. Bounds are always epoch **milliseconds**. */
+export interface DateFilterState {
   min?: number;
   max?: number;
 }
 
-/** JSON-serializable `RangeFilter` state. Bounds are always plain numbers — see `RangeFilter.matches`. */
-export interface RangeFilterState {
+/** Operators comparing against a single number. */
+export type UnaryNumberOp = "eq" | "neq" | "gt" | "lt" | "gte" | "lte";
+
+/** Operators comparing against a pair of bounds. `"between"` is inclusive, the other is not. */
+export type IntervalNumberOp = "between" | "betweenExclusive";
+
+export type NumberOp = UnaryNumberOp | IntervalNumberOp;
+
+/**
+ * The operand shape follows the operator, so a mismatch is a compile error rather than something
+ * `active` has to reject at runtime.
+ */
+export type NumberFilterOptions =
+  | { op?: UnaryNumberOp; operand?: number }
+  | { op: IntervalNumberOp; operand?: [number, number] };
+
+/** JSON-serializable `NumberFilter` state. */
+export type NumberFilterState =
+  | { op: UnaryNumberOp; operand?: number }
+  | { op: IntervalNumberOp; operand?: [number, number] };
+
+/**
+ * One named range in a {@link BucketFilterOptions} list. Bounds are `[min, max)` — inclusive lower,
+ * exclusive upper — so adjacent buckets sharing a number don't both claim it. Omit either for an
+ * open end.
+ */
+export interface Bucket {
+  label: SetFilterValue;
   min?: number;
   max?: number;
 }
 
-/** As with {@link RangeFilterOptions}, no `options`/`counts`: free text has no enumerable domain. */
+export interface BucketFilterOptions {
+  /**
+   * The buckets, in the order a filter UI should list them. The first whose range contains a value
+   * wins, so overlapping buckets resolve by declaration order rather than being an error.
+   */
+  buckets: readonly Bucket[];
+  counts?: boolean;
+  matchMode?: SetMatchMode;
+  selected?: Iterable<SetFilterValue>;
+}
+
+/** As with {@link NumberFilterOptions}, no `options`/`counts`: free text has no enumerable domain. */
 export interface TextFilterOptions {
   /** Initial query text. */
   text?: string;

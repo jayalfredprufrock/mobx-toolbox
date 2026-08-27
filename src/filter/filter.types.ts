@@ -52,6 +52,44 @@ export interface FilterCondition {
 }
 
 /**
+ * Whatever a UI needs to render a `SetFilter` that the filter itself has no use for — an option
+ * label, an icon, a section heading.
+ *
+ * Empty by design, and **open for augmentation**: declare what your components need and it becomes
+ * type-checked at every `new SetFilter({ props })` and every read of `filter.props`.
+ *
+ * ```ts
+ * declare module "@jayalfredprufrock/mobx-toolbox/filter" {
+ *   interface SetFilterProps {
+ *     renderOption?: (value: SetFilterValue) => ReactNode;
+ *   }
+ * }
+ * ```
+ *
+ * This is the escape hatch for anything view-shaped. The library only declares a named option of its
+ * own when one of three things is true: it *reads* the value (`hideable` gates snapshot restore), it
+ * supplies a non-trivial *default* (`filterable` is `!== false && filter !== undefined &&
+ * !selection`), or the concept is universal and precisely typable (`multiValue`). A render function
+ * is none of those — hence `props` rather than an option per view concern.
+ */
+export interface SetFilterProps {}
+
+/** View props for a `NumberFilter`. Open for augmentation — see {@link SetFilterProps}. */
+export interface NumberFilterProps {}
+
+/** View props for a `DateFilter`. Open for augmentation — see {@link SetFilterProps}. */
+export interface DateFilterProps {}
+
+/** View props for a `TextFilter`. Open for augmentation — see {@link SetFilterProps}. */
+export interface TextFilterProps {}
+
+/**
+ * View props for a `BucketFilter`. Extends {@link SetFilterProps}, so a popover that narrows by
+ * `instanceof SetFilter` reads a bucket filter's props through the same shape.
+ */
+export interface BucketFilterProps extends SetFilterProps {}
+
+/**
  * A reactive predicate over a single extracted value — the shape every filter in this module
  * satisfies.
  *
@@ -160,6 +198,8 @@ export interface SetFilterOptions {
   matchMode?: SetMatchMode;
   /** Initially selected values. */
   selected?: Iterable<SetFilterValue>;
+  /** View props your components read; see {@link SetFilterProps}. */
+  props?: SetFilterProps;
   /**
    * Group raw values before matching them — the score-into-grades case. The column keeps showing and
    * sorting the raw value; only the filter sees the projection, and the facet list becomes the
@@ -197,6 +237,8 @@ export interface DateFilterOptions {
    * epoch, or if guessing wrong would be worse than being explicit.
    */
   unit?: DateUnit;
+  /** View props your components read; see {@link SetFilterProps}. */
+  props?: DateFilterProps;
 }
 
 /** JSON-serializable `DateFilter` state. Bounds are always epoch **milliseconds**. */
@@ -234,8 +276,8 @@ export interface NumberBounds {
  * `active` has to reject at runtime.
  */
 export type NumberFilterOptions =
-  | { op?: UnaryNumberOp; operand?: number }
-  | { op: IntervalNumberOp; operand?: NumberBounds };
+  | { op?: UnaryNumberOp; operand?: number; props?: NumberFilterProps }
+  | { op: IntervalNumberOp; operand?: NumberBounds; props?: NumberFilterProps };
 
 /** JSON-serializable `NumberFilter` state. */
 export type NumberFilterState =
@@ -262,6 +304,8 @@ export interface BucketFilterOptions {
   counts?: boolean;
   matchMode?: SetMatchMode;
   selected?: Iterable<SetFilterValue>;
+  /** View props your components read; see {@link SetFilterProps}. */
+  props?: BucketFilterProps;
 }
 
 /** As with {@link NumberFilterOptions}, no `options`/`counts`: free text has no enumerable domain. */
@@ -272,4 +316,6 @@ export interface TextFilterOptions {
   match?: TextMatchMode;
   /** Defaults to `false`. */
   caseSensitive?: boolean;
+  /** View props your components read; see {@link SetFilterProps}. */
+  props?: TextFilterProps;
 }

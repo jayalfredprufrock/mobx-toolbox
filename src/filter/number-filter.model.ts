@@ -4,6 +4,7 @@ import type {
   IntervalNumberOp,
   NumberBounds,
   NumberFilterOptions,
+  NumberFilterProps,
   NumberFilterState,
   NumberOp,
   UnaryNumberOp,
@@ -69,6 +70,12 @@ export class NumberFilter implements ValueFilter {
   op: NumberOp = "eq";
 
   /**
+   * Whatever your components need to render this filter. Empty until you augment
+   * {@link NumberFilterProps} — the library never reads it.
+   */
+  readonly props: NumberFilterProps;
+
+  /**
    * A single number, or `{ min, max }` for the interval ops — each bound independently optional, so
    * a range control can hold one while the other is still empty.
    */
@@ -123,6 +130,8 @@ export class NumberFilter implements ValueFilter {
     if (options?.operand !== undefined) {
       this.operand = toBounds(options.operand) ?? options.operand;
     }
+
+    this.props = options?.props ?? {};
 
     makeObservable(this, {
       op: observable,

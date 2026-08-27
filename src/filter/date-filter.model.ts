@@ -1,6 +1,7 @@
 import { action, computed, makeObservable, observable } from "mobx";
 import type {
   DateFilterOptions,
+  DateFilterProps,
   DateFilterState,
   DateLike,
   DateUnit,
@@ -57,6 +58,12 @@ export class DateFilter implements ValueFilter {
   min: number | undefined;
   max: number | undefined;
 
+  /**
+   * Whatever your components need to render this filter. Empty until you augment
+   * {@link DateFilterProps} — the library never reads it.
+   */
+  readonly props: DateFilterProps;
+
   /** How a bare number is read. See {@link DateFilterOptions.unit}. */
   readonly unit: DateUnit;
 
@@ -90,6 +97,8 @@ export class DateFilter implements ValueFilter {
     this.unit = options?.unit ?? "auto";
     this.min = toTime(options?.min, this.unit);
     this.max = toTime(options?.max, this.unit);
+
+    this.props = options?.props ?? {};
 
     makeObservable(this, {
       min: observable,

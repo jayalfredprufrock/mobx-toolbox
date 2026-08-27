@@ -1,5 +1,10 @@
 import { computed, makeObservable } from "mobx";
-import type { Bucket, BucketFilterOptions, SetFilterValue } from "./filter.types";
+import type {
+  Bucket,
+  BucketFilterOptions,
+  BucketFilterProps,
+  SetFilterValue,
+} from "./filter.types";
 import { SetFilter } from "./set-filter.model";
 import { isBlank } from "./util";
 
@@ -64,6 +69,9 @@ export const bucketProjection =
 export class BucketFilter extends SetFilter {
   readonly buckets: readonly Bucket[];
 
+  /** Narrowed to {@link BucketFilterProps}; see {@link SetFilterProps}. */
+  declare readonly props: BucketFilterProps;
+
   /** The bucket a value falls in, or `undefined` when it falls outside every one. */
   bucketOf(value: unknown): Bucket | undefined {
     const label = this.project?.(value);
@@ -79,6 +87,7 @@ export class BucketFilter extends SetFilter {
       counts: options.counts,
       matchMode: options.matchMode,
       selected: options.selected,
+      props: options.props,
     });
     this.buckets = buckets;
 

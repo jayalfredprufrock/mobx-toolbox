@@ -169,15 +169,6 @@ export class ColumnModel {
     return this.config.filterable !== false && this.filter !== undefined && !this.selection;
   }
 
-  /**
-   * How a filter UI should label one facet value, if the def says. Callers apply the default
-   * themselves: `column.filterOption?.(v) ?? String(v)` — a view often wants its own fallback, and
-   * a blank facet is labelled off `facet.blank` rather than off the value.
-   */
-  get filterOption(): ((value: SetFilterValue) => any) | undefined {
-    return this.config.filterOption;
-  }
-
   /** Who applies this column's filter. See {@link BaseColumnDef.filterMode}. */
   get filterMode(): FilterMode {
     return this.config.filterMode ?? "client";

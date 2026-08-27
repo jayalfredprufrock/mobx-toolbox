@@ -2,6 +2,7 @@ import { autorun } from "mobx";
 import { afterEach, describe, expect, test } from "vite-plus/test";
 import { DateFilter } from "../filter/date-filter.model";
 import { BucketFilter } from "../filter/bucket-filter.model";
+import { NumberFilter } from "../filter/number-filter.model";
 import { SetFilter } from "../filter/set-filter.model";
 import { TextFilter } from "../filter/text-filter.model";
 import { BLANK } from "../filter/util";
@@ -625,16 +626,22 @@ describe("all four filter kinds on one table", () => {
   });
 });
 
-describe("filterOption", () => {
-  test("is exposed off the column, with the default left to the caller", () => {
-    const table = makeTable([
-      { key: "category", filter: new SetFilter(), filterOption: (v) => `<${String(v)}>` },
-      { key: "score", filter: new DateFilter() },
-    ]);
+describe("filter props", () => {
+  test("carry whatever a UI needs, and the library never reads them", () => {
+    // `filterOption` used to live on the column def; it failed all three tests for a named option —
+    // the library never read it, the `String(value)` default was applied at the call site, and
+    // "render a value" is not precisely typable here. Augmented props replace it.
+    const filter = new SetFilter({ props: { renderOption: (v) => `<${String(v)}>` } });
+    const table = makeTable([{ key: "category", filter }]);
 
-    const category = table.column("category");
-    expect(category?.filterOption?.("a")).toBe("<a>");
-    expect(table.column("score")?.filterOption).toBeUndefined();
+    const column = table.column("category");
+    expect(column?.filter).toBe(filter);
+    expect(filter.props.renderOption?.("a")).toBe("<a>");
+  });
+
+  test("default to an empty object rather than undefined", () => {
+    expect(new SetFilter().props).toEqual({});
+    expect(new NumberFilter().props).toEqual({});
   });
 });
 

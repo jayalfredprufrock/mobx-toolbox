@@ -2,6 +2,7 @@ import { action, computed, makeObservable, observable } from "mobx";
 import type {
   FilterCondition,
   SetFilterOptions,
+  SetFilterProps,
   SetFilterState,
   SetFilterValue,
   SetMatchMode,
@@ -29,6 +30,12 @@ export class SetFilter implements ValueFilter {
    * the toggle. Only meaningful for array-valued data; see {@link SetMatchMode}.
    */
   matchMode: SetMatchMode = "any";
+
+  /**
+   * Whatever your components need to render this filter. Empty until you augment
+   * {@link SetFilterProps} — the library never reads it.
+   */
+  readonly props: SetFilterProps;
 
   /** Declared value domain, in declaration order. See {@link SetFilterOptions.options}. */
   readonly options: readonly SetFilterValue[] | undefined;
@@ -87,6 +94,8 @@ export class SetFilter implements ValueFilter {
     this.multiValue = options?.multiValue === true;
     if (options?.matchMode) this.matchMode = options.matchMode;
     if (options?.selected) for (const v of options.selected) this.selected.add(v);
+
+    this.props = options?.props ?? {};
 
     makeObservable(this, {
       selected: observable.shallow,

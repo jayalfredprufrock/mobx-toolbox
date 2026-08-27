@@ -273,8 +273,6 @@ export interface ColumnConfig {
   filter?: ColumnFilter;
   /** See BaseColumnDef.filterable — advisory flag for header filter UIs. Defaults to true. */
   filterable?: boolean;
-  /** See BaseColumnDef.filterOption. */
-  filterOption?: (value: SetFilterValue) => any;
   /** See BaseColumnDef.searchable. Defaults to true. */
   searchable?: boolean | ((row: RowData) => string);
   /** See BaseColumnDef.hidden. Initial value only. */
@@ -411,13 +409,6 @@ export interface BaseColumnDef<T> {
    * from somewhere else (a sidebar, a route param) hides its funnel without giving up the column.
    */
   filterable?: boolean;
-  /**
-   * Label for one facet value in a filter UI. Defaults to `String(value)`.
-   *
-   * Typed `=> any` rather than `=> ReactNode` for the same reason as `render`: nothing in these
-   * types imports React.
-   */
-  filterOption?: (value: SetFilterValue) => any;
   /**
    * Whether the built-in cross-column search reads this column, or a text projection to search
    * instead — `searchable: (r) => fmtTime(r.time)` searches a date column as text rather than as

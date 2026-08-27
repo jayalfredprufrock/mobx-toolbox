@@ -31,6 +31,39 @@ these are right.
 
 ## Breaking changes
 
+### filter — view props, and `filterOption` is gone
+
+⚠️ **`filterOption` has been removed from the column def.** Whatever a filter UI needs now travels on
+the filter itself, in a `props` object whose interface you augment:
+
+```ts
+// before
+{ key: "category", filter: () => new SetFilter(), filterOption: (v) => <Badge value={v} /> }
+
+// after
+declare module "@jayalfredprufrock/mobx-toolbox/filter" {
+  interface SetFilterProps {
+    renderOption?: (value: SetFilterValue) => ReactNode;
+  }
+}
+
+{ key: "category", filter: () => new SetFilter({ props: { renderOption: (v) => <Badge value={v} /> } }) }
+```
+
+Read it as `filter.props.renderOption?.(facet.value) ?? String(facet.value)` — the `String` fallback
+always lived at the call site, so nothing moved there.
+
+Each class has its own interface — `SetFilterProps`, `NumberFilterProps`, `DateFilterProps`,
+`TextFilterProps`, and `BucketFilterProps` (extending `SetFilterProps`). All empty by default, so
+until you augment, passing `props` is a type error. `props` defaults to `{}`, never `undefined`.
+
+**The rule this follows**, worth knowing before asking for a new column option: the library declares
+a named slot only when it _reads_ the value (`hideable` gates snapshot restore), _supplies a
+non-trivial default_ (`filterable` is `!== false && filter !== undefined && !selection`), or the
+concept is _universal and precisely typable_ (`multiValue`). `filterOption` was none of those —
+nothing read it, its default lived at the call site, and "render a value" cannot be typed in a
+package that imports nothing from React. Anything view-shaped belongs in `props`.
+
 ### table — `predicate` → `filterPredicate`, `search` → `searchFilter`
 
 ⚠️ Two renames on `TableModel`, so every member reads as part of one vocabulary:

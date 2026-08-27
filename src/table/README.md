@@ -324,7 +324,7 @@ built, so patching `value` alone changes what is sorted and filtered but not wha
 both to change both.
 
 **Function-valued options are the other route**, and need no patching at all — `value`, `render`,
-`compare`, `searchable` and `filterOption` are called fresh every time, so closing them over
+`compare` and `searchable` are called fresh every time, so closing them over
 something observable (see [`useObservableBox`](../util/README.md)) makes them follow it. Reach for
 `setConfig` for the scalar options, which have no such escape.
 
@@ -695,8 +695,10 @@ attached, and false where none is.
 
 The package ships no filter UI, for the same reason it ships no sort UI: a popover means owning
 focus, keyboard and positioning that your design system already owns. What it gives you is
-`column.filter`, `column.facets` and `column.filterOption` — plus, on a `SetFilter` itself,
-`multiValue`, which says whether offering the any/all toggle would mean anything here.
+`column.filter` and `column.facets` — plus, on a `SetFilter` itself, `multiValue` (whether offering
+the any/all toggle would mean anything) and `props`, which carries whatever your components need. See
+[`filter`](../filter/README.md#view-props) for augmenting it, and for the rule on when the library
+declares a named option instead.
 
 ### Facets
 
@@ -753,7 +755,11 @@ facets.filter((f) => (f.count ?? 1) > 0 || filter.has(f.value));
         checked={filter.has(facet.value)}
         onChange={() => filter.toggle(facet.value)}
       />
-      {facet.blank ? <em>(Blank)</em> : (column.filterOption?.(facet.value) ?? String(facet.value))}
+      {facet.blank ? (
+        <em>(Blank)</em>
+      ) : (
+        (filter.props.renderOption?.(facet.value) ?? String(facet.value))
+      )}
       {facet.count !== undefined && <span>{facet.count}</span>}
     </label>
   ));
@@ -1029,6 +1035,6 @@ Drop a `<Table.Resizer>` inside a header cell. It handles the drag (on the corre
 
 Mutations all go through actions: `setRows`, `appendRows`, `clearColumnFilters`, `setSort`/`setSorts`/`clearSort`, `toggleRow`/`selectAllRows`/`toggleAllRows`/`clearSelection`, `toggleRowExpanded`/`collapseAllRows`, `moveColumn`, `applyState`, `scrollToRow`/`scrollToEnd`.
 
-`ColumnModel`: `key`, `title`, `width`, `pinned`, `hidden`, `sortDirection`, `sortIndex`, `sortable`, `resizable`, `getValue(row)`, `setPinned`, `setHidden`, `setManualWidth`, `sortBy`, `clearSort`, `setConfig`, plus the filtering surface — `filter`, `filterable`, `filterOption`, `facets`, `filterMode`, `field`, `filterCondition`, `searchable`, `searchValue(row)`, `clearFilter()`.
+`ColumnModel`: `key`, `title`, `width`, `pinned`, `hidden`, `sortDirection`, `sortIndex`, `sortable`, `resizable`, `getValue(row)`, `setPinned`, `setHidden`, `setManualWidth`, `sortBy`, `clearSort`, `setConfig`, plus the filtering surface — `filter`, `filterable`, `facets`, `filterMode`, `field`, `filterCondition`, `searchable`, `searchValue(row)`, `clearFilter()`.
 
 When you build the model yourself rather than via `useTable`, call `dispose()` to drop the model's reactions — `onStateChange`, and the one tracking a getter `rows` — and `activate()` to re-arm them. A `TableModel` built directly with an **array** `rows` applies it once, at construction: identity-based syncing is `useTable`'s job, so update it with `setRows`. The getter form needs no such help; it tracks its source wherever the model lives.

@@ -2,6 +2,7 @@ import { action, computed, makeObservable, observable } from "mobx";
 import type {
   FilterCondition,
   TextFilterOptions,
+  TextFilterProps,
   TextMatchMode,
   ValueFilter,
 } from "./filter.types";
@@ -18,6 +19,12 @@ import { textMatches } from "./util";
  */
 export class TextFilter implements ValueFilter {
   text = "";
+
+  /**
+   * Whatever your components need to render this filter. Empty until you augment
+   * {@link TextFilterProps} — the library never reads it.
+   */
+  readonly props: TextFilterProps;
 
   readonly match: TextMatchMode;
   readonly caseSensitive: boolean;
@@ -47,6 +54,8 @@ export class TextFilter implements ValueFilter {
     this.text = options?.text ?? "";
     this.match = options?.match ?? "contains";
     this.caseSensitive = options?.caseSensitive === true;
+
+    this.props = options?.props ?? {};
 
     makeObservable(this, {
       text: observable,

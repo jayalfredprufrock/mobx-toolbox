@@ -365,6 +365,43 @@ exported function rather than a rule written twice.
 Note the test is "contributed no non-blank values", not "the raw value is nullish". An empty array
 counts as blank, or a `tags: []` row would be unreachable through the "(Blank)" facet.
 
+## View props
+
+Every filter carries a `props` object for whatever your components need and the filter itself has no
+use for — an option label, a unit, an icon. Each class has its own interface, empty by default and
+**open for augmentation**:
+
+```ts
+declare module "@jayalfredprufrock/mobx-toolbox/filter" {
+  interface SetFilterProps {
+    renderOption?: (value: SetFilterValue) => ReactNode;
+  }
+}
+
+new SetFilter({ props: { renderOption: (v) => <Badge value={v} /> } });
+```
+
+Once augmented it is checked at every construction site and every read; until then, any `props` you
+pass is a type error, which is the point. `SetFilterProps`, `NumberFilterProps`, `DateFilterProps`,
+`TextFilterProps`, and `BucketFilterProps` (which extends `SetFilterProps`, so a popover narrowing by
+`instanceof SetFilter` reads a bucket filter's props through the same shape). `props` defaults to
+`{}`, never `undefined`.
+
+### When the library declares an option instead
+
+`props` is the default answer for anything view-shaped. A named option is only worth declaring when
+one of three things holds:
+
+1. **The library reads it.** `hideable` and `pinnable` gate snapshot restore in `applyColumnState`.
+2. **It supplies a non-trivial default.** `filterable` is
+   `!== false && filter !== undefined && !selection` — a rule a call site should not have to repeat.
+3. **The concept is universal and precisely typable.** `multiValue` means one thing for every set
+   filter, and is exactly a boolean.
+
+A render function is none of those, which is why there is no `filterOption` on the column def any
+more: nothing in the library called it, its `String(value)` fallback lived at the call site anyway,
+and "render a value" cannot be typed precisely in a package that imports nothing from React.
+
 ## Handing the work to a server
 
 Every filter can either **evaluate** (`matches`) or **export itself** (`condition`) — the same state,

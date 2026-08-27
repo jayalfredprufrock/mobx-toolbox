@@ -202,7 +202,7 @@ A numeric comparison: an operator plus its operand.
 
 ```ts
 new NumberFilter({ op: "gte", operand: 60 });
-new NumberFilter({ op: "between", operand: [60, 80] });
+new NumberFilter({ op: "between", operand: { min: 60, max: 80 } });
 ```
 
 | `op`                        | matches                |
@@ -212,9 +212,33 @@ new NumberFilter({ op: "between", operand: [60, 80] });
 | `between`                   | `x <= n <= y`          |
 | `betweenExclusive`          | `x < n < y`            |
 
-The operand's shape follows the operator — a single number for the unary ops, a `[low, high]` pair
-for the two interval ops — and the types tie them together, so `{ op: "eq", operand: [1, 2] }` is a
+The operand's shape follows the operator — a single number for the unary ops, `{ min, max }` for the
+two interval ops — and the types tie them together, so `{ op: "eq", operand: { min: 1 } }` is a
 compile error rather than something `active` has to reject.
+
+### Interval bounds are independent
+
+Each bound is separately optional, so `{ min: 60 }` is a valid "60 and up" and an open end is simply
+unbounded. That is not tidiness — it is what lets a two-input range control read and write the filter
+directly, with **no draft state**:
+
+```tsx
+<input value={filter.min ?? ""} onChange={(e) => filter.setMin(parse(e.target.value))} />
+<input value={filter.max ?? ""} onChange={(e) => filter.setMax(parse(e.target.value))} />
+```
+
+`setMin` and `setMax` each leave the other bound alone, so clearing the upper box doesn't wipe the
+lower one the user just filled in. Requiring both bounds would force every consumer to mirror the pair
+into component state, seed it on mount and reset it on clear — and that copy then goes stale the moment
+something else calls `clearFilters()` with the control open. Reading `min`/`max` straight off the
+filter has no such path.
+
+The names, and the `{ min, max }` shape, are deliberately the same as `DateFilter`'s, so a range
+control written for one reads the other. `setRange(min, max)` sets both at once, as it does there.
+
+`min` and `max` are `undefined` under a unary operator, where a UI renders one input rather than two,
+and `setMin`/`setMax`/`setRange` are no-ops there. An absent bound is an absent key, so nothing has to
+survive JSON as `null`.
 
 Changing the operator alone can therefore leave the filter **inactive**, which is deliberate: a
 `[60, 80]` pair means nothing to `gte`, and silently keeping the first element would filter by
@@ -395,6 +419,11 @@ type TextMatchMode = "contains" | "startsWith" | "equals";
 type UnaryNumberOp = "eq" | "neq" | "gt" | "lt" | "gte" | "lte";
 type IntervalNumberOp = "between" | "betweenExclusive";
 type NumberOp = UnaryNumberOp | IntervalNumberOp;
+
+interface NumberBounds {
+  min?: number;
+  max?: number;
+}
 
 type DateUnit = "s" | "ms" | "auto";
 type DateLike = Date | number | string;

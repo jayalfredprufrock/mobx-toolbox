@@ -214,17 +214,33 @@ export type IntervalNumberOp = "between" | "betweenExclusive";
 export type NumberOp = UnaryNumberOp | IntervalNumberOp;
 
 /**
+ * The bounds of an interval operator, each independently optional — `{ min: 60 }` is "60 and up".
+ *
+ * Optional on purpose rather than for tidiness: a two-input range control has to be able to hold one
+ * bound while the other is still empty. Requiring both would mean clearing the second box wipes the
+ * first, so every consumer would carry a draft copy in component state to work around it.
+ *
+ * Named bounds rather than a positional pair, matching {@link DateFilterState}: an absent bound is
+ * simply an absent key, so nothing has to survive JSON as `null`, and a server reading the condition
+ * gets `{ min, max }` instead of having to know which end of a tuple is which.
+ */
+export interface NumberBounds {
+  min?: number;
+  max?: number;
+}
+
+/**
  * The operand shape follows the operator, so a mismatch is a compile error rather than something
  * `active` has to reject at runtime.
  */
 export type NumberFilterOptions =
   | { op?: UnaryNumberOp; operand?: number }
-  | { op: IntervalNumberOp; operand?: [number, number] };
+  | { op: IntervalNumberOp; operand?: NumberBounds };
 
 /** JSON-serializable `NumberFilter` state. */
 export type NumberFilterState =
   | { op: UnaryNumberOp; operand?: number }
-  | { op: IntervalNumberOp; operand?: [number, number] };
+  | { op: IntervalNumberOp; operand?: NumberBounds };
 
 /**
  * One named range in a {@link BucketFilterOptions} list. Bounds are `[min, max)` — inclusive lower,

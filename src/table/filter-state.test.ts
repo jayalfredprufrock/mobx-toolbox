@@ -60,7 +60,7 @@ describe("filter state in the snapshot", () => {
   test("survives a full JSON round-trip into a fresh table", () => {
     const first = makeTable();
     filterOf(first, "category", SetFilter).select(["a", BLANK]);
-    filterOf(first, "score", NumberFilter).set("between", [5, 35]);
+    filterOf(first, "score", NumberFilter).set("between", { min: 5, max: 35 });
     first.search.setText("a");
     const saved = roundTrip(first.getState());
 
@@ -73,7 +73,7 @@ describe("filter state in the snapshot", () => {
     });
     expect(filterOf(second, "score", NumberFilter).value).toEqual({
       op: "between",
-      operand: [5, 35],
+      operand: { min: 5, max: 35 },
     });
     expect(second.search.text).toBe("a");
     expect(ids(second.filteredRows)).toEqual(ids(first.filteredRows));

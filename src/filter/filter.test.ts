@@ -366,10 +366,10 @@ describe("NumberFilter", () => {
   });
 
   test("between is inclusive, betweenExclusive is not", () => {
-    const inc = new NumberFilter({ op: "between", operand: [3, 7] });
+    const inc = new NumberFilter({ op: "between", operand: { min: 3, max: 7 } });
     expect([1, 3, 5, 7, 9].filter((n) => inc.matches(n))).toEqual([3, 5, 7]);
 
-    const exc = new NumberFilter({ op: "betweenExclusive", operand: [3, 7] });
+    const exc = new NumberFilter({ op: "betweenExclusive", operand: { min: 3, max: 7 } });
     expect([1, 3, 5, 7, 9].filter((n) => exc.matches(n))).toEqual([5]);
   });
 
@@ -388,8 +388,72 @@ describe("NumberFilter", () => {
     expect(filter.matches("abc")).toBe(false);
   });
 
+  test("interval bounds are independent, so a range control needs no draft state", () => {
+    // the friction this removes: clearing one box must not wipe the bound already typed in the other
+    const filter = new NumberFilter({ op: "between" });
+    expect(filter.active).toBe(false);
+
+    filter.setMin(3);
+    expect(filter.min).toBe(3);
+    expect(filter.max).toBeUndefined();
+    expect(filter.active).toBe(true);
+
+    filter.setMax(7);
+    expect([filter.min, filter.max]).toEqual([3, 7]);
+
+    // clearing the upper box leaves the lower one exactly where the user put it
+    filter.setMax(undefined);
+    expect(filter.min).toBe(3);
+    expect(filter.active).toBe(true);
+
+    // and clearing both goes inactive, which is what blanks a control reading off the filter
+    filter.setMin(undefined);
+    expect(filter.active).toBe(false);
+    expect([filter.min, filter.max]).toEqual([undefined, undefined]);
+  });
+
+  test("a half-filled interval means what it looks like", () => {
+    const upFrom = new NumberFilter({ op: "between", operand: { min: 3 } });
+    expect([1, 3, 5, 9].filter((n) => upFrom.matches(n))).toEqual([3, 5, 9]);
+
+    const downTo = new NumberFilter({ op: "between", operand: { min: undefined, max: 7 } });
+    expect([1, 3, 5, 9].filter((n) => downTo.matches(n))).toEqual([1, 3, 5]);
+
+    const exclusive = new NumberFilter({ op: "betweenExclusive", operand: { min: 3 } });
+    expect([1, 3, 5, 9].filter((n) => exclusive.matches(n))).toEqual([5, 9]);
+  });
+
+  test("clearFilters blanks a control that reads off the filter", () => {
+    // the stale path a component-state draft would leave behind
+    const filter = new NumberFilter({ op: "between", operand: { min: 3, max: 7 } });
+    filter.clear();
+    expect(filter.min).toBeUndefined();
+    expect(filter.max).toBeUndefined();
+    expect(filter.op).toBe("between");
+  });
+
+  test("low / high are undefined under a unary operator, and the setters no-op", () => {
+    const filter = new NumberFilter({ op: "gte", operand: 5 });
+    expect(filter.min).toBeUndefined();
+    expect(filter.max).toBeUndefined();
+
+    filter.setMin(1);
+    expect(filter.operand).toBe(5);
+  });
+
+  test("an open bound is an absent key, so nothing has to survive JSON as null", () => {
+    const filter = new NumberFilter({ op: "between", operand: { min: 3 } });
+    const json = JSON.parse(JSON.stringify(filter.value)) as unknown;
+    expect(json).toEqual({ op: "between", operand: { min: 3 } });
+
+    const restored = new NumberFilter();
+    restored.setValue(json);
+    expect([restored.min, restored.max]).toEqual([3, undefined]);
+    expect(restored.active).toBe(true);
+  });
+
   test("an operand that does not fit the operator leaves it inactive", () => {
-    const filter = new NumberFilter({ op: "between", operand: [3, 7] });
+    const filter = new NumberFilter({ op: "between", operand: { min: 3, max: 7 } });
     expect(filter.active).toBe(true);
 
     // switching operator alone: guessing which end of the pair to keep would filter by something
@@ -406,7 +470,7 @@ describe("NumberFilter", () => {
   test("value round-trips through JSON, both shapes", () => {
     for (const filter of [
       new NumberFilter({ op: "lte", operand: 5 }),
-      new NumberFilter({ op: "betweenExclusive", operand: [3, 7] }),
+      new NumberFilter({ op: "betweenExclusive", operand: { min: 3, max: 7 } }),
     ]) {
       const json = JSON.parse(JSON.stringify(filter.value)) as unknown;
       const restored = new NumberFilter();
@@ -418,7 +482,7 @@ describe("NumberFilter", () => {
 
   test("setValue drops an operand that does not fit the restored operator", () => {
     const filter = new NumberFilter();
-    filter.setValue({ op: "gte", operand: [3, 7] });
+    filter.setValue({ op: "gte", operand: { min: 3, max: 7 } });
     expect(filter.op).toBe("gte");
     expect(filter.active).toBe(false);
   });
@@ -435,9 +499,14 @@ describe("NumberFilter", () => {
       op: "lte",
       value: 5,
     });
-    expect(new NumberFilter({ op: "between", operand: [3, 7] }).condition).toEqual({
+    // named bounds on the wire too, so a server never has to know which end of a tuple is which
+    expect(new NumberFilter({ op: "between", operand: { min: 3, max: 7 } }).condition).toEqual({
       op: "between",
-      value: [3, 7],
+      value: { min: 3, max: 7 },
+    });
+    expect(new NumberFilter({ op: "between", operand: { min: 3 } }).condition).toEqual({
+      op: "between",
+      value: { min: 3 },
     });
     expect(new NumberFilter({ op: "gte" }).condition).toBeUndefined();
   });

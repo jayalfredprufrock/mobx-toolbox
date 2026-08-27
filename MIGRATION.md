@@ -57,9 +57,22 @@ for a picker) and `unit`. Bounds are stored as epoch milliseconds, so persisted 
 plain numbers.
 
 **`NumberFilter`** carries `eq`, `neq`, `gt`, `lt`, `gte`, `lte`, `between` (inclusive) and
-`betweenExclusive`. The operand's shape follows the operator — a number, or a `[low, high]` pair —
-and the types enforce it. Changing the operator alone can leave the filter inactive by design; use
+`betweenExclusive`. The operand's shape follows the operator — a number, or `{ min, max }` — and the
+types enforce it. Changing the operator alone can leave the filter inactive by design; use
 `set(op, operand)` from an operator dropdown.
+
+Interval bounds are **independently optional**, so `{ min: 60 }` is "60 and up". Drive a two-input
+range control straight off `min` / `max` / `setMin` / `setMax` — each setter leaves the other bound
+alone, so there is no need to mirror the pair into component state, and therefore nothing to go stale
+when something else calls `clearFilters()`:
+
+```tsx
+<input value={filter.min ?? ""} onChange={(e) => filter.setMin(parse(e.target.value))} />
+<input value={filter.max ?? ""} onChange={(e) => filter.setMax(parse(e.target.value))} />
+```
+
+The names and the `{ min, max }` shape match `DateFilter` deliberately, so one range control reads
+both, and `setRange(min, max)` exists on both.
 
 **`BucketFilter`** filters a numeric column by named range while the column keeps showing and sorting
 the raw value — the "show the score, filter by grade" case:

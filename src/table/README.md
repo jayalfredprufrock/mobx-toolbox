@@ -88,7 +88,7 @@ fine") and exposes both populations; MUI's Data Grid clears filtered-out rows by
 change, prune on a _dataset_ change.
 
 That distinction only stays decidable while filtering lives **inside** the table (a column's
-`filter`, the built-in `search`, or a `FilterSource`). Filter outside it —
+`filter` or the built-in `search`). Filter outside it —
 hand over `rows: () => all.filter(pred)` — and the table cannot tell "filtered out" from "deleted",
 so neither behaviour is right. Keep `rows` as the dataset and filter through the table.
 
@@ -206,7 +206,7 @@ fetch mostly-identical rows would throw away scroll position, column arrangement
 `table.refreshing` to indicate it somewhere that isn't the rows themselves — and don't dim them,
 which reads as _disabled_.
 
-Everything else (`columns`, `getRowId`, `onStateChange`, `filter`) is captured at construction. Change those through the model — `setFilter`, `applyState` — rather than by re-rendering. Column filters need none of this: they are instances you hold, so you mutate them directly.
+Everything else (`columns`, `getRowId`, `onStateChange`) is captured at construction. Change those through the model — `setColumns`, `applyState` — rather than by re-rendering. Column filters need none of this: they are instances you hold, so you mutate them directly.
 
 ## Columns
 
@@ -389,6 +389,59 @@ group's own edge, spent as `left: offset` or `right: offset`. If you want plain 
 
 `sorts` is a priority list: earlier entries win, later ones break ties. `setSort(key, dir)` replaces it (single-sort); `setSort(key, dir, { preserve: true })` keeps existing sorts, flipping a column already in the list in place. `column.sortIndex` is the 1-based badge for multi-sort UIs.
 
+### Visibility and pinning
+
+```ts
+{ key: "internalId", hidden: true, hideable: false }   // never shown, never offered
+{ key: "name", hideable: false }                        // always shown, never offered
+{ key: "actions", pinnable: false }
+```
+
+Pinning uses `ColumnPin` (`false | "left" | "right"`) — an unpinned column is `false`, never
+`undefined`, so `column.pinned === false` is a legal check and `setPinned(false)` is how you unpin.
+
+`hidden` is the _initial_ value; `setHidden` and a snapshot both move it afterwards. `hideable` and
+`pinnable` are advisory for pickers and header UIs, exactly like `sortable` and `filterable` — the
+setters are never gated, so a page's own responsive layout can hide whatever it likes.
+
+Read `hideable: false` as **locking `hidden` where it starts**, not "cannot be hidden": on a
+`hidden: true` column it means always hidden. That pairing is how you declare a column that exists
+only to carry a value or a filter (see below).
+
+The one thing they _do_ enforce is that a persisted snapshot cannot override them. `applyState` skips
+`hidden` for a non-`hideable` column, `pinned` for a non-`pinnable` one, and `width` for a
+non-`resizable` one — structure outranks a saved view written before that was true. Without it, a
+stale snapshot could reveal a column you never meant to show.
+
+```tsx
+{
+  table.allColumns.filter((c) => c.hideable).map((c) => <HideToggle key={c.key} column={c} />);
+}
+```
+
+### A column that only carries data
+
+A column's `value` fn receives the whole row and is fully reactive — it can read any observable, not
+just the row — so a column is also how you attach a predicate that isn't about one field:
+
+```ts
+{
+  key: "_invalid",
+  value: (t) => t.start > t.end,          // any row predicate, incl. cross-column
+  filter: () => new SetFilter({ selected: [true] }),
+  hidden: true,
+  hideable: false,
+  filterable: false,
+  searchable: false,
+  sortable: false,
+}
+```
+
+It narrows rows without ever being rendered, and nothing can reveal it. Filtering _upstream_ instead
+— `rows: () => all.filter(pred)` — is the thing to avoid: `setRows` then intersects selection against
+the smaller set and drops it permanently, because the table cannot tell "filtered out" from
+"deleted".
+
 `sortable: false` is advisory — it's for hiding header controls. The model's sort APIs are never gated, so `setSort` and `applyState` still work.
 
 For **server-side sorting**, set `sortMode: "manual"`. Sort state behaves identically (so header UIs need no changes) but row order is left untouched — react to `sorts`, refetch, and `setRows`.
@@ -559,26 +612,72 @@ same instance works over a table column, a sidebar rail or a bare `array.filter`
 
 ### What narrows the rows
 
-`table.predicate` is the single answer: every active column filter, the built-in search, and any
-page-level `FilterSource`, AND-composed. `undefined` when nothing is active.
+`table.filterPredicate` is the single answer: every active column filter, the built-in search, and any
+AND-composed. `undefined` when nothing is active.
 
-| Member                    | Description                                                      |
-| ------------------------- | ---------------------------------------------------------------- |
-| `predicate`               | everything narrowing rows, composed; `undefined` = pass-through  |
-| `predicateExcluding(key)` | the same, minus that column's own filter — what facet counts use |
-| `activeFilterCount`       | active column filters + the search                               |
-| `clearFilters()`          | reset every column filter                                        |
-| `column(key)`             | the `ColumnModel` under that key                                 |
+| Member                          | Description                                                      |
+| ------------------------------- | ---------------------------------------------------------------- |
+| `predicate`                     | everything narrowing rows, composed; `undefined` = pass-through  |
+| `filterPredicateExcluding(key)` | the same, minus that column's own filter — what facet counts use |
+| `activeColumnFilters`           | columns whose filter is narrowing rows; `.length` is the count   |
+| `activeClientColumnFilters`     | the subset this table applies itself                             |
+| `activeServerColumnFilters`     | the subset behind `filterQuery`                                  |
+| `clearColumnFilters(opts?)`     | reset column filters; `{ mode }` clears one side                 |
+| `column(key)`                   | the `ColumnModel` under that key                                 |
 
 Filtering runs over `rows` without replacing them, so selection persists through it.
 
-`clearFilters()` deliberately leaves `search` alone — wiping text the user typed as a side effect is
-more surprising than leaving it (`search.clear()` is explicit). It also _cannot_ touch
-`filterSources`, since `FilterSource` is only a predicate and has nothing to reset.
+### The two kinds of filter
+
+Two qualifiers, two axes. **`column`** marks members that are column-filter-specific;
+**`client`** / **`server`** mark which half of the split something belongs to.
+
+`filterPredicate`, `filterQuery` and `clientFilteredRows` carry no `column` qualifier because the
+search filter narrows them too, so `columnFiltered…` would be a false name for any of them. `clientFilteredRows` is qualified on the other axis: it says
+this table applied the client half, because a server-mode filter was already applied to `rows` before
+they arrived.
+
+There are two kinds of filter, and the qualifier in each name says which:
+
+|                       | what it is                                                 | in `activeColumnFilters` | reset by `clearColumnFilters` |
+| --------------------- | ---------------------------------------------------------- | ------------------------ | ----------------------------- |
+| **column filters**    | a `ColumnFilter` on a column, matching one extracted value | yes                      | yes                           |
+| **the search filter** | one query matched across many columns, so a row predicate  | no                       | no                            |
+
+The unqualified word covers both — `filterPredicate` composes them, and `filterQuery` serializes
+whichever run server-side. Anything spelled `column…` is the narrower half, which is why
+`clearColumnFilters` leaving the search alone follows from its name rather than being an exception
+to remember.
+
+Say which you mean at the call site:
+
+```ts
+// everything narrowing the table — the number a chip shows
+table.activeColumnFilters.length + (table.searchFilter.active ? 1 : 0);
+
+// exactly what a rail's Clear would reset, so it never offers to undo a server-side window
+table.activeClientColumnFilters.length > 0;
+
+// which side emptied the table
+table.activeClientColumnFilters.length > 0 || table.searchFilter.active;
+```
+
+`activeClientColumnFilters` and `activeServerColumnFilters` are each their own computed rather than a
+`.filter()` over the combined list, so reading one never touches the other side's `active` flags — a
+server toggle can't invalidate a client-count chip.
+
+Clearing keeps the `{ mode }` option rather than growing matching names, since options objects are how
+every other variant here is spelled (`setSort(key, dir, { preserve })`, `clearSort(key?)`).
+
+Returning the columns rather than a count is deliberate — `.length` is the number anyway, and a rail
+can render a removable chip per active filter from a model but not from an integer.
+
+`clearColumnFilters()` deliberately leaves `search` alone — wiping text the user typed as a side
+effect is more surprising than leaving it (`search.clear()` is explicit).
 
 **A hidden column keeps filtering.** So does a `filterable: false` one. That is intentional — it is
 how a filter driven from elsewhere (a sidebar, a route param) works without giving up the column —
-and `activeFilterCount` is the disclosure, the chip that tells the user something is narrowing the
+and `activeColumnFilters` is the disclosure, the chip that tells the user something is narrowing the
 table that they cannot see a control for.
 
 ### Header controls
@@ -665,21 +764,24 @@ facets.filter((f) => (f.count ?? 1) > 0 || filter.has(f.value));
 offered only where the row walk actually found one — the static tier never shows it, with no extra
 config.
 
-Page-level sources and the search are cross-filtered in too: a row those already exclude must not be
-tallied, or the count promises rows the selection could never surface.
+The search is cross-filtered in too: a row it already excludes must not be tallied, or the count
+promises rows the selection could never surface.
 
 ### Search
 
-`table.search` is a cross-column text search, always present and inert until something is typed.
+`table.searchFilter` is a `TableSearchFilter` — one query matched across many columns. There is exactly one per table, created with the model and inert until something is typed.
 
 ```tsx
-<input value={table.search.text} onChange={(e) => table.search.setText(e.target.value)} />
+<input
+  value={table.searchFilter.text}
+  onChange={(e) => table.searchFilter.setText(e.target.value)}
+/>
 ```
 
 It is table-owned rather than a `ColumnFilter` because matching one query against _many_ columns needs
 every column's accessor at once — the one thing a `matches(value)` predicate structurally cannot do.
 Everything else lines up: it joins `predicate` like any column filter and counts toward
-`activeFilterCount`.
+`activeColumnFilters`.
 
 Per-column `searchable` decides what it reads, defaulting to true:
 
@@ -691,15 +793,6 @@ Per-column `searchable` decides what it reads, defaulting to true:
 Hidden columns are searched: `searchable` describes the data, not what is on screen. Debouncing is
 deliberately not built in — like `onStateChange`, the cadence belongs to whoever owns the input, and
 a client-side search over rows already in memory usually wants none.
-
-### Page-level filters
-
-`config.filter` / `setFilter` still take anything exposing a reactive `predicate`, AND-composed with
-everything above. It is the escape hatch for a dimension with no column behind it.
-
-```ts
-useTable({ rows, filter: [dateRangeStore, permissionScope] });
-```
 
 ### Server-side filtering
 
@@ -726,7 +819,7 @@ reaction(
 The two sets are **disjoint**, and that is what makes a mixed table cheap: a server-mode filter is
 never evaluated client-side, so every filter is applied exactly once, in exactly one place. There is
 no double-filtering and nothing to reconcile. `predicate` holds the client half, `filterQuery` the
-server half, and `activeFilterCount` counts both — they all narrow the table, just in different
+server half, and `activeClientColumnFilters` / `activeServerColumnFilters` split them — they all narrow the table, just in different
 places.
 
 Applying client filters _on top of_ server results needs no new machinery either: the table filters
@@ -761,7 +854,7 @@ that very filter_:
 Server filters are also excluded from every _other_ column's cross-filter tally, since they are
 already applied to `rows`. That falls out of the partition rather than being a special case.
 
-`clearFilters({ mode: "client" })` resets one side and leaves the other alone, which is what a
+`clearColumnFilters({ mode: "client" })` resets one side and leaves the other alone, which is what a
 "clear filters" button next to a sidebar of server-driven controls usually wants.
 
 The search has its own mode:
@@ -772,6 +865,17 @@ useTable({ rows, search: { mode: "server" } });
 
 In server mode the query stops narrowing rows and becomes a `{ op: "search" }` condition instead.
 Per-column `searchable` then has no effect — the server decides what it searches.
+
+## Columns exist before the data does
+
+Configured columns are built at construction, not when rows first arrive, so `column(key)`,
+`activeColumnFilters`, `predicate` and `filterQuery` are all meaningful on the very first render.
+That matters most for a page that **fetches from** `filterQuery`: otherwise its first request — the
+one the user actually waits on — would go out with no conditions at all.
+
+Columns that genuinely depend on data still wait for it: a factory def resolves against the first
+row, and `autoColumns` can't know the keys until one arrives. Both materialize on the first
+`setRows` and pick up any state already applied.
 
 ## Persisting the view
 
@@ -800,20 +904,20 @@ useMountEffect(() => {
   "columnOrder": ["name", "category"],
   "columns": { "category": { "hidden": false, "pinned": false } },
   "sorts": [{ "key": "name", "direction": "asc" }],
-  "filters": { "category": { "selected": ["books"], "matchMode": "any" } },
+  "columnFilters": { "category": { "selected": ["books"], "matchMode": "any" } },
   "search": "ada",
 }
 ```
 
-`filters` is keyed by column key and holds each filter's own `value`. Only **active** filters get an entry, so the map stays small — but the key is always emitted, even empty, exactly as `columns` and `sorts` are. That is deliberate: the map is a _complete picture_, so `applyState` clears any filter it doesn't mention. Restoring a view saved with nothing filtered therefore clears filters applied since, which is what "restore that view" has to mean. (A hand-built partial snapshot that omits `filters` entirely still leaves filters alone.)
+`columnFilters` is keyed by column key and holds each filter's own `value`. Only **active** filters get an entry, so the map stays small — but the key is always emitted, even empty, exactly as `columns` and `sorts` are. That is deliberate: the map is a _complete picture_, so `applyState` clears any filter it doesn't mention. Restoring a view saved with nothing filtered therefore clears filters applied since, which is what "restore that view" has to mean. (A hand-built partial snapshot that omits `columnFilters` entirely still leaves filters alone.)
 
 They are separate top-level keys rather than folded into `columns` because they churn on a completely different cadence — per keystroke, against per-drag — so you can debounce them apart without unpicking one object:
 
 ```ts
 onStateChange: (state) => {
-  const { filters, search, ...arrangement } = state;
+  const { columnFilters, search, ...arrangement } = state;
   saveArrangement(arrangement);
-  saveFiltersDebounced({ filters, search });
+  saveFiltersDebounced({ columnFilters, search });
 };
 ```
 
@@ -878,7 +982,7 @@ any rows at all mean the filter is what emptied it:
 
 There is no `isFiltered` flag on purpose. It would have to pick between "a filter is configured" and
 "a filter is currently excluding rows", and only the second is the question being asked here —
-which `rows.length` already answers exactly, without the ambiguity. (`activeFilterCount` answers the
+which `rows.length` already answers exactly, without the ambiguity. (`activeColumnFilters` answers the
 _first_ question, which is a different job: it is the chip telling a user something is narrowing the
 table, including from a control they cannot see.)
 
@@ -910,20 +1014,20 @@ Drop a `<Table.Resizer>` inside a header cell. It handles the drag (on the corre
 
 `TableModel` state worth reading in an `observer`:
 
-| Member                                  | Description                                |
-| --------------------------------------- | ------------------------------------------ |
-| `rows` / `filteredRows` / `displayRows` | source → filtered → filtered + sorted      |
-| `renderedRows` / `renderedColumns`      | the current window                         |
-| `allColumns` / `orderedColumns`         | every column / the visible ones in order   |
-| `selectedRows` / `selectedIds`          | selection                                  |
-| `sorts`                                 | the sort priority list                     |
-| `predicate` / `activeFilterCount`       | what is narrowing rows, and how much of it |
-| `getState()` / `applyState()`           | snapshot the view, restore it              |
-| `filterQuery`                           | the server half, as plain JSON conditions  |
-| `search`                                | the built-in cross-column search           |
-| `virtualWidth` / `virtualHeight`        | full scroll extent                         |
+| Member                                        | Description                               |
+| --------------------------------------------- | ----------------------------------------- |
+| `rows` / `clientFilteredRows` / `displayRows` | as fetched → client-filtered → + sorted   |
+| `renderedRows` / `renderedColumns`            | the current window                        |
+| `allColumns` / `orderedColumns`               | every column / the visible ones in order  |
+| `selectedRows` / `selectedIds`                | selection                                 |
+| `sorts`                                       | the sort priority list                    |
+| `predicate` / `activeColumnFilters`           | what is narrowing rows, and which columns |
+| `getState()` / `applyState()`                 | snapshot the view, restore it             |
+| `filterQuery`                                 | the server half, as plain JSON conditions |
+| `search`                                      | the built-in cross-column search          |
+| `virtualWidth` / `virtualHeight`              | full scroll extent                        |
 
-Mutations all go through actions: `setRows`, `appendRows`, `setFilter`, `clearFilters`, `setSort`/`setSorts`/`clearSort`, `toggleRow`/`selectAllRows`/`toggleAllRows`/`clearSelection`, `toggleRowExpanded`/`collapseAllRows`, `moveColumn`, `applyState`, `scrollToRow`/`scrollToEnd`.
+Mutations all go through actions: `setRows`, `appendRows`, `clearColumnFilters`, `setSort`/`setSorts`/`clearSort`, `toggleRow`/`selectAllRows`/`toggleAllRows`/`clearSelection`, `toggleRowExpanded`/`collapseAllRows`, `moveColumn`, `applyState`, `scrollToRow`/`scrollToEnd`.
 
 `ColumnModel`: `key`, `title`, `width`, `pinned`, `hidden`, `sortDirection`, `sortIndex`, `sortable`, `resizable`, `getValue(row)`, `setPinned`, `setHidden`, `setManualWidth`, `sortBy`, `clearSort`, `setConfig`, plus the filtering surface — `filter`, `filterable`, `filterOption`, `facets`, `filterMode`, `field`, `filterCondition`, `searchable`, `searchValue(row)`, `clearFilter()`.
 

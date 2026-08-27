@@ -18,10 +18,10 @@ import { isRowSource } from "./util";
  * re-pointed when you hand over a different one, which is what makes a keyed collection work:
  * `rows={store.byOrg({ orgId })}` is a new lazy each time `orgId` changes.
  *
- * Everything else (`columns`, `getRowId`, `onStateChange`, `filter`) is captured at construction;
- * change them through the model (`setColumns`/`addColumn`/`removeColumn`, `setFilter`, `applyState`)
- * rather than by re-rendering. Per-column filters need none of that — they are instances the caller
- * holds and mutates directly, and the model reads through to them.
+ * Everything else (`columns`, `getRowId`, `onStateChange`) is captured at construction; change them
+ * through the model (`setColumns`/`addColumn`/`removeColumn`, `applyState`) rather than by
+ * re-rendering. Per-column filters need none of that — they are instances the caller holds and
+ * mutates directly, and the model reads through to them.
  */
 export const useTable = <T>(config?: TableConfig<T>): TableModel => {
   const tableRef = useRef<TableModel | undefined>(undefined);

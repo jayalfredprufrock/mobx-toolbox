@@ -8,7 +8,7 @@ import {
   reaction,
 } from "mobx";
 import { ColumnModel } from "./column.model";
-import { TableSearch } from "./search.model";
+import { TableSearchFilter } from "./search-filter.model";
 import type {
   ColumnDef,
   ColumnSort,
@@ -16,7 +16,6 @@ import type {
   ColumnState,
   FilterCondition,
   FilterMode,
-  FilterSource,
   RowData,
   RowId,
   RowSource,
@@ -48,15 +47,11 @@ export class TableModel {
   // the next re-derivation instead of being undone by it.
   private suppressedKeys = new Set<string>();
 
-  // client-side filter sources (AND-composed); each exposes a reactive `predicate`. See setFilter.
-  // Page-level dimensions with no column behind them; per-column filters live on the columns.
-  filterSources: FilterSource[] = [];
-
   /**
    * The built-in cross-column text search. Always present and inert until something is typed, so
-   * there is no config to switch it on. See {@link TableSearch}.
+   * there is no config to switch it on. See {@link TableSearchFilter}.
    */
-  readonly search: TableSearch = new TableSearch(this);
+  readonly searchFilter: TableSearchFilter = new TableSearchFilter(this);
 
   scrollX = 0;
   scrollY = 0;
@@ -249,7 +244,7 @@ export class TableModel {
 
   get virtualHeight(): number {
     return (
-      this.filteredRows.length * this.rowHeight +
+      this.clientFilteredRows.length * this.rowHeight +
       this.expandedDisplayIndices.length * this.expansionHeight
     );
   }
@@ -305,19 +300,28 @@ export class TableModel {
   }
 
   /**
-   * Everything narrowing the rows client-side, AND-composed into one predicate: page-level
-   * `filterSources`, every active column filter, and the search. `undefined` when nothing is
-   * active — the pass-through convention `FilterSource` already uses.
+   * Everything narrowing the rows client-side, AND-composed into one predicate: every active
+   * client-mode column filter, and the search. `undefined` when nothing is active.
    *
    * One predicate rather than several is the point: "what is hiding my rows" has a single answer.
-   * (A side effect worth knowing: `TableModel` therefore satisfies `FilterSource` itself.)
    */
-  get predicate(): ((row: RowData) => boolean) | undefined {
+  get filterPredicate(): ((row: RowData) => boolean) | undefined {
     return this.composePredicate();
   }
 
-  get filteredRows(): RowData[] {
-    const predicate = this.predicate;
+  /**
+   * The rows this table narrowed itself: `rows` with {@link predicate} applied.
+   *
+   * "Client" because that is the only half it applies — a server-mode filter was already applied to
+   * `rows` before they arrived, so running it again here would filter twice. The pipeline reads
+   * `rows` -> `clientFilteredRows` -> `displayRows`, each name saying what that step added.
+   *
+   * Narrowing happens *over* `rows` rather than replacing them, which is what lets selection survive
+   * a filter change and what makes `rows.length` vs this length answer "no data" vs "filtered to
+   * nothing".
+   */
+  get clientFilteredRows(): RowData[] {
+    const predicate = this.filterPredicate;
     return predicate ? this.rows.filter(predicate) : this.rows;
   }
 
@@ -327,17 +331,45 @@ export class TableModel {
   }
 
   /**
-   * How many filters are currently narrowing this table: one per active column filter, plus one if
-   * something is typed in the search. Page-level `filterSources` are not counted — the table cannot
-   * tell how many dimensions one of those represents.
+   * The columns whose filter is currently narrowing rows — `.length` is the count a filter chip
+   * shows, and the models themselves are what a rail renders removable chips from.
    *
-   * This is the disclosure for a filter that has no visible control: a hidden column, or a
-   * `filterable: false` one driven from a sidebar.
+   * **Search is not in here.** It holds a row `predicate` rather than a `ColumnFilter`, belongs to
+   * no column, and `clearColumnFilters` does not reset it. The `column` in the name is doing real
+   * work — say what you mean at the call site instead:
+   *
+   * ```ts
+   * table.activeColumnFilters.length + (table.searchFilter.active ? 1 : 0); // everything narrowing
+   * table.activeColumnFilters.some((c) => c.filterMode === "client"); // what Clear would reset
+   * ```
+   *
+   * Includes hidden and `filterable: false` columns — a filter with no visible control is exactly
+   * the one a chip needs to disclose.
    */
-  get activeFilterCount(): number {
-    let count = this.search.active ? 1 : 0;
-    for (const column of this.allColumns) if (column.filter?.active) count++;
-    return count;
+  get activeColumnFilters(): ColumnModel[] {
+    return this.activeColumnFiltersIn();
+  }
+
+  /**
+   * The active column filters this table applies itself — what `clearColumnFilters({ mode:
+   * "client" })` would reset, and so what a facet rail's Clear should gate on.
+   */
+  get activeClientColumnFilters(): ColumnModel[] {
+    return this.activeColumnFiltersIn("client");
+  }
+
+  /** The active column filters the server applied — the ones behind `filterQuery`. */
+  get activeServerColumnFilters(): ColumnModel[] {
+    return this.activeColumnFiltersIn("server");
+  }
+
+  // Each side is its own computed rather than a `.filter()` over the combined list, so reading one
+  // never touches the other side's `active` flags — a server toggle can't invalidate a client-count
+  // chip. The `&&` short-circuit is what does it.
+  private activeColumnFiltersIn(mode?: FilterMode): ColumnModel[] {
+    return this.allColumns.filter(
+      (column) => (!mode || column.filterMode === mode) && column.filter?.active === true,
+    );
   }
 
   /**
@@ -365,7 +397,7 @@ export class TableModel {
       const condition = column.filterCondition;
       if (condition) conditions.push(condition);
     }
-    const search = this.search.condition;
+    const search = this.searchFilter.condition;
     if (search) conditions.push(search);
     return conditions.length > 0 ? conditions : undefined;
   }
@@ -405,7 +437,7 @@ export class TableModel {
   }
 
   get displayRows(): RowData[] {
-    const rows = this.filteredRows;
+    const rows = this.clientFilteredRows;
     // manual mode: sorts is reactive state for the consumer to serialize; rows arrive pre-sorted
     if (this.config?.sortMode === "manual") return rows;
     const active = this.sorts.flatMap(({ key, direction }) => {
@@ -508,7 +540,7 @@ export class TableModel {
    */
   get visibleSelectedRows(): RowData[] {
     const ids = this.rowIds;
-    return this.filteredRows.filter((row) => {
+    return this.clientFilteredRows.filter((row) => {
       const id = ids.get(row);
       return id !== undefined && this.selectedIds.has(id);
     });
@@ -521,7 +553,8 @@ export class TableModel {
    */
   get allRowsSelected(): boolean {
     return (
-      this.filteredRows.length > 0 && this.visibleSelectedRows.length >= this.filteredRows.length
+      this.clientFilteredRows.length > 0 &&
+      this.visibleSelectedRows.length >= this.clientFilteredRows.length
     );
   }
 
@@ -545,6 +578,7 @@ export class TableModel {
       | "nextIdentityId"
       | "identityId"
       | "applyFilterState"
+      | "activeColumnFiltersIn"
     >(this, {
       rows: observable.ref,
       columns: observable,
@@ -552,9 +586,8 @@ export class TableModel {
       configuredDefs: observable.ref,
       runtimeDefs: observable.ref,
       suppressedKeys: observable.ref,
-      filterSources: observable.ref,
       // Its own observable object, held by reference — mobx must not convert it.
-      search: false,
+      searchFilter: false,
       scrollX: observable,
       scrollY: observable,
       height: observable,
@@ -589,10 +622,13 @@ export class TableModel {
       nextIdentityId: false,
       identityId: false,
 
-      predicate: computed,
-      filteredRows: computed,
+      filterPredicate: computed,
+      clientFilteredRows: computed,
       searchableColumns: computed,
-      activeFilterCount: computed,
+      activeColumnFilters: computed,
+      activeClientColumnFilters: computed,
+      activeServerColumnFilters: computed,
+      activeColumnFiltersIn: false,
       filterQuery: computed,
       loading: computed,
       refreshing: computed,
@@ -615,8 +651,7 @@ export class TableModel {
 
       applyState: action.bound,
       applyFilterState: action,
-      setFilter: action.bound,
-      clearFilters: action.bound,
+      clearColumnFilters: action.bound,
       syncColumns: action,
       setColumns: action.bound,
       addColumn: action.bound,
@@ -642,8 +677,19 @@ export class TableModel {
       toggleAllRows: action.bound,
     });
 
-    if (config?.filter) {
-      this.setFilter(config.filter);
+    // Configured columns don't depend on data, so build them now rather than waiting for rows.
+    //
+    // Without this there is a window where `columns` is empty: the rows reaction fires immediately
+    // but its handler skips an `undefined` value (nothing has arrived yet is not an empty dataset),
+    // and the columns reaction isn't immediate — so a `RowSource` that starts empty leaves
+    // `column()`, `activeColumnFilters` and `filterQuery` blank until the first response lands.
+    // That inverts the dependency for a page that *fetches from* `filterQuery`: its first request,
+    // the one the user actually waits on, would go out with no conditions at all.
+    //
+    // Data-dependent columns are unaffected — `syncColumns` reads `rows.at(0)` only to resolve
+    // factory defs, and `autoColumns` goes on waiting for a row exactly as before.
+    if (this.configuredDefs) {
+      this.syncColumns();
     }
     // the getter and row-source forms are applied by their reaction in activate(), below
     if (Array.isArray(config?.rows)) {
@@ -751,7 +797,7 @@ export class TableModel {
   getState(): TableState {
     const columns: Record<string, ColumnState> = {};
     for (const col of this.allColumns) {
-      const entry: ColumnState = { hidden: col.hidden, pinned: col.pinned || false };
+      const entry: ColumnState = { hidden: col.hidden, pinned: col.pinned };
       if (col.manualWidth !== undefined) entry.width = col.manualWidth;
       columns[col.key] = entry;
     }
@@ -765,15 +811,15 @@ export class TableModel {
     // empty, exactly as `columns` and `sorts` are. That is what lets restoring a view saved with
     // nothing filtered actually clear filters applied since; omit it and a snapshot could only ever
     // add them.
-    const filters: Record<string, unknown> = {};
+    const columnFilters: Record<string, unknown> = {};
     for (const col of this.allColumns) {
       const filter = col.filter;
       if (filter?.active && filter.value !== undefined && filter.setValue) {
-        filters[col.key] = filter.value;
+        columnFilters[col.key] = filter.value;
       }
     }
-    state.filters = filters;
-    state.search = this.search.text;
+    state.columnFilters = columnFilters;
+    state.search = this.searchFilter.text;
 
     return state;
   }
@@ -798,11 +844,11 @@ export class TableModel {
     // Present means complete: a filter the map doesn't mention is cleared, which is what makes
     // getState -> applyState exact. Keys with no column yet land when one appears, via
     // applyColumnState — same as column state applied before the first setRows.
-    if (state.filters) {
+    if (state.columnFilters) {
       for (const col of this.columns.values()) this.applyFilterState(col);
     }
     if (state.search !== undefined) {
-      this.search.setText(state.search);
+      this.searchFilter.setText(state.search);
     }
   }
 
@@ -811,22 +857,13 @@ export class TableModel {
   // deliberately does not — a later user change to hidden/pinned/width outranks the snapshot,
   // whereas re-applying a filter snapshot is the whole point of applying one.
   private applyFilterState(col: ColumnModel): void {
-    const filters = this.appliedState?.filters;
-    if (!filters) return;
+    const columnFilters = this.appliedState?.columnFilters;
+    if (!columnFilters) return;
     const filter = col.filter;
     if (!filter?.setValue) return;
-    const value = filters[col.key];
+    const value = columnFilters[col.key];
     if (value === undefined) filter.clear();
     else filter.setValue(value);
-  }
-
-  /**
-   * Replace the *page-level* filter source(s) — the row-level escape hatch for dimensions with no
-   * column behind them. Pass `undefined` to clear. Per-column filters are attached to their column
-   * defs instead and are untouched by this.
-   */
-  setFilter(filter: FilterSource | FilterSource[] | undefined): void {
-    this.filterSources = filter ? [filter].flat() : [];
   }
 
   /** The column under this key, if it exists. */
@@ -841,19 +878,19 @@ export class TableModel {
    * Everything else stays in, including the search and page-level sources: a row those already
    * exclude must not be counted, or the tally promises rows the selection could never surface.
    */
-  predicateExcluding(key: string): ((row: RowData) => boolean) | undefined {
+  filterPredicateExcluding(key: string): ((row: RowData) => boolean) | undefined {
     return this.composePredicate(key);
   }
 
   /**
    * Reset every column filter, or only those on one side of the client/server split
-   * (`clearFilters({ mode: "client" })`).
+   * (`clearColumnFilters({ mode: "client" })`).
    *
-   * Deliberately leaves `search` alone (wiping text the user typed as a side effect is more
-   * surprising than leaving it — clear it explicitly with `search.clear()`), and *cannot* touch
-   * `filterSources`, since `FilterSource` is only a predicate and has nothing to reset.
+   * Leaves the search filter alone — it is the other kind of filter, and the `column` in this name
+   * says so. Wiping text the user typed as a side effect would be surprising anyway; clear it
+   * explicitly with `searchFilter.clear()`.
    */
-  clearFilters(opts?: { mode?: FilterMode }): void {
+  clearColumnFilters(opts?: { mode?: FilterMode }): void {
     const mode = opts?.mode;
     for (const column of this.allColumns) {
       if (mode && column.filterMode !== mode) continue;
@@ -862,12 +899,10 @@ export class TableModel {
   }
 
   // Reading each filter's `active` here tracks it; the returned closure reads the filter's own
-  // state when it is invoked inside `filteredRows`, which is tracked there. So a change that leaves
+  // state when it is invoked inside `clientFilteredRows`, which is tracked there. So a change that leaves
   // `active` alone — swapping one selected value for another — still invalidates the rows.
   private composePredicate(excludeKey?: string): ((row: RowData) => boolean) | undefined {
     const parts: ((row: RowData) => boolean)[] = [];
-
-    for (const source of this.filterSources) if (source.predicate) parts.push(source.predicate);
 
     for (const column of this.allColumns) {
       if (column.key === excludeKey) continue;
@@ -878,7 +913,7 @@ export class TableModel {
       if (filter?.active) parts.push((row) => filter.matches(column.getValue(row)));
     }
 
-    const search = this.search.predicate;
+    const search = this.searchFilter.predicate;
     if (search) parts.push(search);
 
     if (parts.length === 0) return undefined;
@@ -934,7 +969,10 @@ export class TableModel {
 
     this.syncColumns();
 
-    this.columns.get(key)?.setHidden(false);
+    // adding a column means showing it — unless its def says otherwise, which is how a data-only
+    // column survives being added at runtime
+    const added = this.columns.get(key);
+    if (added && added.config.hidden !== true) added.setHidden(false);
     if (index !== undefined) this.moveColumn(key, index);
   }
 
@@ -1081,7 +1119,7 @@ export class TableModel {
 
   selectAllRows(): void {
     this.selectedIds.clear();
-    for (const row of this.filteredRows) {
+    for (const row of this.clientFilteredRows) {
       const id = this.rowIds.get(row);
       if (id !== undefined) this.selectedIds.add(id);
     }
@@ -1259,9 +1297,13 @@ export class TableModel {
     this.applyFilterState(col);
     const state = this.appliedState?.columns?.[col.key];
     if (!state) return;
-    col.setHidden(state.hidden);
-    col.setPinned(state.pinned);
-    col.setManualWidth(state.width);
+    // Structure outranks a saved view: a column that declares its visibility, pin or width locked
+    // is not moved by a snapshot written before that was true. `setHidden`/`setPinned`/
+    // `setManualWidth` stay ungated, so a page's own layout logic is never denied — only a stale
+    // snapshot is.
+    if (col.hideable) col.setHidden(state.hidden);
+    if (col.pinnable) col.setPinned(state.pinned);
+    if (col.resizable) col.setManualWidth(state.width);
   }
 
   // snapshot order first (unknown keys dropped), then current columns the snapshot doesn't know

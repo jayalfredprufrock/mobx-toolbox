@@ -4,13 +4,18 @@ import type { TableModel } from "./table.model";
 import type { FilterCondition, FilterMode, RowData } from "./table.types";
 
 /**
- * The table's built-in cross-column text search.
+ * The table's built-in search filter: one query matched across many columns.
  *
- * Table-owned rather than a `ColumnFilter`, and that is not an inconsistency: matching one query
+ * The second of the table's two kinds of filter, and the reason there are two: matching one query
  * against *many* columns needs every column's accessor at once, which is the one thing a
- * `matches(value)` predicate structurally cannot do. Everything else about it lines up — it
- * contributes to `table.predicate` exactly like a column filter, and counts toward
- * `activeFilterCount`.
+ * `matches(value)` predicate structurally cannot do. So it holds a row `predicate` where a
+ * `ColumnFilter` holds `matches`, and having no column of its own is what the `column` qualifier
+ * excludes it from — `activeColumnFilters`, `clearColumnFilters`, `TableState.columnFilters`.
+ *
+ * It joins `filterPredicate` and `filterQuery` like any column filter, and gets its own
+ * `TableState.search` key.
+ *
+
  *
  * Which columns it reads is per-column config (`searchable`), including hidden ones — see
  * {@link BaseColumnDef.searchable}. Comparison goes through the same `textMatches` a `TextFilter`
@@ -19,7 +24,7 @@ import type { FilterCondition, FilterMode, RowData } from "./table.types";
  * Debouncing is deliberately not here. Like `onStateChange`, the cadence belongs to whoever owns
  * the input: a client-side search over rows already in memory usually wants none at all.
  */
-export class TableSearch {
+export class TableSearchFilter {
   readonly table: TableModel;
 
   /** The query. Not trimmed — a trailing space is a legitimate part of a "contains" query. */
@@ -79,7 +84,7 @@ export class TableSearch {
   }
 
   /**
-   * Clear the query. Note `TableModel.clearFilters()` does *not* call this — wiping text the user
+   * Clear the query. Note `TableModel.clearColumnFilters()` does *not* call this — wiping text the user
    * typed as a side effect of "clear filters" is more surprising than leaving it.
    */
   clear(): void {

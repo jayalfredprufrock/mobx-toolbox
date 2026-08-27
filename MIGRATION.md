@@ -31,6 +31,62 @@ these are right.
 
 ## Breaking changes
 
+### table — `predicate` → `filterPredicate`, `search` → `searchFilter`
+
+⚠️ Two renames on `TableModel`, so every member reads as part of one vocabulary:
+
+| before                          | after                                 |
+| ------------------------------- | ------------------------------------- |
+| `table.predicate`               | `table.filterPredicate`               |
+| `table.predicateExcluding(key)` | `table.filterPredicateExcluding(key)` |
+| `table.search`                  | `table.searchFilter`                  |
+| `TableSearch` (the class)       | `TableSearchFilter`                   |
+
+The naming now says there are **two kinds of filter** — column filters and the search filter — with
+the unqualified word covering both. `filterPredicate` composes them; anything spelled `column…`
+(`activeColumnFilters`, `clearColumnFilters`, `TableState.columnFilters`) is the narrower half. That
+makes `clearColumnFilters` leaving the search alone follow from its name instead of being an
+exception to remember.
+
+`TableConfig.search` and `TableState.search` keep their names: those hold the search's _config_ and
+its _query text_, not the filter object.
+
+### table — `config.filter` / `setFilter` / `FilterSource` are gone
+
+⚠️ **The page-level filter-source API has been removed.** A `FilterSource` was a reactive object
+holding a row `predicate`, passed as `config.filter` and replaced with `setFilter`. Everything it did
+is now a column:
+
+```ts
+// before
+useTable({ rows, filter: hideCompletedStore });
+
+// after — a column that is never rendered and cannot be revealed
+{
+  key: "_visible",
+  value: (row) => hideCompletedStore.on ? !row.done : true,
+  filter: () => new SetFilter({ selected: [true] }),
+  hidden: true,
+  hideable: false,
+  filterable: false,
+  searchable: false,
+  sortable: false,
+}
+```
+
+A column's `value` fn receives the whole row **and is fully reactive** — it is called inside the
+computeds that filter, sort and build facets, so any observable it reads is tracked. That is what
+made sources redundant: external state can drive a column predicate with no second concept.
+
+What you gain by the move: such a filter is now counted by `activeColumnFilters`, reset by
+`clearColumnFilters`, persisted in `TableState.columnFilters`, and can be server-mode. A
+`FilterSource` was none of those, which is why the docs carried an "except `filterSources`" caveat on
+each.
+
+What you must still avoid is filtering **upstream** — `rows: () => all.filter(pred)` — because
+`setRows` intersects selection against the smaller set and drops it permanently; the table cannot
+tell "filtered out" from "deleted".
+
 ### filter — `RangeFilter` is now `DateFilter`, plus two new filter types
 
 ⚠️ **`RangeFilter` is gone.** It was only ever a date range wearing a generic name, so it has been
@@ -64,7 +120,7 @@ types enforce it. Changing the operator alone can leave the filter inactive by d
 Interval bounds are **independently optional**, so `{ min: 60 }` is "60 and up". Drive a two-input
 range control straight off `min` / `max` / `setMin` / `setMax` — each setter leaves the other bound
 alone, so there is no need to mirror the pair into component state, and therefore nothing to go stale
-when something else calls `clearFilters()`:
+when something else calls `clearColumnFilters()`:
 
 ```tsx
 <input value={filter.min ?? ""} onChange={(e) => filter.setMin(parse(e.target.value))} />
@@ -578,6 +634,55 @@ are anchored regardless of order.
 
 ## Worth adopting (Phase 2 — propose first)
 
+### table — `ColumnPin`, and `pinned` is never `undefined`
+
+A named `ColumnPin = false | "left" | "right"` replaces four identical inline unions, and
+`ColumnModel.pinned` is now typed and initialised as that — an unpinned column is `false`, never
+`undefined`. Previously the constructor overwrote the `false` default with `config.pinned`, so a def
+that omitted `pinned` left the field `undefined` while the type said otherwise, and
+`column.pinned === false` silently never matched.
+
+⚠️ **`setPinned` no longer accepts `undefined`** — pass `false` to unpin. Nothing in the package did,
+and every literal call site is unaffected; a caller holding a `ColumnPin | undefined` now gets a
+compile error and has to decide, rather than silently unpinning.
+
+Nothing changes at runtime: every read already used `=== "left"` / `=== "right"` / truthiness, and
+`getState()` was normalising with `|| false`, which is now redundant and gone.
+
+### table — declarative column visibility
+
+```ts
+{ key: "internalId", hidden: true, hideable: false }   // never shown, never offered
+{ key: "name", hideable: false }                        // always shown, never offered
+{ key: "actions", pinnable: false }
+```
+
+`hidden` is new as a **def** option — previously visibility could only be set imperatively with
+`setHidden` after construction. `hideable` and `pinnable` join `sortable` / `filterable` /
+`resizable` as advisory flags for pickers and header UIs; the setters are not gated, so a page's own
+responsive hiding still works.
+
+They do enforce one thing: **a persisted snapshot cannot override them.** `applyState` now skips
+`hidden` for a non-`hideable` column, `pinned` for a non-`pinnable` one, and `width` for a
+non-`resizable` one. If you were relying on a saved view restoring a width to a column you have since
+marked `resizable: false`, that no longer happens — which is the point.
+
+Read `hideable: false` as locking `hidden` where it starts, not "cannot be hidden". Paired with
+`hidden: true` it declares a column that exists only to carry a value or a filter:
+
+```ts
+{
+  key: "_invalid",
+  value: (t) => t.start > t.end,   // whole row, and reactive — reads any observable
+  filter: () => new SetFilter({ selected: [true] }),
+  hidden: true, hideable: false, filterable: false, searchable: false, sortable: false,
+}
+```
+
+That is the supported way to filter on something that isn't one field. Filtering _upstream_ instead
+(`rows: () => all.filter(pred)`) drops selection permanently, because `setRows` intersects against
+the smaller set and the table cannot tell "filtered out" from "deleted".
+
 ### `ColumnModel.setConfig` — change one column's options in place
 
 ```ts
@@ -607,9 +712,7 @@ this — they are called fresh each time, so closing them over an observable alr
 
 ### Column filtering, and the new `filter` subpath
 
-**This is additive — nothing breaks.** `config.filter` / `setFilter` / `FilterSource` are unchanged
-and still work. But if you have a filter set declared in parallel with your columns, this is what
-replaces it.
+**If you have a filter set declared in parallel with your columns, this is what replaces it.**
 
 The new `@jayalfredprufrock/mobx-toolbox/filter` module exports `SetFilter`, `DateFilter`,
 `TextFilter`, `BLANK`, `isBlank` and `facetValues`. A filter is a predicate over one _already
@@ -639,16 +742,16 @@ const table = useTable({ rows, columns });
 
 What you get on the model:
 
-| Member                            | Description                                                |
-| --------------------------------- | ---------------------------------------------------------- |
-| `table.predicate`                 | everything narrowing rows, composed; `undefined` = nothing |
-| `table.activeFilterCount`         | active column filters + the search                         |
-| `table.clearFilters()`            | reset every column filter                                  |
-| `table.search`                    | built-in cross-column text search (`.text`, `.setText`)    |
-| `table.column(key)`               | the `ColumnModel` under a key                              |
-| `column.filter` / `column.facets` | the filter, and its value domain to render                 |
-| `column.filterable`               | advisory header-UI flag, exactly like `sortable`           |
-| `filter.multiValue`               | declares array values, so a UI can offer any/all           |
+| Member                             | Description                                                |
+| ---------------------------------- | ---------------------------------------------------------- |
+| `table.filterPredicate`            | everything narrowing rows, composed; `undefined` = nothing |
+| `table.activeColumnFilters(opts?)` | active filters; `{ mode }` counts one side of the split    |
+| `table.clearColumnFilters()`       | reset every column filter                                  |
+| `table.searchFilter`               | the search filter — one query across many columns          |
+| `table.column(key)`                | the `ColumnModel` under a key                              |
+| `column.filter` / `column.facets`  | the filter, and its value domain to render                 |
+| `column.filterable`                | advisory header-UI flag, exactly like `sortable`           |
+| `filter.multiValue`                | declares array values, so a UI can offer any/all           |
 
 Points worth checking by hand as you port:
 
@@ -658,6 +761,36 @@ Points worth checking by hand as you port:
   defs — a stale selection after navigating away and back. Pass an instance only when you want that
   sharing or need a direct reference.
 
+- ⚠️ **`activeFilterCount` and `clearFilters` are now `activeColumnFilters` and
+  `clearColumnFilters`**, and the count is a getter returning `ColumnModel[]` rather than a number.
+  The `column` qualifier is load-bearing: **search is not a column filter**, and neither are
+  it holds a row `predicate`, belongs to no column, and is untouched by `clearColumnFilters`. Say
+  what you mean at the call site:
+
+  ```ts
+  table.activeColumnFilters.length + (table.searchFilter.active ? 1 : 0); // everything narrowing
+  table.activeClientColumnFilters.length > 0; // what Clear resets
+  ```
+
+  `activeClientColumnFilters` and `activeServerColumnFilters` are there for the two common splits.
+  ic — `predicate` and
+  `filterQuery` are narrowed by the search too, so a `column` prefix would be a lie there.
+
+- ⚠️ **`filteredRows` is now `clientFilteredRows`.** Same value, clearer name: it is the half this
+  table applies, since a server-mode filter was already applied to `rows` before they arrived. The
+  pipeline reads `rows` → `clientFilteredRows` → `displayRows`.
+
+  ⚠️ Previously the count _included_ search, so anything gating a "clear filters" control on it was
+  over-reporting — showing for a search-only state that `clearFilters` would not then clear.
+
+- ⚠️ **`TableState.filters` is now `TableState.columnFilters`**, for the same reason. Snapshots
+  written before this release keep the old key and will be ignored; there is no automatic migration,
+  so either rename the key on read or accept one reset.
+- **Configured columns now exist at construction**, so `column(key)`, `activeColumnFilters`,
+  `predicate` and `filterQuery` are meaningful before the first response. Previously a `RowSource`
+  that started empty left the table with no columns until data landed, which meant a page fetching
+  _from_ `filterQuery` sent its first request with no conditions. Factory defs and `autoColumns`
+  still wait for a row, as they must.
 - **Facet counts mean different things per match mode, and the filter decides which.** Under `"any"`
   a count is the conventional "rows carrying this value". Under `"all"` each pick narrows, so it is
   the size of the intersection with what is already picked — exactly predictive, tick it and you get
@@ -677,9 +810,9 @@ Points worth checking by hand as you port:
   filter UI, delete it. `facet.blank` is the render hint for the "(Blank)" label.
 - ⚠️ **A hidden or `filterable: false` column still filters.** That is deliberate — it is how a
   sidebar-driven filter works — but if you were relying on hiding a column to disable its filter,
-  it no longer does. Use `activeFilterCount` to disclose it.
-- ⚠️ **`clearFilters()` does not clear the search**, and cannot clear `filterSources`. Call
-  `search.clear()` explicitly if you want both.
+  it no longer does. Use `activeColumnFilters` to disclose it.
+- ⚠️ **`clearColumnFilters()` does not clear the search.** Call `search.clear()` explicitly if you
+  want both.
 - **Search reads hidden columns** by design (`searchable` describes the data, not visibility). Set
   `searchable: false` per column to opt out, or `searchable: (row) => string` to search a projection
   — e.g. a date column as formatted text rather than epoch millis.
@@ -721,7 +854,7 @@ filters over `rows` without replacing them.
 - ⚠️ **A server-mode column's facets never walk the rows and never carry counts.** Both would be
   computed over rows that filter already narrowed — the list would collapse to whatever is selected
   and could never be widened. Declare `options` on the filter; without one, the facet list is empty.
-- **`clearFilters({ mode: "client" })`** resets one side only.
+- **`clearColumnFilters({ mode: "client" })`** resets one side only.
 - Debouncing and cursor invalidation on `filterQuery` change are yours.
 
 **Attach API client methods directly.** Config functions pass their signatures through, so a wrapper
@@ -1052,7 +1185,7 @@ every render retriggering everything reading it.
   replaces both, including for computed columns that never had a path.
 - A `renderFilterOption` prop plus the `column.key === "..."` switch inside it — that is
   `filterOption` on the column def now.
-- Hand-rolled "contains" search predicates across columns — `table.search` covers them.
+- Hand-rolled "contains" search predicates across columns — `table.searchFilter` covers them.
 - Separate blank/"(No value)" filter state — `BLANK` is an ordinary selected value.
 
 - `Map`/`WeakMap` model caches, and any `instantiate`-like helper of your own.

@@ -38,40 +38,40 @@ const makeTable = (columns: ColumnsDef<Person>): TableModel => {
 describe("built-in search", () => {
   test("is inert until something is typed", () => {
     const table = makeTable(["first", "last"]);
-    expect(table.search.active).toBe(false);
-    expect(table.search.predicate).toBeUndefined();
-    expect(table.predicate).toBeUndefined();
-    expect(table.activeFilterCount).toBe(0);
+    expect(table.searchFilter.active).toBe(false);
+    expect(table.searchFilter.predicate).toBeUndefined();
+    expect(table.filterPredicate).toBeUndefined();
+    expect(table.activeColumnFilters.length).toBe(0);
   });
 
   test("ORs across columns, unlike the AND across filters", () => {
     const table = makeTable(["first", "last"]);
 
-    table.search.setText("a");
-    expect(ids(table.filteredRows)).toEqual([1, 2, 3]);
+    table.searchFilter.setText("a");
+    expect(ids(table.clientFilteredRows)).toEqual([1, 2, 3]);
 
-    table.search.setText("turing");
-    expect(ids(table.filteredRows)).toEqual([2]);
+    table.searchFilter.setText("turing");
+    expect(ids(table.clientFilteredRows)).toEqual([2]);
   });
 
   test("matches case-insensitively", () => {
     const table = makeTable(["first"]);
-    table.search.setText("GRA");
-    expect(ids(table.filteredRows)).toEqual([3]);
+    table.searchFilter.setText("GRA");
+    expect(ids(table.clientFilteredRows)).toEqual([3]);
   });
 
   test("reads a computed column", () => {
     const table = makeTable([{ key: "name", value: (p) => `${p.first} ${p.last}` }]);
-    table.search.setText("ada love");
-    expect(ids(table.filteredRows)).toEqual([1]);
+    table.searchFilter.setText("ada love");
+    expect(ids(table.clientFilteredRows)).toEqual([1]);
   });
 
   test("reads hidden columns — searchable describes the data, not visibility", () => {
     const table = makeTable(["first", "secret"]);
     table.column("secret")?.setHidden(true);
 
-    table.search.setText("beta");
-    expect(ids(table.filteredRows)).toEqual([2]);
+    table.searchFilter.setText("beta");
+    expect(ids(table.clientFilteredRows)).toEqual([2]);
   });
 
   test("searchable: false takes a column out", () => {
@@ -79,8 +79,8 @@ describe("built-in search", () => {
     expect(table.column("secret")?.searchable).toBe(false);
     expect(table.searchableColumns.map((c) => c.key)).toEqual(["first"]);
 
-    table.search.setText("alpha");
-    expect(table.filteredRows).toEqual([]);
+    table.searchFilter.setText("alpha");
+    expect(table.clientFilteredRows).toEqual([]);
   });
 
   test("the fn variant supplies a text projection", () => {
@@ -90,12 +90,12 @@ describe("built-in search", () => {
       { key: "joined", searchable: (p) => p.joined.toISOString().slice(0, 7) },
     ]);
 
-    table.search.setText("2021-07");
-    expect(ids(table.filteredRows)).toEqual([2]);
+    table.searchFilter.setText("2021-07");
+    expect(ids(table.clientFilteredRows)).toEqual([2]);
 
     // and the raw value is genuinely not what is matched
-    table.search.setText(String(people[1]?.joined.getTime()));
-    expect(table.filteredRows).toEqual([]);
+    table.searchFilter.setText(String(people[1]?.joined.getTime()));
+    expect(table.clientFilteredRows).toEqual([]);
   });
 
   test("a selection column is never searched", () => {
@@ -105,38 +105,40 @@ describe("built-in search", () => {
 
   test("no searchable columns means no predicate", () => {
     const table = makeTable([{ key: "first", searchable: false }]);
-    table.search.setText("ada");
-    expect(table.search.predicate).toBeUndefined();
-    expect(table.predicate).toBeUndefined();
+    table.searchFilter.setText("ada");
+    expect(table.searchFilter.predicate).toBeUndefined();
+    expect(table.filterPredicate).toBeUndefined();
   });
 
   test("ANDs with column filters", () => {
     const filter = new SetFilter({ selected: ["alpha"] });
     const table = makeTable(["first", { key: "secret", filter, searchable: false }]);
 
-    table.search.setText("hopper");
-    expect(ids(table.filteredRows)).toEqual([]);
+    table.searchFilter.setText("hopper");
+    expect(ids(table.clientFilteredRows)).toEqual([]);
 
-    table.search.setText("grace");
-    expect(ids(table.filteredRows)).toEqual([3]);
-    expect(table.activeFilterCount).toBe(2);
+    table.searchFilter.setText("grace");
+    expect(ids(table.clientFilteredRows)).toEqual([3]);
+    // one column filter; the search narrows too but is a source, not a column filter
+    expect(table.activeColumnFilters.length).toBe(1);
   });
 
-  test("counts toward activeFilterCount but is not cleared by clearFilters", () => {
+  test("is the other kind of filter, so column-qualified members leave it out", () => {
+    // One query across many columns, so it has no column of its own — which is exactly what the
+    // `column` qualifier excludes. Both names say so without needing a caveat.
     const filter = new SetFilter({ selected: ["alpha"] });
     const table = makeTable(["first", { key: "secret", filter }]);
 
-    table.search.setText("ada");
-    expect(table.activeFilterCount).toBe(2);
+    table.searchFilter.setText("ada");
+    expect(table.activeColumnFilters.map((c) => c.key)).toEqual(["secret"]);
+    // everything narrowing the table, which is what a chip shows
+    expect(table.activeColumnFilters.length + (table.searchFilter.active ? 1 : 0)).toBe(2);
 
-    table.clearFilters();
+    table.clearColumnFilters();
     // wiping text the user typed as a side effect is more surprising than leaving it
-    expect(table.search.text).toBe("ada");
-    expect(table.activeFilterCount).toBe(1);
+    expect(table.searchFilter.text).toBe("ada");
+    expect(table.activeColumnFilters).toEqual([]);
     expect(filter.active).toBe(false);
-
-    table.search.clear();
-    expect(table.activeFilterCount).toBe(0);
   });
 
   test("narrows the counted-facet tally like any other filter", () => {
@@ -148,7 +150,7 @@ describe("built-in search", () => {
       { value: "beta", count: 1 },
     ]);
 
-    table.search.setText("ada");
+    table.searchFilter.setText("ada");
     expect(table.column("secret")?.facets).toEqual([
       { value: "alpha", count: 1 },
       // "beta" survives at zero so it can still be ticked
@@ -159,21 +161,21 @@ describe("built-in search", () => {
   test("is reactive", () => {
     const table = makeTable(["first", "last"]);
     const seen: number[][] = [];
-    observe(() => seen.push(ids(table.filteredRows)));
+    observe(() => seen.push(ids(table.clientFilteredRows)));
     expect(seen).toEqual([[1, 2, 3]]);
 
-    table.search.setText("a");
+    table.searchFilter.setText("a");
     expect(seen.at(-1)).toEqual([1, 2, 3]);
 
-    table.search.setText("hopper");
+    table.searchFilter.setText("hopper");
     expect(seen.at(-1)).toEqual([3]);
   });
 
   test("does not trim — a trailing space is part of the query", () => {
     const table = makeTable([{ key: "name", value: (p) => `${p.first} ${p.last}` }]);
-    table.search.setText("ada ");
-    expect(ids(table.filteredRows)).toEqual([1]);
-    table.search.setText("grace  ");
-    expect(table.filteredRows).toEqual([]);
+    table.searchFilter.setText("ada ");
+    expect(ids(table.clientFilteredRows)).toEqual([1]);
+    table.searchFilter.setText("grace  ");
+    expect(table.clientFilteredRows).toEqual([]);
   });
 });

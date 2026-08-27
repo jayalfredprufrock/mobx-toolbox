@@ -222,7 +222,7 @@ describe("feeding a table from a parameterised collection", () => {
     const table = new TableModel({ rows: lazy }); // deliberately no getRowId
     table.setWidth(600);
     table.setHeight(200);
-    const stop = autorun(() => void table.filteredRows.length);
+    const stop = autorun(() => void table.clientFilteredRows.length);
     await tick();
 
     table.selectedIds.add(table.rowIds.get(table.rows[0]!)!);
@@ -254,7 +254,7 @@ describe("feeding a table from a parameterised collection", () => {
     const table = new TableModel({ rows: lazy });
     table.setWidth(600);
     table.setHeight(200);
-    const stop = autorun(() => void table.filteredRows.length);
+    const stop = autorun(() => void table.clientFilteredRows.length);
     await tick();
 
     table.selectedIds.add(table.rowIds.get(table.rows[0]!)!);
@@ -286,7 +286,7 @@ describe("feeding a table from a parameterised collection", () => {
     const table = new TableModel({ rows: lazy, getRowId: (r) => (r as { id: number }).id });
     table.setWidth(600);
     table.setHeight(200);
-    const stop = autorun(() => void table.filteredRows.length);
+    const stop = autorun(() => void table.clientFilteredRows.length);
     await tick();
 
     table.selectedIds.add(1);
@@ -304,7 +304,7 @@ describe("feeding a table from a parameterised collection", () => {
     const table = new TableModel({ rows: source });
     table.setWidth(600);
     table.setHeight(120);
-    const stop = autorun(() => void table.filteredRows.length);
+    const stop = autorun(() => void table.clientFilteredRows.length);
     await tick();
 
     const before = table.rows;

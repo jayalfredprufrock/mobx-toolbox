@@ -102,7 +102,7 @@ describe("ColumnModel.setConfig", () => {
     column?.setConfig({ title: "Name" });
     expect(column?.filter).toBe(filter);
     expect(filter.has("a")).toBe(true);
-    expect(table.filteredRows.map((r: RowData) => r.id)).toEqual([2]);
+    expect(table.clientFilteredRows.map((r: RowData) => r.id)).toEqual([2]);
   });
 
   test("patching value reaches sorting and filtering", () => {

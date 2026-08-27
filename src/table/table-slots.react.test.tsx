@@ -3,6 +3,7 @@ import { act } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vite-plus/test";
 import { lazyObservableArray } from "../lazy-observable/lazy-observable";
+import { SetFilter } from "../filter/set-filter.model";
 import { Table } from "./components";
 import { TableModel } from "./table.model";
 import type { RowData } from "./table.types";
@@ -176,7 +177,13 @@ describe("Table.Empty and Table.Loading gate themselves", () => {
     // gating is the library's; wording stays the consumer's, including the distinction the
     // gate cannot make — filtered-to-nothing versus nothing at all
     const table = sized({ rows: [{ id: 1, name: "alpha" }] });
-    table.setFilter({ predicate: () => false });
+    table.addColumn({
+      key: "_none",
+      value: () => "present",
+      filter: new SetFilter({ selected: ["absent"] }),
+      hidden: true,
+      hideable: false,
+    });
 
     const container = await mount(
       <Table.Root table={table}>

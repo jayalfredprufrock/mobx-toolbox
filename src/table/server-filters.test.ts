@@ -1,4 +1,4 @@
-import { autorun, comparer, reaction } from "mobx";
+import { autorun, comparer, observable, reaction, runInAction } from "mobx";
 import { afterEach, describe, expect, test } from "vite-plus/test";
 import { DateFilter } from "../filter/date-filter.model";
 import { SetFilter } from "../filter/set-filter.model";
@@ -34,6 +34,12 @@ const logs: Log[] = [
 
 const ids = (rows: RowData[]): number[] => rows.map((r) => r.id as number);
 
+const filterOfMessage = (table: TableModel): TextFilter => {
+  const filter = table.column("message")?.filter;
+  if (!(filter instanceof TextFilter)) throw new Error("no TextFilter on message");
+  return filter;
+};
+
 const makeTable = (
   columns: ColumnsDef<Log>,
   config: Partial<TableConfig<Log>> = {},
@@ -61,8 +67,8 @@ describe("server-mode filters", () => {
 
     filter.toggle("error");
     // the rows arrived already filtered; running it again here would filter twice
-    expect(ids(table.filteredRows)).toEqual([1, 2, 3, 4]);
-    expect(table.predicate).toBeUndefined();
+    expect(ids(table.clientFilteredRows)).toEqual([1, 2, 3, 4]);
+    expect(table.filterPredicate).toBeUndefined();
   });
 
   test("it serializes into filterQuery instead", () => {
@@ -87,11 +93,11 @@ describe("server-mode filters", () => {
     message.setText("boom");
 
     // only the client filter narrows here
-    expect(ids(table.filteredRows)).toEqual([2, 4]);
+    expect(ids(table.clientFilteredRows)).toEqual([2, 4]);
     // only the server filter is serialized
     expect(table.filterQuery).toEqual([{ field: "level", op: "in", value: ["error"] }]);
     // but both count as narrowing the table
-    expect(table.activeFilterCount).toBe(2);
+    expect(table.activeColumnFilters.length).toBe(2);
   });
 
   test("field overrides the wire name; key is the default", () => {
@@ -175,7 +181,7 @@ describe("server-mode filters", () => {
     table.setRows(logs.filter((l) => l.level === "error"));
 
     message.setText("again");
-    expect(ids(table.filteredRows)).toEqual([4]);
+    expect(ids(table.clientFilteredRows)).toEqual([4]);
   });
 });
 
@@ -249,7 +255,7 @@ describe("server-mode facets", () => {
 // clearing, and server search
 // ---------------------------------------------------------------------------
 
-describe("clearFilters by mode", () => {
+describe("clearColumnFilters by mode", () => {
   const build = () => {
     const server = new SetFilter({ options: ["error"], selected: ["error"] });
     const client = new TextFilter({ text: "boom" });
@@ -262,14 +268,14 @@ describe("clearFilters by mode", () => {
 
   test("no argument clears both sides", () => {
     const { table, server, client } = build();
-    table.clearFilters();
+    table.clearColumnFilters();
     expect(server.active).toBe(false);
     expect(client.active).toBe(false);
   });
 
   test('mode: "client" leaves the server ones alone', () => {
     const { table, server, client } = build();
-    table.clearFilters({ mode: "client" });
+    table.clearColumnFilters({ mode: "client" });
     expect(client.active).toBe(false);
     expect(server.active).toBe(true);
     expect(table.filterQuery).toEqual([{ field: "level", op: "in", value: ["error"] }]);
@@ -277,7 +283,7 @@ describe("clearFilters by mode", () => {
 
   test('mode: "server" leaves the client ones alone', () => {
     const { table, server, client } = build();
-    table.clearFilters({ mode: "server" });
+    table.clearColumnFilters({ mode: "server" });
     expect(server.active).toBe(false);
     expect(client.active).toBe(true);
     expect(table.filterQuery).toBeUndefined();
@@ -288,21 +294,22 @@ describe("server-mode search", () => {
   test("stops narrowing rows and serializes instead", () => {
     const table = makeTable(["level", "message"], { search: { mode: "server" } });
 
-    expect(table.search.mode).toBe("server");
-    table.search.setText("boom");
+    expect(table.searchFilter.mode).toBe("server");
+    table.searchFilter.setText("boom");
 
-    expect(table.search.predicate).toBeUndefined();
-    expect(ids(table.filteredRows)).toEqual([1, 2, 3, 4]);
+    expect(table.searchFilter.predicate).toBeUndefined();
+    expect(ids(table.clientFilteredRows)).toEqual([1, 2, 3, 4]);
     // no field: it is not tied to one column
     expect(table.filterQuery).toEqual([{ op: "search", value: "boom" }]);
-    expect(table.activeFilterCount).toBe(1);
+    // a source, not a column filter — but it is in filterQuery, which is what the server applies
+    expect(table.activeColumnFilters).toEqual([]);
   });
 
   test("client mode is still the default and still narrows", () => {
     const table = makeTable(["level", "message"]);
-    table.search.setText("boom");
-    expect(table.search.mode).toBe("client");
-    expect(ids(table.filteredRows)).toEqual([2, 4]);
+    table.searchFilter.setText("boom");
+    expect(table.searchFilter.mode).toBe("client");
+    expect(ids(table.clientFilteredRows)).toEqual([2, 4]);
     expect(table.filterQuery).toBeUndefined();
   });
 
@@ -313,7 +320,7 @@ describe("server-mode search", () => {
     });
 
     filter.toggle("error");
-    table.search.setText("boom");
+    table.searchFilter.setText("boom");
 
     expect(table.filterQuery).toEqual([
       { field: "level", op: "in", value: ["error"] },
@@ -327,10 +334,10 @@ describe("server-mode search", () => {
     observe(() => seen.push(table.filterQuery?.length ?? 0));
     expect(seen).toEqual([0]);
 
-    table.search.setText("boom");
+    table.searchFilter.setText("boom");
     expect(seen.at(-1)).toBe(1);
 
-    table.search.clear();
+    table.searchFilter.clear();
     expect(seen.at(-1)).toBe(0);
   });
 });
@@ -342,5 +349,175 @@ describe("blanks survive serialization", () => {
 
     filter.toggle(BLANK);
     expect(table.filterQuery).toEqual([{ field: "level", op: "in", value: [""] }]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// availability before the first response
+// ---------------------------------------------------------------------------
+
+describe("filterQuery before any rows arrive", () => {
+  // What a lazy source looks like on the very first render: fetching, nothing yet. The rows
+  // reaction fires immediately with `undefined` and its handler skips it, so this used to leave
+  // the table with no columns at all.
+  const pendingSource = (): { value: Log[] | undefined; fetching: boolean } =>
+    observable({ value: undefined as Log[] | undefined, fetching: true }, {}, { deep: false });
+
+  test("configured columns exist immediately", () => {
+    const table = new TableModel({
+      rows: pendingSource(),
+      columns: [{ key: "level", filter: new SetFilter({ options: ["error"] }) }, "message"],
+    });
+
+    expect(table.loading).toBe(true);
+    expect(table.column("level")).toBeDefined();
+    expect(table.allColumns.map((c) => c.key)).toEqual(["level", "message"]);
+  });
+
+  test("a seeded server filter is in filterQuery before the first fetch", () => {
+    // the bug this guards: a page that *fetches from* filterQuery would otherwise send its first
+    // request — the one the user waits on — with no conditions at all
+    const level = new SetFilter({ options: ["error"], selected: ["error"] });
+    const time = new DateFilter({ min: T });
+    const table = new TableModel({
+      rows: pendingSource(),
+      columns: [
+        { key: "level", filter: level, filterMode: "server" },
+        { key: "time", filter: time, filterMode: "server", field: "created_at" },
+      ],
+    });
+
+    expect(table.filterQuery).toEqual([
+      { field: "level", op: "in", value: ["error"] },
+      { field: "created_at", op: "range", value: { min: T } },
+    ]);
+    expect(table.activeColumnFilters.length).toBe(2);
+  });
+
+  test("the query a reaction sees first is already the seeded one", () => {
+    const filter = new SetFilter({ options: ["error"], selected: ["error"] });
+    const table = new TableModel({
+      rows: pendingSource(),
+      columns: [{ key: "level", filter, filterMode: "server" }],
+    });
+
+    const requests: (FilterCondition[] | undefined)[] = [];
+    disposeList.push(
+      reaction(
+        () => table.filterQuery,
+        (q) => requests.push(q),
+        {
+          equals: comparer.structural,
+          fireImmediately: true,
+        },
+      ),
+    );
+
+    expect(requests).toEqual([[{ field: "level", op: "in", value: ["error"] }]]);
+  });
+
+  test("auto columns still wait for a row, as they must", () => {
+    const source = pendingSource();
+    const table = new TableModel({ rows: source, autoColumns: true });
+    expect(table.allColumns).toEqual([]);
+
+    runInAction(() => {
+      source.value = logs;
+      source.fetching = false;
+    });
+    expect(table.allColumns.map((c) => c.key)).toEqual(["id", "level", "message", "time"]);
+  });
+});
+
+describe("activeColumnFilters by mode", () => {
+  const build = () => {
+    const server = new SetFilter({ options: ["error"], selected: ["error"] });
+    const client = new TextFilter({ text: "boom" });
+    const table = makeTable([
+      { key: "level", filter: server, filterMode: "server" },
+      { key: "message", filter: client },
+    ]);
+    return { table, server, client };
+  };
+
+  test("no argument counts both sides, as before", () => {
+    const { table } = build();
+    expect(table.activeColumnFilters.length).toBe(2);
+  });
+
+  test("the client and server shortcuts split the list", () => {
+    const { table } = build();
+    expect(table.activeClientColumnFilters.map((c) => c.key)).toEqual(["message"]);
+    expect(table.activeServerColumnFilters.map((c) => c.key)).toEqual(["level"]);
+    expect(table.activeColumnFilters.map((c) => c.key)).toEqual(["level", "message"]);
+  });
+
+  test("a server toggle does not invalidate the client list", () => {
+    // each side is its own computed, so a client-count chip is not re-rendered by server churn
+    const { table, server } = build();
+    let recomputes = 0;
+    disposeList.push(
+      autorun(() => {
+        recomputes++;
+        void table.activeClientColumnFilters.length;
+      }),
+    );
+    expect(recomputes).toBe(1);
+
+    server.toggle("warn");
+    expect(recomputes).toBe(1);
+
+    // nor does editing a client filter that stays active — the *list* hasn't changed
+    filterOfMessage(table).setText("other");
+    expect(recomputes).toBe(1);
+
+    // deactivating one does, because that is a change to the list
+    filterOfMessage(table).clear();
+    expect(recomputes).toBe(2);
+    expect(table.activeClientColumnFilters).toEqual([]);
+  });
+
+  test("each mode counts only its own side", () => {
+    const { table } = build();
+    expect(table.activeColumnFilters.filter((c) => c.filterMode === "client").length).toBe(1);
+    expect(table.activeColumnFilters.filter((c) => c.filterMode === "server").length).toBe(1);
+  });
+
+  test("the client count is what a facet rail's Clear should gate on", () => {
+    // it must not offer to reset a server-side window it doesn't own
+    const { table, client } = build();
+    client.clear();
+    expect(table.activeColumnFilters.filter((c) => c.filterMode === "client").length).toBe(0);
+    expect(table.activeColumnFilters.length).toBe(1);
+  });
+
+  test("the client count is what tells an empty state which side emptied it", () => {
+    const { table, client } = build();
+    client.setText("nothing matches this");
+    expect(table.clientFilteredRows).toEqual([]);
+    expect(table.rows.length).toBeGreaterThan(0);
+    expect(
+      table.activeColumnFilters.filter((c) => c.filterMode === "client").length,
+    ).toBeGreaterThan(0);
+  });
+
+  test("search sits outside the split on either side", () => {
+    // the column-qualified members exclude it on either side; a call site that wants it says so
+    const client = makeTable(["message"]);
+    client.searchFilter.setText("boom");
+    expect(client.activeColumnFilters).toEqual([]);
+
+    const server = makeTable(["message"], { search: { mode: "server" } });
+    server.searchFilter.setText("boom");
+    expect(server.activeColumnFilters).toEqual([]);
+    // where it *does* show up is filterQuery, since the server has to apply it
+    expect(server.filterQuery).toEqual([{ op: "search", value: "boom" }]);
+  });
+
+  test("mirrors clearColumnFilters, so the pair reads the same way", () => {
+    const { table } = build();
+    table.clearColumnFilters({ mode: "client" });
+    expect(table.activeColumnFilters.filter((c) => c.filterMode === "client").length).toBe(0);
+    expect(table.activeColumnFilters.filter((c) => c.filterMode === "server").length).toBe(1);
   });
 });

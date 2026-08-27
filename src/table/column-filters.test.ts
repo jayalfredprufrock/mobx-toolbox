@@ -51,15 +51,15 @@ const makeTable = (columns: ColumnsDef<Person>, rows: Person[] = people): TableM
 describe("column filters", () => {
   test("no filter anywhere means no predicate at all", () => {
     const table = makeTable(["category"]);
-    expect(table.predicate).toBeUndefined();
-    expect(table.filteredRows).toBe(table.rows);
-    expect(table.activeFilterCount).toBe(0);
+    expect(table.filterPredicate).toBeUndefined();
+    expect(table.clientFilteredRows).toBe(table.rows);
+    expect(table.activeColumnFilters.length).toBe(0);
   });
 
   test("an inactive filter is still no predicate", () => {
     const table = makeTable([{ key: "category", filter: new SetFilter() }]);
-    expect(table.predicate).toBeUndefined();
-    expect(table.activeFilterCount).toBe(0);
+    expect(table.filterPredicate).toBeUndefined();
+    expect(table.activeColumnFilters.length).toBe(0);
   });
 
   test("a filter on a field column narrows rows", () => {
@@ -67,8 +67,8 @@ describe("column filters", () => {
     const table = makeTable([{ key: "category", filter }]);
 
     filter.toggle("a");
-    expect(ids(table.filteredRows)).toEqual([1, 3]);
-    expect(table.activeFilterCount).toBe(1);
+    expect(ids(table.clientFilteredRows)).toEqual([1, 3]);
+    expect(table.activeColumnFilters.length).toBe(1);
   });
 
   test("a filter on a computed column narrows rows", () => {
@@ -80,7 +80,7 @@ describe("column filters", () => {
     ]);
 
     filter.setText("hopper");
-    expect(ids(table.filteredRows)).toEqual([3]);
+    expect(ids(table.clientFilteredRows)).toEqual([3]);
   });
 
   test("filters AND together across columns", () => {
@@ -91,8 +91,8 @@ describe("column filters", () => {
       { key: "score", filter: score },
     ]);
 
-    expect(ids(table.filteredRows)).toEqual([2, 3]);
-    expect(table.activeFilterCount).toBe(2);
+    expect(ids(table.clientFilteredRows)).toEqual([2, 3]);
+    expect(table.activeColumnFilters.length).toBe(2);
   });
 
   test("array values match through the set filter", () => {
@@ -100,27 +100,36 @@ describe("column filters", () => {
     const table = makeTable([{ key: "tags", filter: tags }]);
 
     tags.toggle("x");
-    expect(ids(table.filteredRows)).toEqual([1, 5]);
+    expect(ids(table.clientFilteredRows)).toEqual([1, 5]);
 
     tags.setMatchMode("all");
     tags.toggle("y");
-    expect(ids(table.filteredRows)).toEqual([1]);
+    expect(ids(table.clientFilteredRows)).toEqual([1]);
   });
 
   test("selecting BLANK reaches the empty-array and null rows alike", () => {
     const tags = new SetFilter({ selected: [BLANK] });
     const table = makeTable([{ key: "tags", filter: tags }]);
-    expect(ids(table.filteredRows)).toEqual([3, 4]);
+    expect(ids(table.clientFilteredRows)).toEqual([3, 4]);
   });
 
-  test("composes with page-level filterSources", () => {
-    const filter = new SetFilter({ selected: ["a", "b", "c"] });
-    const table = makeTable([{ key: "category", filter }]);
-    table.setFilter({ predicate: (row: RowData) => (row.score as number) > 15 });
+  test("composes with a data-only column, which replaces page-level sources", () => {
+    const category = new SetFilter({ selected: ["a", "b", "c"] });
+    const table = makeTable([
+      { key: "category", filter: category },
+      // a whole-row predicate with no column of its own — hidden, and unrevealable
+      {
+        key: "_highScore",
+        value: (p) => p.score > 15,
+        filter: new SetFilter({ selected: [true] }),
+        hidden: true,
+        hideable: false,
+      },
+    ]);
 
-    expect(ids(table.filteredRows)).toEqual([2, 3, 5]);
-    // the table cannot tell how many dimensions a FilterSource stands for, so it counts none
-    expect(table.activeFilterCount).toBe(1);
+    expect(ids(table.clientFilteredRows)).toEqual([2, 3, 5]);
+    // it is a column filter, so unlike the page-level sources it replaces, it *is* counted
+    expect(table.activeColumnFilters.map((c) => c.key)).toEqual(["category", "_highScore"]);
   });
 
   test("filtering still runs over rows without replacing them, so selection survives", () => {
@@ -131,7 +140,7 @@ describe("column filters", () => {
     expect(table.selectedIds.size).toBe(1);
 
     filter.toggle("a");
-    expect(ids(table.filteredRows)).toEqual([1, 3]);
+    expect(ids(table.clientFilteredRows)).toEqual([1, 3]);
     expect(table.selectedIds.size).toBe(1);
     expect(table.visibleSelectedRows).toEqual([]);
   });
@@ -141,9 +150,9 @@ describe("column filters", () => {
     const table = makeTable([{ key: "category", filter }, "score"]);
 
     table.column("category")?.setHidden(true);
-    expect(ids(table.filteredRows)).toEqual([1, 3]);
+    expect(ids(table.clientFilteredRows)).toEqual([1, 3]);
     // the count is the disclosure for a filter with no visible control
-    expect(table.activeFilterCount).toBe(1);
+    expect(table.activeColumnFilters.length).toBe(1);
   });
 
   test("filterable is advisory — a filterable:false column still narrows", () => {
@@ -151,7 +160,7 @@ describe("column filters", () => {
     const table = makeTable([{ key: "category", filter, filterable: false }]);
 
     expect(table.column("category")?.filterable).toBe(false);
-    expect(ids(table.filteredRows)).toEqual([1, 3]);
+    expect(ids(table.clientFilteredRows)).toEqual([1, 3]);
   });
 
   test("filterable defaults to true where a filter is attached and false where none is", () => {
@@ -172,7 +181,7 @@ describe("column filters", () => {
     const table = makeTable([{ key: "category", filter }]);
 
     const seen: number[][] = [];
-    observe(() => seen.push(ids(table.filteredRows)));
+    observe(() => seen.push(ids(table.clientFilteredRows)));
     expect(seen).toEqual([[1, 3]]);
 
     filter.select(["b"]);
@@ -191,11 +200,11 @@ describe("column filters across the column lifecycle", () => {
 
     table.setRows(people.slice(0, 3));
     expect(table.column("category")?.filter).toBe(filter);
-    expect(ids(table.filteredRows)).toEqual([1, 3]);
+    expect(ids(table.clientFilteredRows)).toEqual([1, 3]);
 
     table.appendRows([{ ...people[4], id: 6, category: "a" } as RowData]);
     expect(table.column("category")?.filter).toBe(filter);
-    expect(ids(table.filteredRows)).toEqual([1, 3, 6]);
+    expect(ids(table.clientFilteredRows)).toEqual([1, 3, 6]);
   });
 
   test("setColumns keeps the existing filter instance for a surviving key", () => {
@@ -207,7 +216,7 @@ describe("column filters across the column lifecycle", () => {
     table.setColumns([{ key: "category", filter: new SetFilter() }, "score"]);
 
     expect(table.column("category")?.filter).toBe(original);
-    expect(ids(table.filteredRows)).toEqual([1, 3]);
+    expect(ids(table.clientFilteredRows)).toEqual([1, 3]);
   });
 
   test("removeColumn drops the filter with the column; addColumn brings a fresh one", () => {
@@ -216,47 +225,59 @@ describe("column filters across the column lifecycle", () => {
 
     table.removeColumn("category");
     expect(table.column("category")).toBeUndefined();
-    expect(ids(table.filteredRows)).toEqual([1, 2, 3, 4, 5]);
+    expect(ids(table.clientFilteredRows)).toEqual([1, 2, 3, 4, 5]);
 
     const replacement = new DateFilter({ min: 40 });
     table.addColumn({ key: "score2", value: (p: Person) => p.score, filter: replacement });
     expect(table.column("score2")?.filter).toBe(replacement);
-    expect(ids(table.filteredRows)).toEqual([4, 5]);
+    expect(ids(table.clientFilteredRows)).toEqual([4, 5]);
   });
 
-  test("clearFilters resets every column filter", () => {
+  test("clearColumnFilters resets every column filter", () => {
     const category = new SetFilter({ selected: ["a"] });
     const score = new DateFilter({ min: 25 });
     const table = makeTable([
       { key: "category", filter: category },
       { key: "score", filter: score },
     ]);
-    expect(ids(table.filteredRows)).toEqual([3]);
+    expect(ids(table.clientFilteredRows)).toEqual([3]);
 
-    table.clearFilters();
+    table.clearColumnFilters();
     expect(category.active).toBe(false);
     expect(score.active).toBe(false);
-    expect(table.activeFilterCount).toBe(0);
-    expect(ids(table.filteredRows)).toEqual([1, 2, 3, 4, 5]);
+    expect(table.activeColumnFilters.length).toBe(0);
+    expect(ids(table.clientFilteredRows)).toEqual([1, 2, 3, 4, 5]);
   });
 
-  test("clearFilters leaves page-level filterSources alone", () => {
+  test("clearColumnFilters now reaches every filter, data-only ones included", () => {
+    // with page-level sources gone there is no filter the table cannot reset
     const filter = new SetFilter({ selected: ["a"] });
-    const table = makeTable([{ key: "category", filter }]);
-    table.setFilter({ predicate: (row: RowData) => (row.score as number) > 15 });
+    const table = makeTable([
+      { key: "category", filter },
+      {
+        key: "_highScore",
+        value: (p) => p.score > 15,
+        filter: new SetFilter({ selected: [true] }),
+        hidden: true,
+        hideable: false,
+      },
+    ]);
+    // category "a" gives 1 and 3; score > 15 gives 2, 3, 4, 5 — the intersection is 3
+    expect(ids(table.clientFilteredRows)).toEqual([3]);
 
-    table.clearFilters();
-    expect(ids(table.filteredRows)).toEqual([2, 3, 4, 5]);
+    table.clearColumnFilters();
+    expect(table.activeColumnFilters).toEqual([]);
+    expect(ids(table.clientFilteredRows)).toEqual([1, 2, 3, 4, 5]);
   });
 
   test("only active filters reach the snapshot", () => {
     const filter = new SetFilter();
     const table = makeTable([{ key: "category", filter }]);
     // always present, like `columns` and `sorts` — but empty until something is active
-    expect(table.getState().filters).toEqual({});
+    expect(table.getState().columnFilters).toEqual({});
 
     filter.toggle("a");
-    expect(table.getState().filters).toEqual({
+    expect(table.getState().columnFilters).toEqual({
       category: { selected: ["a"], matchMode: "any" },
     });
   });
@@ -388,15 +409,23 @@ describe("facets", () => {
     ]);
   });
 
-  test("counted tier respects page-level filterSources and the search", () => {
+  test("counted tier respects a data-only column and the search", () => {
     const tags = new SetFilter({ counts: true });
-    const table = makeTable([{ key: "tags", filter: tags }]);
-    table.setFilter({ predicate: (row: RowData) => (row.id as number) <= 2 });
+    const table = makeTable([
+      { key: "tags", filter: tags },
+      {
+        key: "_lowId",
+        value: (p) => p.id <= 2,
+        filter: new SetFilter({ selected: [true] }),
+        hidden: true,
+        hideable: false,
+      },
+    ]);
 
     expect(table.column("tags")?.facets).toEqual([
       { value: "x", count: 1 },
       { value: "y", count: 2 },
-      // rows 3 and 4 are blank-tagged and excluded by the source: listed, counted zero
+      // rows 3 and 4 are blank-tagged and excluded: listed, counted zero
       { value: BLANK, blank: true, count: 0 },
     ]);
   });
@@ -429,7 +458,7 @@ describe("facets", () => {
     const table = makeTable([{ key: "tags", filter: tags }]);
 
     tags.toggle("x"); // rows 1 and 5
-    expect(ids(table.filteredRows)).toEqual([1, 5]);
+    expect(ids(table.clientFilteredRows)).toEqual([1, 5]);
 
     // "y" reads 1 because only row 1 carries both — not 2, which is how many rows carry y at all
     expect(table.column("tags")?.facets).toEqual([
@@ -449,7 +478,7 @@ describe("facets", () => {
       const predicted = facet.count;
       const before = [...tags.selected];
       if (!tags.has(facet.value as string)) tags.toggle(facet.value as string);
-      expect({ value: facet.value, rows: table.filteredRows.length }).toEqual({
+      expect({ value: facet.value, rows: table.clientFilteredRows.length }).toEqual({
         value: facet.value,
         rows: predicted,
       });
@@ -496,7 +525,7 @@ describe("facets", () => {
     expect(b.column("tags")?.facets).toEqual(a.column("tags")?.facets);
   });
 
-  test("predicateExcluding drops only the named column's filter", () => {
+  test("filterPredicateExcluding drops only the named column's filter", () => {
     const category = new SetFilter({ selected: ["a"] });
     const score = new DateFilter({ min: 25 });
     const table = makeTable([
@@ -504,13 +533,13 @@ describe("facets", () => {
       { key: "score", filter: score },
     ]);
 
-    const excluding = table.predicateExcluding("category");
+    const excluding = table.filterPredicateExcluding("category");
     expect(people.filter((p) => excluding?.(p as RowData)).map((p) => p.id)).toEqual([3, 4, 5]);
 
-    expect(table.predicateExcluding("score")).toBeDefined();
+    expect(table.filterPredicateExcluding("score")).toBeDefined();
     // nothing left once both are excluded from a two-filter table
-    table.clearFilters();
-    expect(table.predicateExcluding("category")).toBeUndefined();
+    table.clearColumnFilters();
+    expect(table.filterPredicateExcluding("category")).toBeUndefined();
   });
 });
 
@@ -536,18 +565,18 @@ describe("all four filter kinds on one table", () => {
   test("compose, cross-filter, and unwind cleanly", () => {
     const { table, category, tags, score, name } = build();
 
-    expect(table.predicate).toBeUndefined();
-    expect(ids(table.filteredRows)).toEqual([1, 2, 3, 4, 5]);
+    expect(table.filterPredicate).toBeUndefined();
+    expect(ids(table.clientFilteredRows)).toEqual([1, 2, 3, 4, 5]);
 
     // a set filter over a field column, a range over a number, text over a computed column
     category.toggle("a");
     score.setRange(undefined, 25);
-    expect(ids(table.filteredRows)).toEqual([1]);
+    expect(ids(table.clientFilteredRows)).toEqual([1]);
 
     name.setText("lovelace");
-    expect(ids(table.filteredRows)).toEqual([1]);
+    expect(ids(table.clientFilteredRows)).toEqual([1]);
     name.setText("turing");
-    expect(ids(table.filteredRows)).toEqual([]);
+    expect(ids(table.clientFilteredRows)).toEqual([]);
     name.clear();
 
     // the counted column's facets reflect the other three, never itself
@@ -560,21 +589,23 @@ describe("all four filter kinds on one table", () => {
     tags.toggle("x");
     expect(table.column("tags")?.facets).toEqual(expected);
 
-    expect(table.activeFilterCount).toBe(3);
+    expect(table.activeColumnFilters.length).toBe(3);
 
-    // search stacks on top of all of it, and survives clearFilters
-    table.search.setText("ada");
-    expect(table.activeFilterCount).toBe(4);
-    expect(ids(table.filteredRows)).toEqual([1]);
+    // search stacks on top of all of it, and survives clearColumnFilters — but it is a filter
+    // *source*, not a column filter, so it is not in activeColumnFilters
+    table.searchFilter.setText("ada");
+    expect(table.activeColumnFilters.length).toBe(3);
+    expect(table.activeColumnFilters.length + (table.searchFilter.active ? 1 : 0)).toBe(4);
+    expect(ids(table.clientFilteredRows)).toEqual([1]);
 
-    table.clearFilters();
-    expect(table.search.text).toBe("ada");
-    expect(table.activeFilterCount).toBe(1);
-    expect(ids(table.filteredRows)).toEqual([1]);
+    table.clearColumnFilters();
+    expect(table.searchFilter.text).toBe("ada");
+    expect(table.activeColumnFilters).toEqual([]);
+    expect(ids(table.clientFilteredRows)).toEqual([1]);
 
-    table.search.clear();
-    expect(table.predicate).toBeUndefined();
-    expect(ids(table.filteredRows)).toEqual([1, 2, 3, 4, 5]);
+    table.searchFilter.clear();
+    expect(table.filterPredicate).toBeUndefined();
+    expect(ids(table.clientFilteredRows)).toEqual([1, 2, 3, 4, 5]);
   });
 
   test("a hidden column keeps filtering while the whole stack is live", () => {
@@ -582,7 +613,7 @@ describe("all four filter kinds on one table", () => {
 
     category.toggle("a");
     table.column("category")?.setHidden(true);
-    expect(ids(table.filteredRows)).toEqual([1, 3]);
+    expect(ids(table.clientFilteredRows)).toEqual([1, 3]);
 
     // and its narrowing still reaches another column's counted facets
     expect(table.column("tags")?.facets).toEqual([
@@ -637,9 +668,9 @@ describe("filter factories", () => {
 
     filterOf(a, "category", SetFilter).toggle("a");
 
-    expect(ids(a.filteredRows)).toEqual([1, 3]);
+    expect(ids(a.clientFilteredRows)).toEqual([1, 3]);
     // the second table built from the same defs is untouched — the bug a shared instance causes
-    expect(ids(b.filteredRows)).toEqual([1, 2, 3, 4, 5]);
+    expect(ids(b.clientFilteredRows)).toEqual([1, 2, 3, 4, 5]);
     expect(b.column("category")?.filter).not.toBe(a.column("category")?.filter);
   });
 
@@ -650,8 +681,8 @@ describe("filter factories", () => {
     const b = makeTable(sharedColumns);
 
     shared.toggle("a");
-    expect(ids(a.filteredRows)).toEqual([1, 3]);
-    expect(ids(b.filteredRows)).toEqual([1, 3]);
+    expect(ids(a.clientFilteredRows)).toEqual([1, 3]);
+    expect(ids(b.clientFilteredRows)).toEqual([1, 3]);
   });
 
   test("remounting starts clean", () => {
@@ -662,7 +693,7 @@ describe("filter factories", () => {
     // what useTable does on a remount: a fresh model from the same defs
     const second = makeTable(columns);
     expect(filterOf(second, "category", SetFilter).active).toBe(false);
-    expect(ids(second.filteredRows)).toEqual([1, 2, 3, 4, 5]);
+    expect(ids(second.clientFilteredRows)).toEqual([1, 2, 3, 4, 5]);
   });
 
   test("the factory is called once per column, not once per sync", () => {
@@ -715,7 +746,7 @@ describe("filter factories", () => {
 
     table.setRows(people.slice(0, 3));
     expect(table.column("category")?.filter).toBe(filter);
-    expect(ids(table.filteredRows)).toEqual([1, 3]);
+    expect(ids(table.clientFilteredRows)).toEqual([1, 3]);
   });
 
   test("facets, predicate and filterable all see the resolved filter", () => {
@@ -729,8 +760,8 @@ describe("filter factories", () => {
     ]);
 
     filterOf(table, "score", DateFilter).setRange(25, undefined);
-    expect(ids(table.filteredRows)).toEqual([3, 4, 5]);
-    expect(table.activeFilterCount).toBe(1);
+    expect(ids(table.clientFilteredRows)).toEqual([3, 4, 5]);
+    expect(table.activeColumnFilters.length).toBe(1);
   });
 });
 
@@ -778,7 +809,7 @@ describe("BucketFilter on a column", () => {
     const { table, filter } = build();
 
     filter.toggle("B");
-    expect(ids(table.filteredRows)).toEqual([2, 3]);
+    expect(ids(table.clientFilteredRows)).toEqual([2, 3]);
     // the cell still shows 84, not "B"
     expect(table.column("score")?.getValue(students[1] as RowData)).toBe(84);
   });
@@ -846,6 +877,6 @@ describe("BucketFilter on a column", () => {
 
     const restored = build();
     restored.table.applyState(JSON.parse(JSON.stringify(table.getState())) as never);
-    expect(ids(restored.table.filteredRows)).toEqual([1, 4]);
+    expect(ids(restored.table.clientFilteredRows)).toEqual([1, 4]);
   });
 });

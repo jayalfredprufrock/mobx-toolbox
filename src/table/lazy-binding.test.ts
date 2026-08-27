@@ -1,6 +1,7 @@
 import { describe, expect, test } from "vite-plus/test";
 import { autorun } from "mobx";
 import { lazyObservableArray } from "../lazy-observable/lazy-observable";
+import { SetFilter } from "../filter/set-filter.model";
 import { TableModel } from "./table.model";
 import type { RowData } from "./table.types";
 
@@ -27,9 +28,10 @@ const makeLazy = (rows?: () => Promise<{ id: number; name: string }[]>) => {
 };
 
 // Something has to render the table for its computeds to be observed; this stands in for that.
-const render = (table: TableModel) => autorun(() => void table.filteredRows.length);
+const render = (table: TableModel) => autorun(() => void table.clientFilteredRows.length);
 
-const rowName = (table: TableModel, i = 0) => (table.filteredRows[i] as { name: string }).name;
+const rowName = (table: TableModel, i = 0) =>
+  (table.clientFilteredRows[i] as { name: string }).name;
 
 describe("binding a table to a lazy observable array", () => {
   // The recommended binding: hand the lazy over whole. The table tracks the array's contents
@@ -104,7 +106,15 @@ describe("binding a table to a lazy observable array", () => {
       const stop = render(table);
       await tick(20);
 
-      table.setFilter({ predicate: () => false });
+      // a data-only column whose filter matches nothing, so `rows` stays populated while
+      // `displayRows` empties — the two states this section is about
+      table.addColumn({
+        key: "_none",
+        value: () => "present",
+        filter: new SetFilter({ selected: ["absent"] }),
+        hidden: true,
+        hideable: false,
+      });
 
       expect(table.isEmpty).toBe(true); // the slot renders
       expect(table.rows.length).toBeGreaterThan(0); // ...and says "No matches"

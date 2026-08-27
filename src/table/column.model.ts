@@ -8,6 +8,7 @@ import type { TableModel } from "./table.model";
 import type {
   BaseColumnDef,
   ColumnConfig,
+  ColumnPin,
   ColumnConfigPatch,
   ColumnDef,
   ColumnFilter,
@@ -30,7 +31,8 @@ export class ColumnModel {
    */
   config: ColumnConfig;
 
-  pinned: ColumnConfig["pinned"] = false;
+  /** Which edge this column is pinned to. Never `undefined` — an unpinned column is `false`. */
+  pinned: ColumnPin = false;
 
   // Hidden columns are excluded from layout/rendering (see TableModel.orderedColumns).
   hidden = false;
@@ -70,6 +72,20 @@ export class ColumnModel {
 
   get resizable(): boolean {
     return this.config.resizable !== false;
+  }
+
+  /**
+   * Whether a column picker should offer to change this column's visibility. See
+   * {@link BaseColumnDef.hideable} — it locks `hidden` at its initial value rather than forbidding
+   * hiding, and `setHidden` is never gated by it.
+   */
+  get hideable(): boolean {
+    return this.config.hideable !== false;
+  }
+
+  /** Whether a header UI should offer to pin this column. See {@link BaseColumnDef.pinnable}. */
+  get pinnable(): boolean {
+    return this.config.pinnable !== false;
   }
 
   /** Whether header UIs should offer sorting on this column (selection columns never do). */
@@ -271,17 +287,18 @@ export class ColumnModel {
     if (this.filterMode === "server") return undefined;
     if (filter.options && !filter.counts) return undefined;
 
-    // The cross-filter deliberately keeps the *other* filters, the search and every page-level
-    // `FilterSource`: a row those already exclude must not be counted, or the tally would promise
-    // rows that selecting the value could never surface.
-    const cross = filter.counts === true ? this.table.predicateExcluding(this.key) : undefined;
+    // The cross-filter deliberately keeps the *other* filters and the search: a row those already
+    // exclude must not be counted, or the tally would promise rows that selecting the value could
+    // never surface.
+    const cross =
+      filter.counts === true ? this.table.filterPredicateExcluding(this.key) : undefined;
 
     // When picks intersect (a set filter in "all" mode) each extra one *narrows*, so a count of
     // "rows carrying this value" answers a question the filter is no longer asking — it would read
     // higher than the row count you actually get. Fold this column's own filter back in, and the
     // count becomes the size of the intersection with what is already picked.
     //
-    // Gated on `counts`, not on `cross`: `predicateExcluding` is undefined whenever no *other*
+    // Gated on `counts`, not on `cross`: `filterPredicateExcluding` is undefined whenever no *other*
     // filter is active, which is exactly the lone-filter case this still has to cover.
     const intersecting = filter.counts === true && filter.intersecting === true;
 
@@ -340,10 +357,14 @@ export class ColumnModel {
       setConfig: action,
     });
 
-    this.setPinned(config.pinned);
+    // `config.pinned` is optional; the model's is not, so the default lands here rather than
+    // leaving every reader to treat `undefined` and `false` as the same thing.
+    this.setPinned(config.pinned ?? false);
+    if (config.hidden === true) this.setHidden(true);
   }
 
-  setPinned(pinned: ColumnConfig["pinned"]): void {
+  /** Pin to an edge, or `false` to unpin. */
+  setPinned(pinned: ColumnPin): void {
     this.pinned = pinned;
   }
 

@@ -206,7 +206,7 @@ describe("load more", () => {
       rows: () => feed.rows,
       getRowId: (row: RowData) => (row as SurveyInstance).id,
     });
-    const stop = autorun(() => void table.filteredRows.length);
+    const stop = autorun(() => void table.clientFilteredRows.length);
     table.selectedIds.add(1);
 
     await feed.loadMore();

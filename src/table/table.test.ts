@@ -1,5 +1,6 @@
 import { autorun, observable, runInAction } from "mobx";
 import { describe, expect, test, vi } from "vite-plus/test";
+import { NumberFilter } from "../filter/number-filter.model";
 import { SELECTION_COLUMN_KEY } from "./column.model";
 import { TableModel } from "./table.model";
 import type { ColumnsDef, RowData } from "./table.types";
@@ -269,7 +270,7 @@ describe("runtime columns", () => {
     // the ColumnModel was destroyed and rebuilt from the def; only a persisted snapshot is
     // re-applied (see applyColumnState), not what was changed at runtime
     const b = table.columns.get("b")!;
-    expect(b.pinned).toBeUndefined();
+    expect(b.pinned).toBe(false);
     expect(b.manualWidth).toBeUndefined();
   });
 
@@ -580,46 +581,41 @@ describe("sorting", () => {
 // ---------------------------------------------------------------------------
 
 describe("filtering", () => {
-  test("a filter source's predicate narrows the rows without replacing them", () => {
-    const rows = makeRows(5);
-    const table = makeTable(rows, { filter: { predicate: (r) => r.n > 2 } });
+  // Filtering itself is covered in column-filters.test.ts; what matters here is the contract the
+  // rest of the model depends on — narrowing happens *over* `rows`, never by replacing them.
+  const filtered = (n: number, min: number) => {
+    const rows = makeRows(n);
+    const filter = new NumberFilter({ op: "gte", operand: min });
+    const table = makeTable(rows, { columns: [{ key: "n", filter }] });
+    return { rows, table, filter };
+  };
 
-    expect(table.filteredRows.map((r) => r.n)).toEqual([3, 4]);
+  test("a filter narrows the rows without replacing them", () => {
+    const { rows, table } = filtered(5, 3);
+    expect(table.clientFilteredRows.map((r) => r.n)).toEqual([3, 4]);
     expect(table.rows).toBe(rows);
   });
 
-  test("multiple sources are AND-composed", () => {
-    const table = makeTable(makeRows(10), {
-      filter: [{ predicate: (r) => r.n > 2 }, { predicate: (r) => r.n < 6 }],
-    });
-    expect(table.filteredRows.map((r) => r.n)).toEqual([3, 4, 5]);
-  });
-
-  test("a source with no predicate is a pass-through", () => {
-    const table = makeTable(makeRows(3), { filter: {} });
-    expect(table.filteredRows).toHaveLength(3);
-  });
-
-  test("setFilter replaces the sources and undefined clears them", () => {
-    const table = makeTable(makeRows(5));
-    table.setFilter({ predicate: (r) => r.n === 0 });
-    expect(table.filteredRows).toHaveLength(1);
-
-    table.setFilter(undefined);
-    expect(table.filteredRows).toHaveLength(5);
+  test("no active filter is a pass-through, by identity", () => {
+    const table = makeTable(makeRows(3), { columns: [{ key: "n", filter: new NumberFilter() }] });
+    expect(table.filterPredicate).toBeUndefined();
+    expect(table.clientFilteredRows).toBe(table.rows);
   });
 
   test("selection survives filtering because it is keyed by row id", () => {
-    const rows = makeRows(5);
-    const table = makeTable(rows);
+    const { rows, table, filter } = filtered(5, 3);
     table.toggleRow(rows[0]!);
-
-    table.setFilter({ predicate: (r) => r.n > 2 });
-    expect(table.filteredRows.map((r) => r.n)).toEqual([3, 4]);
+    expect(table.clientFilteredRows.map((r) => r.n)).toEqual([3, 4]);
     expect(table.selectedRows.map((r) => r.n)).toEqual([0]);
 
-    table.setFilter(undefined);
+    filter.clear();
     expect(table.isRowSelected(rows[0]!)).toBe(true);
+  });
+
+  test("virtual height follows the filtered length", () => {
+    const { table } = filtered(10, 8);
+    expect(table.clientFilteredRows).toHaveLength(2);
+    expect(table.virtualHeight).toBe(2 * table.rowHeight);
   });
 });
 
@@ -642,7 +638,9 @@ describe("selection", () => {
 
   test("select-all state tracks the filtered rows", () => {
     const rows = makeRows(4);
-    const table = makeTable(rows, { filter: { predicate: (r) => r.n > 1 } });
+    const table = makeTable(rows, {
+      columns: [{ key: "n", filter: new NumberFilter({ op: "gte", operand: 2 }) }],
+    });
 
     expect(table.allRowsSelected).toBe(false);
     expect(table.someRowsSelected).toBe(false);
@@ -963,7 +961,7 @@ describe("table state", () => {
       },
       sorts: [{ key: "b", direction: "desc" }],
       // always present, like `columns` and `sorts` — empty because nothing here filters
-      filters: {},
+      columnFilters: {},
       search: "",
     });
   });
@@ -1189,8 +1187,10 @@ describe("setRows row-keyed state", () => {
 describe("selection and filtering", () => {
   const setup = () => {
     const rows = Array.from({ length: 10 }, (_, i) => ({ id: i, name: `row ${i}` }));
-    const table = makeTable(rows, { getRowId: (row: RowData) => (row as { id: number }).id });
-    table.setFilter({ predicate: (row: RowData) => (row as { id: number }).id >= 7 });
+    const table = makeTable(rows, {
+      getRowId: (row: RowData) => (row as { id: number }).id,
+      columns: [{ key: "id", filter: new NumberFilter({ op: "gte", operand: 7 }) }, "name"],
+    });
     return table;
   };
 
@@ -1198,7 +1198,7 @@ describe("selection and filtering", () => {
     const table = setup();
     table.selectedIds.add(0);
 
-    expect(table.filteredRows).toHaveLength(3);
+    expect(table.clientFilteredRows).toHaveLength(3);
     expect(table.selectedRows).toHaveLength(1); // still selected — it still exists
     expect(table.visibleSelectedRows).toHaveLength(0); // just not on screen
   });

@@ -55,7 +55,7 @@ const toBounds = (v: unknown): NumberBounds | undefined => {
  * two-input range control read and write them one at a time — the same shape `DateFilter` uses. That
  * is what keeps such a control stateless: clearing the upper box leaves the lower one alone, so there
  * is no draft copy in component state and nothing to go stale when something else calls
- * `clearFilters()`.
+ * `clearColumnFilters()`.
  *
  * ```tsx
  * <input value={filter.min ?? ""} onChange={(e) => filter.setMin(parse(e.target.value))} />
@@ -94,7 +94,7 @@ export class NumberFilter implements ValueFilter {
    *
    * Named to match `DateFilter`, and present so a range control can drive its inputs straight off
    * the filter — read `min`, write `setMin` — with no draft copy in component state, and therefore
-   * nothing to go stale when something else calls `clearFilters()`.
+   * nothing to go stale when something else calls `clearColumnFilters()`.
    */
   get min(): number | undefined {
     return isIntervalOp(this.op) ? toBounds(this.operand)?.min : undefined;

@@ -423,7 +423,7 @@ describe("NumberFilter", () => {
     expect([1, 3, 5, 9].filter((n) => exclusive.matches(n))).toEqual([5, 9]);
   });
 
-  test("clearFilters blanks a control that reads off the filter", () => {
+  test("clearColumnFilters blanks a control that reads off the filter", () => {
     // the stale path a component-state draft would leave behind
     const filter = new NumberFilter({ op: "between", operand: { min: 3, max: 7 } });
     filter.clear();

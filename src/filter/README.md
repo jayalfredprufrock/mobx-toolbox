@@ -230,7 +230,7 @@ directly, with **no draft state**:
 `setMin` and `setMax` each leave the other bound alone, so clearing the upper box doesn't wipe the
 lower one the user just filled in. Requiring both bounds would force every consumer to mirror the pair
 into component state, seed it on mount and reset it on clear — and that copy then goes stale the moment
-something else calls `clearFilters()` with the control open. Reading `min`/`max` straight off the
+something else calls `clearColumnFilters()` with the control open. Reading `min`/`max` straight off the
 filter has no such path.
 
 The names, and the `{ min, max }` shape, are deliberately the same as `DateFilter`'s, so a range
@@ -325,7 +325,7 @@ name.setText("ab");
 are configuration rather than state: unlike `matchMode`, they aren't usually handed to the user.
 
 Distinct from a table's cross-column search, which needs every column's accessor at once and so
-can't be a value predicate — see `TableSearch` in the `table` docs. Both compare through the same
+can't be a value predicate — see `TableSearchFilter` in the `table` docs. Both compare through the same
 `textMatches`, so a per-column "contains" and a search box agree.
 
 ## Blanks

@@ -65,7 +65,7 @@ export interface TableConfig<T> {
    * dataset every time and clears selection with it. Passing a `TableModel`
    * a config directly (no hook) applies the array once, at construction.
    *
-   * **A getter** — MobX decides. `() => store.filteredRows` is tracked in a
+   * **A getter** — MobX decides. `() => store.clientFilteredRows` is tracked in a
    * reaction, so it re-applies when the observables it *read* change, on
    * MobX's cadence rather than React's. Two caveats, both silent if missed:
    * the getter must read observables (a getter over React props or state is
@@ -140,19 +140,6 @@ export interface TableConfig<T> {
    */
   getRowId?: (row: T, index: number) => RowId;
   /**
-   * Page-level row filtering — the escape hatch for a dimension with no column behind it. Pass
-   * anything exposing a reactive `predicate`; an array is AND-composed.
-   *
-   * This is *not* where per-column filters go: those are attached to their column defs
-   * ({@link BaseColumnDef.filter}) so the table can feed each one the column's own accessor. Both
-   * compose into `TableModel.predicate`, along with the built-in search.
-   *
-   * Filtering runs over `rows` without replacing them, so selection persists. For server-side
-   * filtering, react to your controls' state, refetch, and `setRows` — client filters then narrow
-   * the server's results with no extra machinery.
-   */
-  filter?: FilterSource<T> | FilterSource<T>[];
-  /**
    * Configures the built-in cross-column search (`TableModel.search`).
    *
    * `mode: "server"` means the server does the searching: the query stops narrowing rows here and
@@ -173,7 +160,7 @@ export interface TableConfig<T> {
 /** Persisted per-column state (see TableState). `width` is the manual resize override; absent = automatic. */
 export interface ColumnState {
   hidden: boolean;
-  pinned: false | "left" | "right";
+  pinned: ColumnPin;
   width?: number;
 }
 
@@ -206,18 +193,9 @@ export interface TableState {
    * barely churns at all, so a consumer wanting to debounce the two differently can split them
    * without unpicking one object.
    */
-  filters?: Record<string, unknown>;
+  columnFilters?: Record<string, unknown>;
   /** The built-in search query. Always emitted by `getState`, empty string included. */
   search?: string;
-}
-
-/**
- * The table's contract with any filter implementation: a reactive predicate over rows. Deliberately
- * structural so the table takes on no dependency — a hand-rolled observable object satisfies it.
- * `undefined` predicate = pass-through (no filtering).
- */
-export interface FilterSource<T = RowData> {
-  readonly predicate?: (row: T) => boolean;
 }
 
 /**
@@ -230,10 +208,6 @@ export interface FilterSource<T = RowData> {
  * classes, so a page's own `new SetFilter()` is the only thing that pulls them into the bundle. A
  * string discriminant (`filter: "set"`) would force a `"set" -> SetFilter` map into the table and
  * defeat exactly that.
- *
- * Not to be confused with {@link FilterSource}, the *row*-level contract behind `config.filter` —
- * that one is for page dimensions with no column behind them, and both compose (see
- * `TableModel.predicate`).
  */
 export interface ColumnFilter {
   /** Whether the filter is currently narrowing anything. Inactive filters are skipped entirely. */
@@ -280,7 +254,7 @@ export interface ColumnConfig {
   title?: string;
   /** See BaseColumnDef.order — declarative placement, lower first, default 0. */
   order?: number;
-  pinned?: false | "left" | "right";
+  pinned?: ColumnPin;
   width?: ColumnWidth;
   minWidth?: number;
   maxWidth?: number;
@@ -297,6 +271,12 @@ export interface ColumnConfig {
   filterOption?: (value: unknown) => any;
   /** See BaseColumnDef.searchable. Defaults to true. */
   searchable?: boolean | ((row: RowData) => string);
+  /** See BaseColumnDef.hidden. Initial value only. */
+  hidden?: boolean;
+  /** See BaseColumnDef.hideable — advisory for pickers, and proof against a snapshot. */
+  hideable?: boolean;
+  /** See BaseColumnDef.pinnable — advisory for header UIs, and proof against a snapshot. */
+  pinnable?: boolean;
   /** See BaseColumnDef.filterMode. Defaults to "client". */
   filterMode?: FilterMode;
   /** See BaseColumnDef.field. Defaults to `key`. */
@@ -314,6 +294,9 @@ export interface ColumnConfig {
  * - `selection` decides which components render the column at all.
  */
 export type ColumnConfigPatch = Partial<Omit<ColumnConfig, "key" | "filter" | "selection">>;
+
+/** Which edge a column is pinned to, or `false` for not pinned. */
+export type ColumnPin = false | "left" | "right";
 
 export type ColumnWidth = number | `${number}fr`;
 
@@ -343,7 +326,31 @@ export interface BaseColumnDef<T> {
    */
   order?: number;
   /** Initial pin side; can also be changed at runtime via ColumnModel.setPinned. */
-  pinned?: false | "left" | "right";
+  pinned?: ColumnPin;
+  /**
+   * Whether the column starts hidden. Defaults to false.
+   *
+   * The *initial* value only — `setHidden` and a persisted snapshot both move it afterwards. Pair
+   * with `hideable: false` for a column that is only ever there to carry data or a filter.
+   */
+  hidden?: boolean;
+  /**
+   * Whether a column picker should offer to change this column's visibility. Defaults to true.
+   *
+   * Read it as **locking `hidden` at whatever it starts as**, not as "cannot be hidden" — on a
+   * `hidden: true` column it means always hidden, which is how you declare a column that exists
+   * only to carry a value or a filter.
+   *
+   * Advisory for UI, like `sortable` and `filterable`: `setHidden` is never gated, so a page's own
+   * responsive layout can still hide whatever it likes. What it *does* enforce is that a persisted
+   * snapshot cannot override it — structure outranks a stale saved view. See `applyState`.
+   */
+  hideable?: boolean;
+  /**
+   * Whether a header UI should offer to pin this column. Defaults to true. Advisory in the same way
+   * as `hideable`, and likewise proof against a snapshot.
+   */
+  pinnable?: boolean;
   /** Fixed pixel width (`number`) or a flex weight (`"Nfr"`). Defaults to `"1fr"`. */
   width?: ColumnWidth;
   /** Minimum width for flex columns (px). Defaults to 120. Ignored for fixed-px columns. */
@@ -460,7 +467,10 @@ export interface SelectionColumnDef {
   key?: string;
   /** See BaseColumnDef.order — declarative placement, lower first, default 0. */
   order?: number;
-  pinned?: false | "left" | "right";
+  pinned?: ColumnPin;
+  hidden?: boolean;
+  hideable?: boolean;
+  pinnable?: boolean;
   width?: ColumnWidth;
   minWidth?: number;
   maxWidth?: number;

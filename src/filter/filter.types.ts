@@ -122,7 +122,7 @@ export interface ValueFilter {
  * "not counted", never "zero".
  */
 export interface Facet {
-  value: unknown;
+  value: SetFilterValue;
   count?: number;
   /**
    * Render hint: this entry stands for missing/empty values. Present so a view can show it

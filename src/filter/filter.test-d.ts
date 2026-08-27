@@ -10,8 +10,9 @@
  *    if these classes drift out of that shape it has to be a compile error here — nothing at runtime
  *    would notice until a column silently stopped filtering.
  */
+import type { ColumnModel } from "../table/column.model";
 import type { ColumnFilter } from "../table/table.types";
-import type { FilterCondition } from "./filter.types";
+import type { FilterCondition, SetFilterValue } from "./filter.types";
 import { DateFilter } from "./date-filter.model";
 import { SetFilter } from "./set-filter.model";
 import { TextFilter } from "./text-filter.model";
@@ -47,6 +48,25 @@ assignableTo<FilterCondition | undefined>(new TextFilter().condition);
 
 // `field` is filled in by whoever knows the wire name — a filter never sets it
 assignableTo<{ field?: string; op: string; value: unknown }>({ op: "in", value: [] });
+
+// --- a facet is usable without casts, which is the point of narrowing it ----
+
+declare const column: ColumnModel;
+declare const setFilter: SetFilter;
+
+for (const facet of column.facets) {
+  // each of these needed an `as SetFilterValue` while Facet.value was `unknown`
+  setFilter.toggle(facet.value);
+  assignableTo<boolean>(setFilter.has(facet.value));
+  assignableTo<string>(String(facet.value));
+  column.filterOption?.(facet.value);
+}
+
+// and a filterOption written at a call site gets a usable parameter, not `unknown`
+assignableTo<(value: SetFilterValue) => string>((value) => value.toString());
+
+// @ts-expect-error -- a declared option outside the facet domain could never match a tallied one
+assignableTo<ColumnFilter["options"]>([{ id: 1 }]);
 
 // --- the set domain is JSON-safe by construction ---------------------------
 

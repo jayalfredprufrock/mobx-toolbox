@@ -1,8 +1,8 @@
-import type { FilterCondition } from "../filter/filter.types";
+import type { FilterCondition, SetFilterValue } from "../filter/filter.types";
 
 // Re-exported so a consumer reading `table.filterQuery` gets the type from `/table` rather than
 // having to reach into `/filter` for it. Type-only, so nothing is pulled into the bundle.
-export type { FilterCondition, FilterOp } from "../filter/filter.types";
+export type { FilterCondition, FilterOp, SetFilterValue } from "../filter/filter.types";
 
 export type RowData = Record<string, any>;
 export type TableData = RowData[];
@@ -214,8 +214,14 @@ export interface ColumnFilter {
   readonly active: boolean;
   matches(value: unknown): boolean;
   clear(): void;
-  /** Seeds the facet domain; its presence also selects the no-walk tier. See `ColumnModel.facets`. */
-  readonly options?: readonly unknown[];
+  /**
+   * Seeds the facet domain; its presence also selects the no-walk tier. See `ColumnModel.facets`.
+   *
+   * Narrowed to {@link SetFilterValue} because that is what facets actually are: `facetValues`
+   * stringifies anything else, so a declared option outside that set could never match a tallied
+   * one. Better a compile error than a facet that silently selects nothing.
+   */
+  readonly options?: readonly SetFilterValue[];
   /** Whether facets should carry cross-filtered counts — the expensive tier. */
   readonly counts?: boolean;
   /**
@@ -268,7 +274,7 @@ export interface ColumnConfig {
   /** See BaseColumnDef.filterable — advisory flag for header filter UIs. Defaults to true. */
   filterable?: boolean;
   /** See BaseColumnDef.filterOption. */
-  filterOption?: (value: unknown) => any;
+  filterOption?: (value: SetFilterValue) => any;
   /** See BaseColumnDef.searchable. Defaults to true. */
   searchable?: boolean | ((row: RowData) => string);
   /** See BaseColumnDef.hidden. Initial value only. */
@@ -411,7 +417,7 @@ export interface BaseColumnDef<T> {
    * Typed `=> any` rather than `=> ReactNode` for the same reason as `render`: nothing in these
    * types imports React.
    */
-  filterOption?: (value: unknown) => any;
+  filterOption?: (value: SetFilterValue) => any;
   /**
    * Whether the built-in cross-column search reads this column, or a text projection to search
    * instead — `searchable: (r) => fmtTime(r.time)` searches a date column as text rather than as

@@ -791,6 +791,11 @@ Points worth checking by hand as you port:
   that started empty left the table with no columns until data landed, which meant a page fetching
   _from_ `filterQuery` sent its first request with no conditions. Factory defs and `autoColumns`
   still wait for a row, as they must.
+- **`Facet.value`, `ColumnFilter.options` and `filterOption`'s parameter are `SetFilterValue`**, not
+  `unknown` — a facet's value genuinely is a `string | number | boolean`, since `facetValues`
+  stringifies anything else. So `filter.toggle(facet.value)` and a `filterOption: (value) => …` need
+  no casts. A custom `ColumnFilter` declaring options outside that set is now a compile error, where
+  before it was a facet that silently matched nothing.
 - **Facet counts mean different things per match mode, and the filter decides which.** Under `"any"`
   a count is the conventional "rows carrying this value". Under `"all"` each pick narrows, so it is
   the size of the intersection with what is already picked — exactly predictive, tick it and you get

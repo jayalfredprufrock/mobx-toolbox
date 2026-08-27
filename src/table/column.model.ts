@@ -174,7 +174,7 @@ export class ColumnModel {
    * themselves: `column.filterOption?.(v) ?? String(v)` — a view often wants its own fallback, and
    * a blank facet is labelled off `facet.blank` rather than off the value.
    */
-  get filterOption(): ((value: unknown) => any) | undefined {
+  get filterOption(): ((value: SetFilterValue) => any) | undefined {
     return this.config.filterOption;
   }
 
@@ -253,9 +253,8 @@ export class ColumnModel {
     const seen = new Set<SetFilterValue>();
 
     for (const value of declared ?? []) {
-      const key = value as SetFilterValue;
-      seen.add(key);
-      facets.push(counts ? { value, count: tally.get(key) ?? 0 } : { value });
+      seen.add(value);
+      facets.push(counts ? { value, count: tally.get(value) ?? 0 } : { value });
     }
 
     const discovered = [...tally.keys()]

@@ -452,13 +452,15 @@ interface FilterCondition {
 }
 
 interface Facet {
-  value: unknown;
+  value: SetFilterValue;
   count?: number;
   blank?: boolean;
 }
 ```
 
-`Facet` is produced by whoever walks the data — see `ColumnModel.facets` in `table`. `count` is
+`Facet` is produced by whoever walks the data — see `ColumnModel.facets` in `table`. `value` is a
+`SetFilterValue` rather than `unknown` because that is what a facet genuinely is —
+`facetValues` stringifies anything else — so `filter.toggle(facet.value)` needs no cast. `count` is
 present only when counts were asked for; an absent count means "not counted", never "zero".
 `blank` is a render hint (italic "(Blank)", pinned last) so a view never has to compare against the
 sentinel itself.

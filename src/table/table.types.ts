@@ -35,21 +35,41 @@ export type AutoColumnFn<T> = (
 export type RowId = string | number;
 
 /**
- * A dataset that knows whether it is still arriving.
+ * A dataset that knows whether it is still arriving, and how the last attempt ended.
  *
  * Structural on purpose: `LazyObservableArray` satisfies it, so `rows={list}` works — but `table`
  * declares the shape rather than importing the type, and stays independent of `lazy-observable`.
- * Anything with these two properties works, including a hand-rolled object.
+ * Anything with these properties works, including a hand-rolled object.
  *
- * Two properties are enough because `undefined` and `[]` are different answers: "not known yet"
- * versus "there are none". That distinction is what lets the table tell a first load from an empty
- * result without the caller wiring it up.
+ * The three facts are orthogonal, which is why this is not a `status` enum: `value` says whether
+ * there is anything to show, `fetching` says whether a request is running, `error` says how the
+ * last one ended. A refresh that fails while rows are on screen has all three at once, and every
+ * one of them is a true statement about it.
+ *
+ * `undefined` and `[]` are likewise different answers — "not known yet" versus "there are none" —
+ * and that distinction is what lets the table tell a first load from an empty result without the
+ * caller wiring it up.
  */
 export interface RowSource<T> {
   /** The rows, or `undefined` while nothing has arrived yet. */
   value: T[] | undefined;
   /** Whether a request is in flight — including a refresh that still has rows to show. */
   fetching: boolean;
+  /**
+   * How the last request ended, or `undefined` if it succeeded (or none has run). Expected to be
+   * cleared when a new request starts, so a state derived from it describes the latest attempt
+   * rather than the worst one ever seen.
+   *
+   * A failure does **not** have to clear `value`, and shouldn't: a refresh that fails while rows
+   * are on screen keeps showing them, so an error and a readable value coexist. Which of the two
+   * situations the table is in is what separates {@link TableModel.error} — nothing to show, the
+   * fatal state `<Table.Error>` renders for — from {@link TableModel.refreshError}, where the rows
+   * are fine and only the last refresh wasn't.
+   *
+   * Optional, so a source predating this keeps working; a source that never sets it simply never
+   * reports an error, exactly as before.
+   */
+  error?: unknown;
 }
 
 export interface TableConfig<T> {
@@ -73,10 +93,14 @@ export interface TableConfig<T> {
    * captured once — so close over observables, not over render-scoped
    * values, which would go stale.
    *
-   * **A row source** — an object with `value` and `fetching`, which a `LazyObservableArray`
-   * satisfies. The table tracks its contents itself, so this form needs no `.slice()`, and it is
-   * the only one that can tell a first load from an empty result: see `loading`, `refreshing` and
-   * `isEmpty` on the model.
+   * **A row source** — an object with `value`, `fetching` and optionally `error`, which a
+   * `LazyObservableArray` satisfies. The table tracks its contents itself, so this form needs no
+   * `.slice()`, and the source works out the dataset's state on its own: see `loading`,
+   * `refreshing`, `isEmpty`, `error` and `refreshError` on the model.
+   *
+   * The first two forms reach those same five states through {@link UseTableConfig.loading} and
+   * {@link UseTableConfig.error}, which is the *controlled* form — you keep the status where your
+   * fetching already keeps it, and the table derives the rest.
    */
   rows?: T[] | (() => T[]) | RowSource<T>;
   /** Fixed pixel height of every row (the virtualization contract). Default 40. */
@@ -155,6 +179,36 @@ export interface TableConfig<T> {
    * `applyState`. The snapshot is JSON-serializable; debouncing/storage is the consumer's job.
    */
   onStateChange?: (state: TableState) => void;
+}
+
+/**
+ * What {@link useTable} accepts: everything a {@link TableModel} takes, plus the two React-facing
+ * status props that make up the *controlled* form of `rows`.
+ *
+ * The split is honest rather than cosmetic. `loading` and `error` are mirrored out of React on
+ * every render, which is a thing only a hook can do — a `TableModel` built directly has no render
+ * to mirror from, so it takes a {@link RowSource} and reads the same three facts off that instead.
+ */
+export interface UseTableConfig<T> extends TableConfig<T> {
+  /**
+   * Whether a request is in flight. The controlled counterpart of a source's `fetching`.
+   *
+   * Which state this produces depends on whether there are rows: with none it is a first load
+   * (`table.loading`), behind rows already on screen it is a refresh (`table.refreshing`). You do
+   * not have to distinguish them — passing the one fact you know is enough.
+   *
+   * Pass it from the first render, not from the first effect. A render with no rows and
+   * `loading: false` is a settled empty result by definition, and the table will say so.
+   */
+  loading?: boolean;
+  /**
+   * How the last request ended. The controlled counterpart of a source's `error`, and split the
+   * same way: with no rows it is fatal (`table.error`, what `<Table.Error>` renders), behind rows
+   * still on screen it is a failed refresh (`table.refreshError`, which disturbs nothing).
+   *
+   * Clear it when the next request starts, or the table will keep describing the older failure.
+   */
+  error?: unknown;
 }
 
 /** Persisted per-column state (see TableState). `width` is the manual resize override; absent = automatic. */

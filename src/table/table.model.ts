@@ -407,14 +407,26 @@ export class TableModel {
   // (dot-paths, computed `value` fns) and optional `compare` def — never a raw `row[key]` lookup.
   // Sort keys with no matching column are skipped.
   /**
-   * Nothing has arrived yet and a request is in flight — the state a first-load treatment belongs
+   * Nothing has arrived yet and nothing has gone wrong — the state a first-load treatment belongs
    * to, and the one where the empty slot would be a lie.
    *
-   * Always `false` without a `RowSource`: an array or a getter carries no notion of loading, so the
-   * table does not invent one.
+   * The `error` term is load-bearing. Without it a failed first load reads as loading forever:
+   * nothing ever arrives to end it, and `isEmpty` stays `false` too, so the table shows a permanent
+   * spinner with no way out. `lazy-observable` removed a property with exactly this bug (its own
+   * `loading`, which mishandled a failed first load), and this is the same fix one module over.
+   *
+   * Deliberately not gated on `fetching`. A source typically defers its first request past the
+   * render that observes it, so there is a beat where nothing has arrived and nothing is in flight
+   * either; gating on `fetching` would call that beat "not loading" and flash the empty slot before
+   * the spinner. Absence of a value with no error to explain it is the honest reading.
+   *
+   * Reported for either form of dataset state: a `RowSource` works this out itself, and `useTable`
+   * assembles one from `loading`/`error` props for callers who keep that state in React. A model
+   * given a bare array and never told otherwise has no loading story, and does not invent one.
    */
   get loading(): boolean {
-    return this.rowSource !== undefined && this.rowSource.value === undefined;
+    const source = this.rowSource;
+    return source !== undefined && source.value === undefined && source.error === undefined;
   }
 
   /**
@@ -429,11 +441,48 @@ export class TableModel {
   }
 
   /**
-   * There is genuinely nothing to show — as opposed to nothing *yet*. This is the gate the empty
-   * slot uses, and the reason a table over a loading source never claims "no results".
+   * The request failed and there is nothing to show for it — the fatal state, and the only one
+   * `<Table.Error>` renders for.
+   *
+   * Mutually exclusive with {@link TableModel.refreshError} by construction: whether the source has
+   * a value is what sorts the same underlying failure into one or the other. That split is the
+   * whole point. A refresh that fails behind rows already on screen must not blank a working table
+   * over a background request, so it reports there instead and leaves this `undefined`.
+   *
+   * Raw passthrough — whatever the source was rejected with, or whatever was handed to `useTable`
+   * as the `error` prop. Unwrapped and uninterpreted either way.
+   */
+  get error(): unknown {
+    const source = this.rowSource;
+    if (source === undefined || source.value !== undefined) return undefined;
+    return source.error;
+  }
+
+  /**
+   * A request failed behind rows that are still on screen — the last refresh didn't take, and
+   * everything visible is simply older than it should be.
+   *
+   * Not a reason to disturb the table. This is what a refresh control reads to go red, and what a
+   * toast reads to say so, while the rows stay exactly where they are. See {@link TableModel.error}
+   * for the case where there is nothing left to show.
+   */
+  get refreshError(): unknown {
+    const source = this.rowSource;
+    if (source === undefined || source.value === undefined) return undefined;
+    return source.error;
+  }
+
+  /**
+   * There is genuinely nothing to show — as opposed to nothing *yet*, or nothing *because the
+   * request failed*. This is the gate the empty slot uses, and the reason a table over a loading
+   * source never claims "no results".
+   *
+   * A failed first load is excluded for the same reason a running one is: "No results" is a lie
+   * about a request that never came back with any. Fixing `loading` without fixing this would only
+   * trade a permanent spinner for a permanent — and wrong — empty state.
    */
   get isEmpty(): boolean {
-    return !this.loading && this.displayRows.length === 0;
+    return !this.loading && this.error === undefined && this.displayRows.length === 0;
   }
 
   get displayRows(): RowData[] {
@@ -611,9 +660,15 @@ export class TableModel {
       unpinnedRenderedColumns: computed,
       leftPinnedRenderedColumns: computed,
       rightPinnedRenderedColumns: computed,
-      // Someone else's observable object, held by reference — mobx must not convert it, and the
-      // reaction is re-armed on replacement rather than tracked, so there is nothing to observe.
-      rowSource: false,
+      // Someone else's observable object, so `ref` rather than `observable` — mobx must not convert
+      // what it holds, only track which one is held. Tracking that much matters: `loading`,
+      // `refreshing`, `error` and `refreshError` all read through whichever source is current, and
+      // a keyed collection replaces it (`store.byOrg({ orgId })` is a different lazy per key). Left
+      // untracked, swapping to a source that has not loaded yet left every one of those computeds
+      // holding the previous source's answer until something else happened to invalidate them.
+      rowSource: observable.ref,
+      // The binding is read only when the reaction is (re-)armed, which `setRowSource` does
+      // explicitly, so there is nothing here to observe.
       rowsBinding: false,
 
       // Memoization behind `rowIds`, not state: a WeakMap keyed by row and a counter. Neither is
@@ -632,6 +687,8 @@ export class TableModel {
       filterQuery: computed,
       loading: computed,
       refreshing: computed,
+      error: computed,
+      refreshError: computed,
       isEmpty: computed,
       displayRows: computed,
       firstRenderedIndex: computed,

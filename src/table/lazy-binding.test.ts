@@ -294,3 +294,137 @@ describe("binding a table to a lazy observable array", () => {
     stop();
   });
 });
+
+describe("a row source that fails", () => {
+  // The bug this exists to pin: `loading` used to be "no value yet", which a failed first load
+  // satisfies forever. The spinner never came down, and `isEmpty` stayed false behind it, so the
+  // table had no state left to render.
+  test("a failed first load reports an error instead of loading forever", async () => {
+    const { lazy } = makeLazy(() => Promise.reject(new Error("boom")));
+    const table = new TableModel({ rows: lazy });
+    const stop = render(table);
+    await tick(20);
+
+    expect(table.loading).toBe(false);
+    expect(table.error).toBeInstanceOf(Error);
+    expect((table.error as Error).message).toBe("boom");
+
+    // and it is not quietly re-labelled as an empty result, which would be its own lie
+    expect(table.isEmpty).toBe(false);
+    expect(table.refreshError).toBeUndefined();
+    stop();
+  });
+
+  test("a failed refresh keeps the rows and reports separately", async () => {
+    let calls = 0;
+    const lazy = lazyObservableArray(
+      () => {
+        calls++;
+        return calls === 1
+          ? Promise.resolve([
+              { id: 1, name: "alpha" },
+              { id: 2, name: "beta" },
+            ])
+          : Promise.reject(new Error("boom"));
+      },
+      { deep: false },
+    );
+
+    const table = new TableModel({
+      rows: lazy,
+      getRowId: (row: RowData) => (row as { id: number }).id,
+    });
+    const stop = render(table);
+    await tick(20);
+    table.selectedIds.add(1);
+
+    await lazy.reload().catch(() => undefined);
+    await tick(20);
+
+    // the working table stays working: rows, selection and every derived state untouched
+    expect(table.rows).toHaveLength(2);
+    expect(rowName(table)).toBe("alpha");
+    expect([...table.selectedIds]).toEqual([1]);
+    expect(table.loading).toBe(false);
+    expect(table.isEmpty).toBe(false);
+
+    // the failure is real, it just belongs somewhere that isn't the rows
+    expect(table.error).toBeUndefined();
+    expect(table.refreshError).toBeInstanceOf(Error);
+    stop();
+  });
+
+  test("a retry clears the error", async () => {
+    let calls = 0;
+    const lazy = lazyObservableArray(
+      () => {
+        calls++;
+        return calls === 1
+          ? Promise.reject(new Error("boom"))
+          : Promise.resolve([{ id: 1, name: "alpha" }]);
+      },
+      { deep: false },
+    );
+
+    const table = new TableModel({ rows: lazy });
+    const stop = render(table);
+    await tick(20);
+    expect(table.error).toBeInstanceOf(Error);
+
+    await lazy.reload();
+    await tick(20);
+
+    expect(table.error).toBeUndefined();
+    expect(table.refreshError).toBeUndefined();
+    expect(table.loading).toBe(false);
+    expect(table.rows).toHaveLength(1);
+    stop();
+  });
+
+  test("the error is observable, so a slot gated on it re-renders", async () => {
+    const { lazy } = makeLazy(() => Promise.reject(new Error("boom")));
+    const table = new TableModel({ rows: lazy });
+
+    const seen: boolean[] = [];
+    const stop = autorun(() => seen.push(table.error !== undefined));
+    await tick(20);
+
+    expect(seen).toEqual([false, true]);
+    stop();
+  });
+
+  test("an array or getter form never reports an error", async () => {
+    const table = new TableModel({ rows: [{ id: 1, name: "alpha" }] });
+    const stop = render(table);
+    await tick(0);
+
+    // no source, so the table has no failure story to tell either — same rule as `loading`
+    expect(table.error).toBeUndefined();
+    expect(table.refreshError).toBeUndefined();
+    stop();
+  });
+});
+
+describe("re-pointing at a different source", () => {
+  // A keyed collection hands out a different lazy per key, so `store.byOrg({ orgId })` is a new
+  // source whenever `orgId` changes. Every state the table derives reads through whichever source
+  // is current, so replacing it has to invalidate them — untracked, an observer kept showing the
+  // previous key's settled answer while the new key was still fetching.
+  test("swapping to a source that has not loaded re-derives `loading` for observers", async () => {
+    const { lazy: first } = makeLazy();
+    const { lazy: second } = makeLazy(() => new Promise(() => {}));
+
+    const table = new TableModel({ rows: first });
+    const seen: boolean[] = [];
+    const stop = autorun(() => seen.push(table.loading));
+    await tick(20);
+    expect(table.loading).toBe(false);
+
+    table.setRowSource(second);
+    await tick(20);
+
+    expect(seen.at(-1)).toBe(true);
+    expect(table.isEmpty).toBe(false); // and the empty slot stays out of the way
+    stop();
+  });
+});

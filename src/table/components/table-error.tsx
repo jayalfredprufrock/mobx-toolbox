@@ -32,9 +32,9 @@ export interface TableErrorProps extends Omit<TableOverlayProps, "children"> {
  * `loading` excludes a failure, `isEmpty` excludes both, and this renders only for the failure
  * with nothing behind it.
  *
- * Needs the table to have been told about the failure: a `RowSource` that carries an `error`, or
- * an `error` prop passed to `useTable` alongside a plain array. If the error isn't about the
- * dataset at all, `<Table.Overlay>` gives you the same surface with no gate.
+ * Needs the table to have been told about the failure — a `data` that is a lazy, which carries its
+ * own `error`, or an `error` prop passed to `useTable` alongside an array or getter. If the error
+ * isn't about the dataset at all, `<Table.Overlay>` gives you the same surface with no gate.
  *
  * Owns placement only — cosmetics are the consumer's, and `data-error` is the styling hook.
  */

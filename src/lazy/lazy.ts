@@ -34,7 +34,7 @@ export interface LazyInvalidateOptions {
 const THRASH_LIMIT = 20;
 const THRASH_WINDOW_MS = 1000;
 
-export interface LazyObservableApi<T> {
+export interface LazyApi<T> {
   /**
    * How the last request ended, or `undefined` if it succeeded (or none has run). Cleared when a
    * new request starts and on every success.
@@ -49,11 +49,11 @@ export interface LazyObservableApi<T> {
    * its previous value.
    *
    * Orthogonal to `loaded`, deliberately: the two together describe every state without overlapping.
-   * A first load is `!loaded && fetching`; a refresh is {@link LazyObservableApi.refreshing}.
+   * A first load is `!loaded && fetching`; a refresh is {@link LazyApi.refreshing}.
    *
    * ⚠️ **Reading this does not observe the lazy.** It is not one of the observation sources, so a
    * render that decides what to show from `fetching` alone subscribes to nothing — see
-   * {@link LazyObservableApi.refreshing}, which is the safe way to ask the same question.
+   * {@link LazyApi.refreshing}, which is the safe way to ask the same question.
    */
   fetching: boolean;
   /**
@@ -126,22 +126,22 @@ export interface LazyObservableApi<T> {
  * ```
  *
  * Written as a union of two complete members rather than `Api & (A | B)`. Both narrow — TypeScript
- * distributes the intersection — but `LazyObservableArray` cannot be: it has to `Omit` `set` from
+ * distributes the intersection — but `LazyArray` cannot be: it has to `Omit` `set` from
  * the API and replace it, and `Omit` over a union collapses it into one object, taking the
  * discriminant with it. The two types are spelled the same way so they stay comparable.
  */
-export type LazyObservable<T = any> =
-  | (LazyObservableApi<T> & { loaded: true; value: T })
-  | (LazyObservableApi<T> & { loaded: false; value: undefined });
+export type Lazy<T = any> =
+  | (LazyApi<T> & { loaded: true; value: T })
+  | (LazyApi<T> & { loaded: false; value: undefined });
 
 /**
- * The `loaded: true` arm of {@link LazyObservable} — a lazy that is known to hold a value, so
- * `value` reads as `T` with no check. What a seeded `lazyObservable` hands back, and what a
+ * The `loaded: true` arm of {@link Lazy} — a lazy that is known to hold a value, so
+ * `value` reads as `T` with no check. What a seeded `lazy` hands back, and what a
  * `loaded` check narrows an ordinary one to.
  */
-export type LoadedLazyObservable<T = any> = Extract<LazyObservable<T>, { loaded: true }>;
+export type LoadedLazy<T = any> = Extract<Lazy<T>, { loaded: true }>;
 
-export interface LazyObservableOptions {
+export interface LazyOptions {
   /**
    * Whether the value's contents are made observable recursively, as in mobx's own `deep` option.
    * Defaults to `true`. Pass `false` for values that manage their own observability — model
@@ -189,7 +189,7 @@ export interface LazyObservableOptions {
   debugName?: string;
 }
 
-export interface LazyObservableOptionsWithInitialValue<T> extends LazyObservableOptions {
+export interface LazyOptionsWithInitialValue<T> extends LazyOptions {
   /**
    * A value to start with, before anything is fetched. The lazy reports `loaded` immediately and
    * still counts as stale, so the first observation revalidates it — which is what makes this the
@@ -198,7 +198,7 @@ export interface LazyObservableOptionsWithInitialValue<T> extends LazyObservable
    * Without it a lazy holds nothing (`loaded: false`, `value: undefined`) until a load lands. That
    * distinction is the point: an empty array means "there are none", not "not known yet".
    *
-   * Passing this narrows the result to {@link LoadedLazyObservable}, so `value` reads as `T`
+   * Passing this narrows the result to {@link LoadedLazy}, so `value` reads as `T`
    * without a `loaded` check — the seed is restored by a discard, so a seeded lazy can never go
    * back to holding nothing.
    *
@@ -235,44 +235,38 @@ export interface LazyFetchOptions {
 /** Taking the argument is optional; zero-argument fetchers remain valid. */
 export type LazyFetch<T> = (options: LazyFetchOptions) => Promise<T>;
 
-export function lazyObservable<T>(
+export function lazy<T>(
   fetch: LazyFetch<T>,
-  options: LazyObservableOptionsWithInitialValue<T> & { initialValue: T },
-): LoadedLazyObservable<T>;
-export function lazyObservable<T>(
-  fetch: LazyFetch<T>,
-  options?: LazyObservableOptions,
-): LazyObservable<T>;
-export function lazyObservable<T>(
-  fetch: LazyFetch<T>,
-  options?: LazyObservableOptionsWithInitialValue<T>,
-): LazyObservable<T> {
+  options: LazyOptionsWithInitialValue<T> & { initialValue: T },
+): LoadedLazy<T>;
+export function lazy<T>(fetch: LazyFetch<T>, options?: LazyOptions): Lazy<T>;
+export function lazy<T>(fetch: LazyFetch<T>, options?: LazyOptionsWithInitialValue<T>): Lazy<T> {
   // Presence, not value: `undefined` is a legitimate seed when `T` admits it, and the overloads
   // above are what stop an ambiguous `T | undefined` from reaching here in the first place.
   return createLazy(fetch, options, !!options && "initialValue" in options);
 }
 
 /**
- * The shared implementation behind `lazyObservable` and `lazyObservableArray`. The only difference
+ * The shared implementation behind `lazy` and `lazyArray`. The only difference
  * between them is where the value lives — a box, or an observable array the lazy owns — so that is
  * the one thing passed in, and every rule about loading, staleness, errors and observation is
  * written once here.
  */
 function createLazy<T>(
   fetch: LazyFetch<T>,
-  options: LazyObservableOptionsWithInitialValue<T> | undefined,
+  options: LazyOptionsWithInitialValue<T> | undefined,
   /**
    * Whether `options` carried a seed. Passed in rather than derived here, because the two callers
    * decide it differently and only they can: a scalar seed of `undefined` is a real value, while
-   * for a list `undefined` is never one — and `lazyObservableArray` rebuilds the options bag on
+   * for a list `undefined` is never one — and `lazyArray` rebuilds the options bag on
    * the way through, so an `in` test here would read its own reconstruction rather than what the
    * caller wrote.
    */
   seeded: boolean,
   ownedArray?: IObservableArray<unknown>,
-): LazyObservable<T> {
+): Lazy<T> {
   /**
-   * Where the value lives. `lazyObservableArray` passes an observable array it owns, which is
+   * Where the value lives. `lazyArray` passes an observable array it owns, which is
    * already an observable container, so it is used directly rather than wrapped in a box. Wrapping
    * it would create two layers with only the outer one deciding when loading starts, so iterating
    * the array would track its contents without ever triggering a fetch; owning it means any read of
@@ -413,7 +407,7 @@ function createLazy<T>(
   let pending: Deferred<T> | undefined;
 
   const log = (message: string) => {
-    if (options?.debugName) console.log(`lazyObservable ${options.debugName}`, message);
+    if (options?.debugName) console.log(`lazy ${options.debugName}`, message);
   };
 
   /**
@@ -654,7 +648,7 @@ function createLazy<T>(
     thrashWarned = true;
     const name = options?.debugName ? ` "${options.debugName}"` : "";
     console.warn(
-      `[mobx-toolbox] lazyObservable${name} was observed ${observeTimes.length} times in ` +
+      `[mobx-toolbox] lazy${name} was observed ${observeTimes.length} times in ` +
         `under ${THRASH_WINDOW_MS}ms, and is probably in a reload loop.\n\n` +
         "This happens when a render decides what to show from `fetching` or `fetchedAt` alone. " +
         "Neither one observes the lazy, so the branch that shows a placeholder drops it — which " +
@@ -786,14 +780,14 @@ function createLazy<T>(
     },
     // `loaded` and `value` are getters over the same pair of boxes, so they always agree — but the
     // compiler can only see two independent properties, not the union's guarantee.
-  } as LazyObservable<T>;
+  } as Lazy<T>;
 }
 
 /**
  * The API of a list lazy: everything a scalar one has, except that `set` takes a plain array —
  * callers hand over data, not an observable container.
  */
-type LazyArrayApi<T> = Omit<LazyObservableApi<IObservableArray<T>>, "set"> & {
+type LazyArrayApi<T> = Omit<LazyApi<IObservableArray<T>>, "set"> & {
   set(value: T[]): void;
 };
 
@@ -807,21 +801,21 @@ type LazyArrayApi<T> = Omit<LazyObservableApi<IObservableArray<T>>, "set"> & {
  * yet" and "zero rows" are different answers and only one of them is a fact. `loaded` narrows it,
  * exactly as it does for a scalar lazy.
  */
-export type LazyObservableArray<T = any> =
+export type LazyArray<T = any> =
   | (LazyArrayApi<T> & { loaded: true; value: IObservableArray<T> })
   | (LazyArrayApi<T> & { loaded: false; value: undefined });
 
 /**
- * The `loaded: true` arm of {@link LazyObservableArray} — the list counterpart of
- * {@link LoadedLazyObservable}. What a seeded `lazyObservableArray` hands back, including one
+ * The `loaded: true` arm of {@link LazyArray} — the list counterpart of
+ * {@link LoadedLazy}. What a seeded `lazyArray` hands back, including one
  * seeded with `[]`: "there are none" is a fact, and a fact is loaded.
  */
-export type LoadedLazyObservableArray<T = any> = Extract<LazyObservableArray<T>, { loaded: true }>;
+export type LoadedLazyArray<T = any> = Extract<LazyArray<T>, { loaded: true }>;
 
-export interface LazyObservableArrayOptions<T> extends LazyObservableOptions {
+export interface LazyArrayOptions<T> extends LazyOptions {
   /**
-   * Rows to start with — see {@link LazyObservableOptionsWithInitialValue.initialValue}, of which
-   * this is the list form. Passing it narrows the result to {@link LoadedLazyObservableArray}.
+   * Rows to start with — see {@link LazyOptionsWithInitialValue.initialValue}, of which
+   * this is the list form. Passing it narrows the result to {@link LoadedLazyArray}.
    *
    * Unlike the scalar case there is nothing ambiguous to guard against, because `undefined` is
    * never a list: `{ initialValue: maybeRows }` is accepted and simply does not narrow, since a
@@ -830,18 +824,12 @@ export interface LazyObservableArrayOptions<T> extends LazyObservableOptions {
   initialValue?: T[];
 }
 
-export function lazyObservableArray<T>(
+export function lazyArray<T>(
   fetch: LazyFetch<T[]>,
-  options: LazyObservableArrayOptions<T> & { initialValue: T[] },
-): LoadedLazyObservableArray<T>;
-export function lazyObservableArray<T>(
-  fetch: LazyFetch<T[]>,
-  options?: LazyObservableArrayOptions<T>,
-): LazyObservableArray<T>;
-export function lazyObservableArray<T>(
-  fetch: LazyFetch<T[]>,
-  options?: LazyObservableArrayOptions<T>,
-): LazyObservableArray<T> {
+  options: LazyArrayOptions<T> & { initialValue: T[] },
+): LoadedLazyArray<T>;
+export function lazyArray<T>(fetch: LazyFetch<T[]>, options?: LazyArrayOptions<T>): LazyArray<T>;
+export function lazyArray<T>(fetch: LazyFetch<T[]>, options?: LazyArrayOptions<T>): LazyArray<T> {
   // Created here and owned for the lifetime of the lazy, so `value` is the same array every time
   // there is one and loads replace its contents. `deep` applies to the array's *items*.
   //
@@ -859,11 +847,11 @@ export function lazyObservableArray<T>(
     // list, so an explicit `initialValue: undefined` means the same as omitting it.
     options?.initialValue !== undefined,
     items as unknown as IObservableArray<unknown>,
-  ) as unknown as LazyObservableArray<T>;
+  ) as unknown as LazyArray<T>;
 }
 
 /**
  * The value type a lazy resolves to. Inferred off `getOrLoad` rather than the type itself, so it
  * reads through the `loaded` union without needing to match either member.
  */
-export type InferLazyObservable<O> = O extends { getOrLoad(): Promise<infer T> } ? T : never;
+export type InferLazy<O> = O extends { getOrLoad(): Promise<infer T> } ? T : never;

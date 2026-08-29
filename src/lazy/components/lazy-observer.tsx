@@ -1,4 +1,4 @@
-import type { InferLazyObservable, LazyObservable, LazyObservableArray } from "../lazy-observable";
+import type { InferLazy, Lazy, LazyArray } from "../lazy";
 import { observer } from "mobx-react-lite";
 import type React from "react";
 import { useSlowLoading, type SlowLoadingOptions } from "../../util/use-slow-loading";
@@ -7,10 +7,10 @@ function ThrowError({ error }: { error: unknown }): never {
   throw error;
 }
 
-type LO = LazyObservable | LazyObservableArray;
+type LO = Lazy | LazyArray;
 
 type ObserveTuple<O extends LO[]> = {
-  [K in keyof O]: InferLazyObservable<O[K]>;
+  [K in keyof O]: InferLazy<O[K]>;
 };
 
 export interface LazyObserverBaseProps {
@@ -36,7 +36,7 @@ export interface LazyObserverTupleProps<O extends LO[]> extends LazyObserverBase
 
 export interface LazyObserverSingleProps<O extends LO> extends LazyObserverBaseProps {
   observe: O;
-  children: (value: InferLazyObservable<O>) => React.ReactNode;
+  children: (value: InferLazy<O>) => React.ReactNode;
 }
 
 const NEVER: SlowLoadingOptions = { after: 0, minDuration: 0 };
@@ -86,5 +86,5 @@ const LazyObserverImpl = observer(function LazyObserverImpl(props: {
  */
 export const LazyObserver = LazyObserverImpl as {
   <O extends LO[]>(props: LazyObserverTupleProps<O>): React.ReactNode;
-  <O extends LazyObservable>(props: LazyObserverSingleProps<O>): React.ReactNode;
+  <O extends Lazy>(props: LazyObserverSingleProps<O>): React.ReactNode;
 };

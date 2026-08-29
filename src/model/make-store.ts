@@ -1,12 +1,12 @@
 import * as T from "typebox";
 import {
-  lazyObservableArray,
+  lazyArray,
   type LazyFetch,
   type LazyFetchOptions,
   type LazyInvalidateOptions,
-  type LazyObservableArray,
-  type LazyObservableOptions,
-} from "../lazy-observable/lazy-observable";
+  type LazyArray,
+  type LazyOptions,
+} from "../lazy/lazy";
 import { action, makeObservable, runInAction } from "mobx";
 import { serializeKey, type ModelEventType, type ModelSchema } from "./make-model";
 
@@ -18,7 +18,7 @@ import { serializeKey, type ModelEventType, type ModelSchema } from "./make-mode
 export type Comparator<M> = (a: M, b: M) => number;
 
 /** Per-list options: everything a lazy observable takes, plus staleness and ordering. */
-export interface CollectionOptions<M = any> extends LazyObservableOptions {
+export interface CollectionOptions<M = any> extends LazyOptions {
   /**
    * Which mutations to this resource mark this list stale. Defaults to the store's `invalidateOn`,
    * itself `["created"]`. A deletion always removes the model from the list regardless.
@@ -95,7 +95,7 @@ export type CollectionSpec<R, M> =
  * record, per page. Call it to get that key's list, building it on first use.
  */
 export interface CollectionMap<K, M> {
-  (key: K): LazyObservableArray<M>;
+  (key: K): LazyArray<M>;
   /**
    * Drop one key's list, unregistering it from the store's mutation handling. For a key that is
    * gone for good — an organization the user just left — so the map doesn't hold a list nothing
@@ -181,7 +181,7 @@ export type StoreInstance<M, MC, Cfg> = {
   collection(
     fetch: LazyFetch<MC extends { schema: infer S extends ModelSchema } ? T.Static<S>[] : never[]>,
     options?: CollectionOptions<M>,
-  ): LazyObservableArray<M>;
+  ): LazyArray<M>;
   /**
    * Build a *family* of lists on this store, one per key, for a resource that has to be fetched
    * separately per tenant, per parent record, or per page — keys you can't enumerate in advance.
@@ -230,7 +230,7 @@ export type StoreInstance<M, MC, Cfg> = {
     options: CollectionMapOptions<K, M> & { keyOf: (key: K) => string | number },
   ): CollectionMap<K, M>;
 } & (MC extends { get: (...args: infer A) => any } ? { get(...args: A): Promise<M> } : {}) &
-  (Cfg extends { collections: infer C } ? { [N in keyof C]: LazyObservableArray<M> } : {}) &
+  (Cfg extends { collections: infer C } ? { [N in keyof C]: LazyArray<M> } : {}) &
   (MC extends { create: (...args: infer A) => any } ? { create(...args: A): Promise<M> } : {});
 
 export type StoreConstructor<M, MC, Cfg> = {
@@ -274,7 +274,7 @@ export function makeStore(
   class Store {
     /** Every list this store owns, with the events that mark each stale and how each is ordered. */
     private readonly _collections: {
-      lazy: LazyObservableArray<any>;
+      lazy: LazyArray<any>;
       invalidateOn: readonly ModelEventType[];
       sort: Comparator<any> | undefined;
       optimisticCreate: boolean;
@@ -308,12 +308,12 @@ export function makeStore(
      * Build another list on this store: payloads become models, and the list joins this store's
      * mutation handling. Call it in a subclass field initializer.
      */
-    collection(fetch: LazyFetch<R[]>, options?: CollectionOptions<any>): LazyObservableArray<any> {
+    collection(fetch: LazyFetch<R[]>, options?: CollectionOptions<any>): LazyArray<any> {
       const { invalidateOn, sort, optimisticCreate, discardOnInvalidate, ...lazyOptions } =
         options ?? {};
       // Omitted means "use the store's"; `false` means this one list keeps server order.
       const comparator = (sort === undefined ? config?.sort : sort) || undefined;
-      const lazy = lazyObservableArray(
+      const lazy = lazyArray(
         async (fetchOptions) => {
           const items = await fetch(fetchOptions);
           const models = items.map((item) => buildModel(item));
@@ -359,9 +359,9 @@ export function makeStore(
         ? (params: any) => serializeKey(fields.map((field) => params[field]))
         : (keyOf ?? ((key: any) => key as string | number));
 
-      const byKey = new Map<string | number, LazyObservableArray<any>>();
+      const byKey = new Map<string | number, LazyArray<any>>();
 
-      const map = (key: any): LazyObservableArray<any> => {
+      const map = (key: any): LazyArray<any> => {
         const id = serialize(key);
         const existing = byKey.get(id);
         if (existing) return existing;
@@ -396,7 +396,7 @@ export function makeStore(
      * dropped — a field collection lives as long as the store does, so there is nothing to
      * unregister and no public method for it.
      */
-    private unregister(lazy: LazyObservableArray<any>): void {
+    private unregister(lazy: LazyArray<any>): void {
       const at = this._collections.findIndex((entry) => entry.lazy === lazy);
       if (at !== -1) this._collections.splice(at, 1);
     }
@@ -500,4 +500,4 @@ export function createStore(model: AnyModelClass, config: CreateStoreConfig<any,
   return new (makeStore(model, config as any))();
 }
 
-export type { LazyObservableArray };
+export type { LazyArray };

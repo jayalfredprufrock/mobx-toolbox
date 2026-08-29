@@ -2,7 +2,7 @@
 import { act } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vite-plus/test";
-import { lazyObservableArray } from "../lazy-observable/lazy-observable";
+import { lazyArray } from "../lazy/lazy";
 import { SetFilter } from "../filter/set-filter.model";
 import { Table } from "./components";
 import { TableModel } from "./table.model";
@@ -78,8 +78,8 @@ describe("Table.Empty and Table.Loading gate themselves", () => {
   test("a first load shows loading and never the empty slot", async () => {
     vi.useFakeTimers();
     const gate = deferred<RowData[]>();
-    const lazy = lazyObservableArray(() => gate.promise);
-    const container = await mount(<Grid table={sized({ rows: lazy })} />);
+    const lazy = lazyArray(() => gate.promise);
+    const container = await mount(<Grid table={sized({ data: lazy })} />);
 
     // the wait has not earned an indicator yet, but it is emphatically not "empty"
     expect(container.textContent).not.toContain("NOTHING HERE");
@@ -99,8 +99,8 @@ describe("Table.Empty and Table.Loading gate themselves", () => {
   });
 
   test("a settled load with no rows shows the empty slot", async () => {
-    const lazy = lazyObservableArray(async () => []);
-    const container = await mount(<Grid table={sized({ rows: lazy })} />);
+    const lazy = lazyArray(async () => []);
+    const container = await mount(<Grid table={sized({ data: lazy })} />);
     await act(async () => {});
 
     expect(container.textContent).toContain("NOTHING HERE");
@@ -109,8 +109,8 @@ describe("Table.Empty and Table.Loading gate themselves", () => {
 
   test("a fast first load never flashes the loading slot", async () => {
     vi.useFakeTimers();
-    const lazy = lazyObservableArray(async () => [{ id: 1, name: "alpha" }]);
-    const container = await mount(<Grid table={sized({ rows: lazy })} />);
+    const lazy = lazyArray(async () => [{ id: 1, name: "alpha" }]);
+    const container = await mount(<Grid table={sized({ data: lazy })} />);
 
     await act(async () => {});
     await advance(1000);
@@ -120,14 +120,14 @@ describe("Table.Empty and Table.Loading gate themselves", () => {
   });
 
   test("a plain array with rows shows neither slot", async () => {
-    const container = await mount(<Grid table={sized({ rows: [{ id: 1, name: "alpha" }] })} />);
+    const container = await mount(<Grid table={sized({ data: [{ id: 1, name: "alpha" }] })} />);
 
     expect(container.textContent).not.toContain("LOADING");
     expect(container.textContent).not.toContain("NOTHING HERE");
   });
 
   test("a plain empty array is empty, since there is no load to wait for", async () => {
-    const container = await mount(<Grid table={sized({ rows: [] })} />);
+    const container = await mount(<Grid table={sized({ data: [] })} />);
 
     expect(container.textContent).toContain("NOTHING HERE");
     expect(container.textContent).not.toContain("LOADING");
@@ -137,12 +137,12 @@ describe("Table.Empty and Table.Loading gate themselves", () => {
     // the second fetch is held open, so the refresh is observably in flight rather than a race
     const second = deferred<RowData[]>();
     let calls = 0;
-    const lazy = lazyObservableArray(() => {
+    const lazy = lazyArray(() => {
       calls++;
       return calls === 1 ? Promise.resolve([{ id: 1, name: "alpha" }]) : second.promise;
     });
 
-    const table = sized({ rows: lazy });
+    const table = sized({ data: lazy });
     const container = await mount(<Grid table={table} />);
     await act(async () => {});
     expect(container.textContent).toContain("alpha");
@@ -167,9 +167,9 @@ describe("Table.Empty and Table.Loading gate themselves", () => {
 
   test("`sustain={false}` shows the loading slot at once", async () => {
     const gate = deferred<RowData[]>();
-    const lazy = lazyObservableArray(() => gate.promise);
+    const lazy = lazyArray(() => gate.promise);
     const container = await mount(
-      <Table.Root table={sized({ rows: lazy })}>
+      <Table.Root table={sized({ data: lazy })}>
         <Table.Loading sustain={false}>LOADING</Table.Loading>
       </Table.Root>,
     );
@@ -181,7 +181,7 @@ describe("Table.Empty and Table.Loading gate themselves", () => {
   test("the empty slot's children still tell the story", async () => {
     // gating is the library's; wording stays the consumer's, including the distinction the
     // gate cannot make — filtered-to-nothing versus nothing at all
-    const table = sized({ rows: [{ id: 1, name: "alpha" }] });
+    const table = sized({ data: [{ id: 1, name: "alpha" }] });
     table.addColumn({
       key: "_none",
       value: () => "present",
@@ -204,8 +204,8 @@ describe("Table.Error gates on a failure with nothing to show", () => {
   test("a failed first load shows the error slot, not a spinner forever", async () => {
     vi.useFakeTimers();
     const gate = deferred<RowData[]>();
-    const lazy = lazyObservableArray(() => gate.promise);
-    const container = await mount(<Grid table={sized({ rows: lazy })} />);
+    const lazy = lazyArray(() => gate.promise);
+    const container = await mount(<Grid table={sized({ data: lazy })} />);
 
     await advance(300);
     expect(container.textContent).toContain("LOADING");
@@ -223,14 +223,14 @@ describe("Table.Error gates on a failure with nothing to show", () => {
 
   test("a failed refresh leaves the rows alone and shows no slot at all", async () => {
     let calls = 0;
-    const lazy = lazyObservableArray(() => {
+    const lazy = lazyArray(() => {
       calls++;
       return calls === 1
         ? Promise.resolve([{ id: 1, name: "alpha" }])
         : Promise.reject(new Error("boom"));
     });
 
-    const table = sized({ rows: lazy });
+    const table = sized({ data: lazy });
     const container = await mount(<Grid table={table} />);
     await act(async () => {});
     expect(container.textContent).toContain("alpha");
@@ -252,9 +252,9 @@ describe("Table.Error gates on a failure with nothing to show", () => {
   });
 
   test("the error slot receives the error, so the wording can come from it", async () => {
-    const lazy = lazyObservableArray(() => Promise.reject(new Error("teapot")));
+    const lazy = lazyArray(() => Promise.reject(new Error("teapot")));
     const container = await mount(
-      <Table.Root table={sized({ rows: lazy })}>
+      <Table.Root table={sized({ data: lazy })}>
         <Table.Error>{(error) => `FAILED: ${(error as Error).message}`}</Table.Error>
       </Table.Root>,
     );
@@ -265,7 +265,7 @@ describe("Table.Error gates on a failure with nothing to show", () => {
   });
 
   test("a plain array shows no error slot, since there is no failure to know about", async () => {
-    const container = await mount(<Grid table={sized({ rows: [{ id: 1, name: "alpha" }] })} />);
+    const container = await mount(<Grid table={sized({ data: [{ id: 1, name: "alpha" }] })} />);
 
     expect(container.textContent).not.toContain("FAILED");
   });
@@ -274,7 +274,7 @@ describe("Table.Error gates on a failure with nothing to show", () => {
 describe("Table.Overlay is the placement primitive with no gate", () => {
   test("it renders whenever the consumer says so, over a perfectly healthy table", async () => {
     const container = await mount(
-      <Table.Root table={sized({ rows: [{ id: 1, name: "alpha" }] })}>
+      <Table.Root table={sized({ data: [{ id: 1, name: "alpha" }] })}>
         <Table.Body>{(row) => <Table.Row row={row}>{() => null}</Table.Row>}</Table.Body>
         <Table.Overlay>SAVE FAILED</Table.Overlay>
       </Table.Root>,
@@ -285,7 +285,7 @@ describe("Table.Overlay is the placement primitive with no gate", () => {
 
   test("it claims none of the table's own markers", async () => {
     const container = await mount(
-      <Table.Root table={sized({ rows: [{ id: 1, name: "alpha" }] })}>
+      <Table.Root table={sized({ data: [{ id: 1, name: "alpha" }] })}>
         <Table.Overlay>SAVE FAILED</Table.Overlay>
       </Table.Root>,
     );
@@ -299,7 +299,7 @@ describe("Table.Overlay is the placement primitive with no gate", () => {
 });
 
 describe("the slots gate off the controlled props too", () => {
-  /** The controlled wiring end to end: props in, gated slots out, no row source anywhere. */
+  /** The controlled wiring end to end: props in, gated slots out, no lazy anywhere. */
   const Controlled = ({
     rows,
     loading,
@@ -309,7 +309,7 @@ describe("the slots gate off the controlled props too", () => {
     loading?: boolean;
     error?: unknown;
   }) => {
-    const table = useTable({ rows, loading, error });
+    const table = useTable({ data: rows, loading, error });
     table.setWidth(600);
     table.setHeight(120);
     return <Grid table={table} />;

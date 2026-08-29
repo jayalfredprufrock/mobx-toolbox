@@ -498,7 +498,7 @@ collections: {
 }
 ```
 
-Each is a `LazyObservableArray<M>` that loads when first observed in a reactive context. For
+Each is a `LazyArray<M>` that loads when first observed in a reactive context. For
 imperative access, `await store.drafts.getOrLoad()`.
 
 The verbose form adds that collection's own options — every lazy option, plus `invalidateOn` and
@@ -514,7 +514,7 @@ createStore(SurveyModel, {
 
 ### A collection holds nothing until it loads
 
-`collection()` returns a `LazyObservableArray`, so `value` is `undefined` until the first load
+`collection()` returns a `LazyArray`, so `value` is `undefined` until the first load
 rather than `[]`, and `loaded` narrows it:
 
 ```tsx
@@ -527,7 +527,7 @@ const Surveys = observer(() => {
 
 The distinction matters for exactly one reason, and it is the one that used to cost every table
 author an afternoon: `undefined` means _not known yet_, `[]` means _there are none_. See
-[nothing yet is not the same as nothing](../lazy-observable/README.md#nothing-yet-is-not-the-same-as-nothing).
+[nothing yet is not the same as nothing](../lazy/README.md#nothing-yet-is-not-the-same-as-nothing).
 
 A `discard` — from `invalidate({ discard: true })` or `discardOnInvalidate` — returns the collection
 to holding nothing, not to an empty list.
@@ -727,7 +727,7 @@ const StudyPage = observer(({ studyId }: { studyId: string }) => {
 });
 ```
 
-What comes back is an ordinary `lazyObservable` over the model's own `get`. It loads when something
+What comes back is an ordinary `lazy` over the model's own `get`. It loads when something
 observes it, honours whatever the model declared for [`cache`](#caching-a-record), aborts a request
 it supersedes, and hands back the identity-mapped instance — so an edit made anywhere else in the app
 shows up here.
@@ -771,7 +771,7 @@ you have already seen resolves from the identity map and paints without a reques
 
 `useModel` covers a record fetched through the model's `get`, which is the case an app hits over and
 over. For anything else — a count, a summary, an endpoint that isn't a model at all — reach past it
-to [`useLazy`](../lazy-observable/README.md#uselazy--uselazyarray), which knows nothing about models
+to [`useLazy`](../lazy/README.md#uselazy--uselazyarray), which knows nothing about models
 and takes an explicit `deps` array:
 
 ```tsx
@@ -798,7 +798,7 @@ one place that isn't true, which is why `params` is a hook-only option.
 
 | Name                                    | Description                                                             |
 | --------------------------------------- | ----------------------------------------------------------------------- |
-| _your collection names_                 | `LazyObservableArray<M>` — one per entry in `collections`, or per field |
+| _your collection names_                 | `LazyArray<M>` — one per entry in `collections`, or per field           |
 | `collection(fetch, options?)`           | Build another list on this store                                        |
 | `collectionMap(keys?, fetch, options?)` | Build a family of lists, one per key                                    |
 | `get(...args)`                          | Delegates to `Model.get`                                                |
@@ -814,7 +814,7 @@ Extending `onModelEvent` is how anything else on the store joins in:
 ```ts
 class SurveysWithCounts extends makeStore(SurveyModel) {
   all = this.collection(api.listSurveys);
-  counts = lazyObservable(api.surveyCounts);
+  counts = lazy(api.surveyCounts);
 
   override onModelEvent(type: ModelEventType, model: SurveyInstance) {
     super.onModelEvent(type, model);
@@ -892,7 +892,7 @@ import type {
   Comparator, // (a: M, b: M) => number, what `sort` takes
   AnyModelClass, // a model class accepted as makeStore's first argument
   StoreConstructor, // the class returned by makeStore
-  LazyObservableArray, // the type of each collection
+  LazyArray, // the type of each collection
   AnnotationsMap, // re-export from mobx, for getMobxAnnotations return type
 } from "@jayalfredprufrock/mobx-toolbox/model";
 ```

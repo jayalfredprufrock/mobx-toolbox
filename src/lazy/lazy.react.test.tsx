@@ -4,7 +4,7 @@ import { Observer, observer } from "mobx-react-lite";
 import { act, useRef } from "react";
 import { createRoot } from "react-dom/client";
 import { describe, expect, it, vi } from "vite-plus/test";
-import { lazyObservable, lazyObservableArray } from "./lazy-observable";
+import { lazy, lazyArray } from "./lazy";
 
 // panelpro client-app runs with strict action enforcement (src/index.tsx)
 configure({ enforceActions: "always" });
@@ -33,10 +33,10 @@ const mount = async (el: React.ReactNode) => {
 // Every render below reads `value` before there is one. That is deliberate: a read that returns
 // `undefined` still has to register observation, or the lazy is watched and never loads — the
 // subtlest failure mode in the module, and a silent one.
-describe("lazyObservable + react rendering", () => {
+describe("lazy + react rendering", () => {
   it("loads via <Observer> render callback (respondents pattern)", async () => {
     const fetch = vi.fn(async () => [1, 2, 3]);
-    const items = lazyObservableArray(fetch);
+    const items = lazyArray(fetch);
 
     const Page = () => (
       <Observer>{() => <div data-testid="len">{items.value?.length ?? 0}</div>}</Observer>
@@ -55,8 +55,8 @@ describe("lazyObservable + react rendering", () => {
     });
     const fetchItems = vi.fn(async () => [1, 2, 3]);
 
-    const gate = lazyObservable(fetchGate);
-    const items = lazyObservableArray(fetchItems);
+    const gate = lazy(fetchGate);
+    const items = lazyArray(fetchItems);
 
     const Table = observer(() => <div>{items.value!.length}</div>);
     const Page = observer(() => {
@@ -82,9 +82,9 @@ describe("lazyObservable + react rendering", () => {
     const fetchB = vi.fn(async () => "versionB");
     const fetchItems = vi.fn(async () => [1, 2, 3]);
 
-    const latestVersion = lazyObservable(fetchA);
-    const publishedVersion = lazyObservable(fetchB);
-    const distributions = lazyObservableArray(fetchItems);
+    const latestVersion = lazy(fetchA);
+    const publishedVersion = lazy(fetchB);
+    const distributions = lazyArray(fetchItems);
 
     const Table = observer(() => <div data-testid="len">{distributions.value?.length ?? 0}</div>);
 
@@ -114,8 +114,8 @@ describe("lazyObservable + react rendering", () => {
     const fetch = vi.fn(async () => [1, 2, 3]);
 
     const Page = observer(() => {
-      const ref = useRef<ReturnType<typeof lazyObservableArray<number>>>(undefined);
-      ref.current ??= lazyObservableArray(fetch);
+      const ref = useRef<ReturnType<typeof lazyArray<number>>>(undefined);
+      ref.current ??= lazyArray(fetch);
       return <div>{ref.current.value?.length ?? 0}</div>;
     });
 

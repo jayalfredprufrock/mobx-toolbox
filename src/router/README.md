@@ -899,7 +899,7 @@ Cold loads don't transition: there's no previous page to animate away from, and 
 `[LOAD]` blocks the swap until data is in, which is what makes pages render complete. When you'd rather paint the shell immediately and fill regions in — per-section skeletons, independently refreshing panels — skip `[LOAD]` and drive it from an observable:
 
 ```tsx
-import { useLazy, LazyObserver } from "@jayalfredprufrock/mobx-toolbox/lazy-observable";
+import { useLazy, LazyObserver } from "@jayalfredprufrock/mobx-toolbox/lazy";
 
 const UserDetailPage = observer(() => {
   const { id } = useRouter().pathParams;

@@ -39,7 +39,7 @@ const people: Person[] = [
 const ids = (rows: RowData[]): number[] => rows.map((r) => r.id as number);
 
 const makeTable = (columns: ColumnsDef<Person>, rows: Person[] = people): TableModel => {
-  const table = new TableModel({ rows, columns, getRowId: (p: Person) => p.id });
+  const table = new TableModel({ data: rows, columns, getRowId: (p: Person) => p.id });
   table.setWidth(1000);
   table.setHeight(200);
   return table;
@@ -199,7 +199,7 @@ describe("column filters across the column lifecycle", () => {
     const filter = new SetFilter({ selected: ["a"] });
     const table = makeTable([{ key: "category", filter }]);
 
-    table.setRows(people.slice(0, 3));
+    table.setData(people.slice(0, 3));
     expect(table.column("category")?.filter).toBe(filter);
     expect(ids(table.clientFilteredRows)).toEqual([1, 3]);
 
@@ -479,9 +479,9 @@ describe("facets", () => {
       const predicted = facet.count;
       const before = [...tags.selected];
       if (!tags.has(facet.value as string)) tags.toggle(facet.value as string);
-      expect({ value: facet.value, rows: table.clientFilteredRows.length }).toEqual({
+      expect({ value: facet.value, data: table.clientFilteredRows.length }).toEqual({
         value: facet.value,
-        rows: predicted,
+        data: predicted,
       });
       tags.select(before);
     }
@@ -720,7 +720,7 @@ describe("filter factories", () => {
     expect(built).toBe(1);
     const filter = table.column("category")?.filter;
 
-    table.setRows(people.slice(0, 3));
+    table.setData(people.slice(0, 3));
     table.appendRows([people[3] as RowData]);
     table.setColumns([{ key: "category", filter: () => new SetFilter() }]);
 
@@ -751,7 +751,7 @@ describe("filter factories", () => {
     const filter = filterOf(table, "category", SetFilter);
     filter.toggle("a");
 
-    table.setRows(people.slice(0, 3));
+    table.setData(people.slice(0, 3));
     expect(table.column("category")?.filter).toBe(filter);
     expect(ids(table.clientFilteredRows)).toEqual([1, 3]);
   });
@@ -803,7 +803,7 @@ describe("BucketFilter on a column", () => {
   const build = (opts: { counts?: boolean } = {}) => {
     const filter = new BucketFilter({ buckets: grades, counts: opts.counts });
     const table = new TableModel({
-      rows: students,
+      data: students,
       columns: [{ key: "score", filter }, "name"] as ColumnsDef<Student>,
       getRowId: (s: Student) => s.id,
     });
@@ -859,7 +859,7 @@ describe("BucketFilter on a column", () => {
     const name = new SetFilter();
     const filter = new BucketFilter({ buckets: grades, counts: true });
     const table = new TableModel({
-      rows: students,
+      data: students,
       columns: [
         { key: "score", filter },
         { key: "name", filter: name },

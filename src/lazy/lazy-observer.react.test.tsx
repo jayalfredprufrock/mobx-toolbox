@@ -3,7 +3,7 @@ import { Component, type ReactNode } from "react";
 import { act } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, describe, expect, test, vi } from "vite-plus/test";
-import { lazyObservable } from "./lazy-observable";
+import { lazy } from "./lazy";
 import { LazyObserver } from "./components/lazy-observer";
 
 const containers: HTMLElement[] = [];
@@ -59,9 +59,9 @@ describe("LazyObserver — placeholder timing", () => {
       return <span>SPINNER</span>;
     };
 
-    const lazy = lazyObservable(async () => "done");
+    const subject = lazy(async () => "done");
     const container = await mount(
-      <LazyObserver observe={lazy} placeholder={<Spinner />}>
+      <LazyObserver observe={subject} placeholder={<Spinner />}>
         {(v) => <span>{v}</span>}
       </LazyObserver>,
     );
@@ -78,10 +78,10 @@ describe("LazyObserver — placeholder timing", () => {
   test("a slow load renders the placeholder once past the threshold", async () => {
     vi.useFakeTimers();
     const gate = deferred<string>();
-    const lazy = lazyObservable(() => gate.promise);
+    const subject = lazy(() => gate.promise);
 
     const container = await mount(
-      <LazyObserver observe={lazy} placeholder={<span>SPINNER</span>}>
+      <LazyObserver observe={subject} placeholder={<span>SPINNER</span>}>
         {(v) => <span>{v}</span>}
       </LazyObserver>,
     );
@@ -96,10 +96,10 @@ describe("LazyObserver — placeholder timing", () => {
   test("the placeholder stays up for the minimum duration", async () => {
     vi.useFakeTimers();
     const gate = deferred<string>();
-    const lazy = lazyObservable(() => gate.promise);
+    const subject = lazy(() => gate.promise);
 
     const container = await mount(
-      <LazyObserver observe={lazy} placeholder={<span>SPINNER</span>}>
+      <LazyObserver observe={subject} placeholder={<span>SPINNER</span>}>
         {(v) => <span>{v}</span>}
       </LazyObserver>,
     );
@@ -118,10 +118,10 @@ describe("LazyObserver — placeholder timing", () => {
 
   test("`sustain={false}` renders the placeholder immediately", async () => {
     const gate = deferred<string>();
-    const lazy = lazyObservable(() => gate.promise);
+    const subject = lazy(() => gate.promise);
 
     const container = await mount(
-      <LazyObserver observe={lazy} placeholder={<span>SPINNER</span>} sustain={false}>
+      <LazyObserver observe={subject} placeholder={<span>SPINNER</span>} sustain={false}>
         {(v) => <span>{v}</span>}
       </LazyObserver>,
     );
@@ -133,11 +133,11 @@ describe("LazyObserver — placeholder timing", () => {
   test("timings are overridable", async () => {
     vi.useFakeTimers();
     const gate = deferred<string>();
-    const lazy = lazyObservable(() => gate.promise);
+    const subject = lazy(() => gate.promise);
 
     const container = await mount(
       <LazyObserver
-        observe={lazy}
+        observe={subject}
         placeholder={<span>SPINNER</span>}
         sustain={{ after: 50, minDuration: 0 }}
       >
@@ -151,9 +151,9 @@ describe("LazyObserver — placeholder timing", () => {
 
   test("with a tuple, the clock runs off the combined gate", async () => {
     vi.useFakeTimers();
-    const fast = lazyObservable(async () => "a");
+    const fast = lazy(async () => "a");
     const slow = deferred<string>();
-    const slowLazy = lazyObservable(() => slow.promise);
+    const slowLazy = lazy(() => slow.promise);
 
     const container = await mount(
       <LazyObserver observe={[fast, slowLazy]} placeholder={<span>SPINNER</span>}>
@@ -178,13 +178,13 @@ describe("LazyObserver — placeholder timing", () => {
 
 describe("LazyObserver — errors", () => {
   test("a first-load failure reaches the error boundary", async () => {
-    const lazy = lazyObservable(async () => {
+    const subject = lazy(async () => {
       throw new Error("nope");
     });
 
     const container = await mount(
       <Boundary>
-        <LazyObserver observe={lazy} placeholder={<span>SPINNER</span>}>
+        <LazyObserver observe={subject} placeholder={<span>SPINNER</span>}>
           {(v) => <span>{String(v)}</span>}
         </LazyObserver>
       </Boundary>,
@@ -196,7 +196,7 @@ describe("LazyObserver — errors", () => {
 
   test("a failed refresh keeps rendering the value it still has", async () => {
     let calls = 0;
-    const lazy = lazyObservable(async () => {
+    const subject = lazy(async () => {
       calls++;
       if (calls > 1) throw new Error("offline");
       return "good data";
@@ -204,7 +204,7 @@ describe("LazyObserver — errors", () => {
 
     const container = await mount(
       <Boundary>
-        <LazyObserver observe={lazy} placeholder={<span>SPINNER</span>}>
+        <LazyObserver observe={subject} placeholder={<span>SPINNER</span>}>
           {(v) => <span>{v}</span>}
         </LazyObserver>
       </Boundary>,
@@ -214,24 +214,24 @@ describe("LazyObserver — errors", () => {
     expect(container.textContent).toBe("good data");
 
     await act(async () => {
-      await lazy.reload().catch(() => {});
+      await subject.reload().catch(() => {});
     });
 
     // the screen survives a failed background request — throwing here would destroy working data
     expect(container.textContent).toBe("good data");
-    expect(lazy.error).toBeInstanceOf(Error);
+    expect(subject.error).toBeInstanceOf(Error);
   });
 
   test("a refresh keeps rendering children rather than falling back to the placeholder", async () => {
     const gate = deferred<string>();
     let calls = 0;
-    const lazy = lazyObservable(() => {
+    const subject = lazy(() => {
       calls++;
       return calls === 1 ? Promise.resolve("first") : gate.promise;
     });
 
     const container = await mount(
-      <LazyObserver observe={lazy} placeholder={<span>SPINNER</span>}>
+      <LazyObserver observe={subject} placeholder={<span>SPINNER</span>}>
         {(v) => <span>{v}</span>}
       </LazyObserver>,
     );
@@ -240,7 +240,7 @@ describe("LazyObserver — errors", () => {
     expect(container.textContent).toBe("first");
 
     await act(async () => {
-      void lazy.reload();
+      void subject.reload();
     });
 
     // the gate is `loaded`, not `fetching`, so a refresh never blanks the page

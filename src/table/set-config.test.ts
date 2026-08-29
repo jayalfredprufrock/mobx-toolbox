@@ -24,7 +24,7 @@ const items: Item[] = [
 ];
 
 const makeTable = (columns: ColumnsDef<Item>): TableModel => {
-  const table = new TableModel({ rows: items, columns, getRowId: (i: Item) => i.id });
+  const table = new TableModel({ data: items, columns, getRowId: (i: Item) => i.id });
   table.setWidth(1000);
   table.setHeight(200);
   return table;

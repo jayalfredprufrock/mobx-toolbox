@@ -12,7 +12,7 @@ A headless, virtualized data table for MobX + React. The model owns all state �
 import { useTable, Table } from "@jayalfredprufrock/mobx-toolbox/table";
 
 function UserTable({ users }) {
-  const table = useTable({ rows: users, columns: ["name", "email", "role"] });
+  const table = useTable({ data: users, columns: ["name", "email", "role"] });
 
   return (
     <Table.Root table={table}>
@@ -37,24 +37,29 @@ function UserTable({ users }) {
 
 ## The dataset
 
-The config is read once, at construction — **except `rows`**, which `useTable` keeps in sync. It has to: a route's params can change without remounting the page (React reconciles the same component type at the same tree position), so a table that ignored later `rows` would keep rendering the previous org's data.
+The config is read once, at construction — **except `data`**, `loading` and `error`, which `useTable` keeps in sync. It has to: a route's params can change without remounting the page (React reconciles the same component type at the same tree position), so a table that ignored later `data` would keep rendering the previous org's rows.
 
-`rows` takes one of three shapes, and the first two differ in **who decides the dataset changed** — which is what decides when row-keyed state (selection, expansion) resets, since that is `setRows`'s documented job. The third, a **row source**, also carries whether the data is still arriving.
+`data` takes one of three shapes. Two of them differ in **who decides the dataset changed** — which is what decides when row-keyed state (selection, expansion) resets, since that is `setData`'s documented job. The third, a **lazy**, also carries whether the data is still arriving.
+
+The field is named for what it is rather than for one of its shapes: only the first is literally rows. Whatever you pass, the resolved array is always `table.rows`.
 
 ```tsx
 // React decides — re-applied when the array identity changes
 const rows = useMemo(() => users.filter(isActive), [users]);
-useTable({ rows });
+useTable({ data: rows });
 
 // MobX decides — re-applied when the observables the getter read change
-useTable({ rows: () => store.filteredRows });
+useTable({ data: () => store.filteredRows });
+
+// the lazy decides — and it also knows whether a request is running
+useTable({ data: store.activeUsers });
 ```
 
 | Shape          | Re-applied when                    | Gets it wrong by                                                                                                                                                              |
 | -------------- | ---------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `T[]`          | it's a different array than before | rebuilding the array inline each render — every parent render reads as a new dataset (harmless with `getRowId`, since state is intersected; without it, selection is cleared) |
 | `() => T[]`    | the observables it _read_ change   | reading something MobX isn't tracking — props, React state, a plain field — in which case it is never re-run and the table silently keeps the first dataset                   |
-| `RowSource<T>` | its `value` changes                | nothing much — the table tracks the contents itself                                                                                                                           |
+| `LazyArray<T>` | its `value` changes                | nothing much — the table tracks the contents itself                                                                                                                           |
 
 Two more things worth knowing about the getter form: it is captured once, so close over observables rather than render-scoped values, which would go stale; and it must be the _source_ of the rows, not a transform of a prop.
 
@@ -66,7 +71,7 @@ Selection is keyed to a row **existing**, not to it being visible:
 
 - **Filtering something out does not deselect it.** Filters run over `rows` without replacing them, so
   a hidden row is still selected and comes back when the filter changes.
-- **A row leaving the dataset does deselect it.** `setRows` intersects selection against the incoming
+- **A row leaving the dataset does deselect it.** `setData` intersects selection against the incoming
   rows, so a record that is genuinely gone doesn't linger in the selection.
 
 The two populations are both available, and mixing them up is where the bugs are:
@@ -89,12 +94,12 @@ change, prune on a _dataset_ change.
 
 That distinction only stays decidable while filtering lives **inside** the table (a column's
 `filter` or the built-in `search`). Filter outside it —
-hand over `rows: () => all.filter(pred)` — and the table cannot tell "filtered out" from "deleted",
+hand over `data: () => all.filter(pred)` — and the table cannot tell "filtered out" from "deleted",
 so neither behaviour is right. Keep `rows` as the dataset and filter through the table.
 
 ### Row-keyed state across a refresh
 
-With `getRowId`, `setRows` **intersects** selection and expansion against the incoming rows instead of clearing them: ids that still resolve to a row stay, the rest drop. So a refetch, a poll, or a store invalidation arrives without costing the user their selection, while genuinely switching datasets still drops it, because none of the old ids resolve.
+With `getRowId`, `setData` **intersects** selection and expansion against the incoming rows instead of clearing them: ids that still resolve to a row stay, the rest drop. So a refetch, a poll, or a store invalidation arrives without costing the user their selection, while genuinely switching datasets still drops it, because none of the old ids resolve.
 
 Without `getRowId` the ids are row _positions_, which must not silently attach to different rows, so state is cleared outright. **If your rows come from a source that refreshes, configure `getRowId`.**
 
@@ -103,24 +108,15 @@ Without `getRowId` the ids are row _positions_, which must not silently attach t
 Hand the lazy over whole:
 
 ```tsx
-useTable({ rows: surveyStore.all, getRowId: (s) => s.id });
+useTable({ data: surveyStore.all, getRowId: (s) => s.id });
 ```
 
 The table tracks the array's contents itself, so there is no `.slice()` to remember — and this is
 the only form that can tell **a first load from an empty result**, which is what drives
 [loading, empty and error states](#loading-empty-and-error-states).
 
-It is structural, not a dependency: `table` declares the shape it needs and never imports
-`lazy-observable`.
-
-```ts
-interface RowSource<T> {
-  value: T[] | undefined; // undefined while nothing has arrived
-  fetching: boolean; // a request is in flight, refreshes included
-}
-```
-
-A `LazyObservableArray` satisfies it, and so does anything else with those two properties.
+The dependency is **type-only**: `table` imports `LazyArray` as a type and never touches
+`lazy` at runtime, so handing the table arrays costs you none of that module.
 
 Reading `value` is what marks the lazy observed and starts the fetch — which works even before there
 is a value, so the table binding drives the first load.
@@ -128,10 +124,10 @@ is a value, so the table binding drives the first load.
 A getter still works when the rows are _derived_ rather than handed over:
 
 ```tsx
-useTable({ rows: () => store.all.value?.filter(isActive) ?? [], getRowId: (s) => s.id });
+useTable({ data: () => store.all.value?.filter(isActive) ?? [], getRowId: (s) => s.id });
 ```
 
-That produces a new array on each load, so `setRows` re-applies the dataset — fine, because with
+That produces a new array on each load, so `setData` re-applies the dataset — fine, because with
 `getRowId` selection is intersected rather than cleared. It carries no loading information, though,
 so `table.loading` stays `false`.
 
@@ -160,7 +156,7 @@ const rows = useCollection(
     params: { orgId },
   },
 );
-const table = useTable({ rows, getRowId: (s) => s.id });
+const table = useTable({ data: rows, getRowId: (s) => s.id });
 ```
 
 **A shared store, keyed — per tenant, per parent record:** `collectionMap`. Each key is its own
@@ -168,7 +164,7 @@ lazy, so `store.byOrg({ orgId })` hands over a **different** object when `orgId`
 table re-points at it:
 
 ```tsx
-const table = useTable({ rows: store.byOrg({ orgId }), getRowId: (s) => s.id });
+const table = useTable({ data: store.byOrg({ orgId }), getRowId: (s) => s.id });
 ```
 
 Both work through `useTable` without a `useMemo` — passing it in render is fine, because a source is
@@ -182,7 +178,7 @@ Two behaviours worth expecting from the keyed form:
   survives the switch and one that does not is dropped — so a selection never points at a row from
   the previous key.
 
-Driving a `TableModel` directly rather than through `useTable`? `setRowSource(rows)` is the same
+Driving a `TableModel` directly rather than through `useTable`? `setData(data)` is the same
 re-pointing, for when the binding it was constructed with is no longer the right one.
 
 ### Loading, empty and error states
@@ -212,24 +208,66 @@ _disabled_.
 The same goes for a **failed** refresh: `table.error` stays `undefined`, the rows stay put, and the
 error is still wherever you keep it. Only a failure with nothing to show is the table's business.
 
-#### Controlled: the same states without a row source
+#### Controlled: the same states without a lazy
 
-A row source works all of this out itself. If your loading state lives in React instead — TanStack
+A lazy works all of this out itself. If your loading state lives outside MobX instead — TanStack
 Query, SWR, a plain `useEffect` — pass it and get the identical states:
 
 ```tsx
 const query = useQuery(...);
-const table = useTable({ rows: query.data, loading: query.isFetching, error: query.error });
+const table = useTable({ data: query.data, loading: query.isFetching, error: query.error });
 ```
 
-Which form you are in is decided by what `rows` is: a `RowSource` is uncontrolled and authoritative
-about itself (the props are ignored), anything else is controlled. Rows win when there are any, and
-`loading`/`error` decide what an empty-looking dataset means — so `rows={[]} loading` is a first
-load rather than a settled empty result, which is the "No results" flash the uncontrolled form
-avoids for free.
+Which form you are in is decided by what `data` is: a lazy is authoritative about itself, anything
+else needs telling. Rows win when there are any, and `loading`/`error` decide what an empty-looking
+dataset means — so `data={[]} loading` is a first load rather than a settled empty result, which is
+the "No results" flash a lazy avoids for free.
+
+Pairing a lazy with `loading` or `error` is a **compile error**, not a silently ignored prop. A lazy
+already knows, so passing both is a contradiction rather than a preference, and the type says so at
+the call site.
 
 Pass `loading` from the first render, not from the first effect: no rows and `loading: false` is a
 settled empty result by definition, and the table will say so.
+
+#### Reaching the lazy: `table.lazy`
+
+A component handed a `TableModel` and nothing else — a generic table wrapper, a toolbar rendered
+from context — can ask whether its dataset is refreshable, and get the concrete lazy if it is:
+
+```tsx
+const RefreshButton = observer(({ table }: { table: TableModel }) => {
+  const lazy = table.lazy;
+  if (!lazy) return null; // an array or a getter: nothing to refresh, offer nothing
+
+  const failed = lazy.loaded && lazy.error !== undefined;
+  return (
+    <IconButton
+      onClick={() => void lazy.reload().catch(() => toast.error("Couldn't refresh"))}
+      data-spinning={lazy.fetching}
+      data-error={failed}
+    />
+  );
+});
+```
+
+It is the real `LazyArray`, not a structural stand-in, so the whole API is there —
+`reload()`, `refreshing`, `invalidate()`, `fetchedAt`.
+
+`fetching` covers requests the lazy started _by itself_ — revalidating on reobservation, a
+`reloadEvery` tick — not just ones you triggered, so the indicator is honest about background work.
+(The warning on a lazy's own `fetching` is narrower than it looks: reading it doesn't mark the lazy
+_observed_, so it can't keep one alive or trigger a load. A mounted table is already observing its
+lazy, so reading through here is safe.)
+
+`lazy.loaded && lazy.error` is the failed-refresh split — rows still on screen, last request failed.
+The table itself declines to make that call, which is why `<Table.Error>` stays out of the way for
+it. And `reload()` rejects, so `.catch()` is the toast; a background revalidation has no promise to
+reject, so if you want those surfaced too, react to `lazy.error` instead.
+
+There is deliberately no `table.refresh()`, no `table.refreshing`, and no refresh error state. Every
+one of those would re-derive something the owner of the fetching already has, and the lazy is right
+here for the one caller that doesn't.
 
 Everything else (`columns`, `getRowId`, `onStateChange`) is captured at construction. Change those through the model — `setColumns`, `applyState` — rather than by re-rendering. Column filters need none of this: they are instances you hold, so you mutate them directly.
 
@@ -239,7 +277,7 @@ Everything else (`columns`, `getRowId`, `onStateChange`) is captured at construc
 
 ```ts
 const table = useTable({
-  rows,
+  data: rows,
   columns: [
     "name", // field column, title-cased header ("Name")
     "owner.email", // dot-path into a nested value
@@ -251,7 +289,7 @@ const table = useTable({
 });
 ```
 
-A function entry is a **factory**: it receives the first row and returns one or more defs, for datasets whose shape is only known at runtime. Factories are skipped while there is no data and re-run on `setRows`/`appendRows`.
+A function entry is a **factory**: it receives the first row and returns one or more defs, for datasets whose shape is only known at runtime. Factories are skipped while there is no data and re-run on `setData`/`appendRows`.
 
 `value` feeds sorting and the default render; `render` overrides display only. Sorting therefore always goes through `value`, never a raw `row[key]` lookup.
 
@@ -259,7 +297,7 @@ A function entry is a **factory**: it receives the first row and returns one or 
 
 ```ts
 useTable({
-  rows,
+  data: rows,
   columns: [{ key: "name", width: 240, pinned: "left" }], // the ones you care about
   autoColumns: (key, value) => {
     if (key.startsWith("_") || key === "id") return false; // never show these
@@ -273,7 +311,7 @@ Every key on the first row that `columns` doesn't already cover goes through `au
 def to configure that column, `true` for the default (the key as a field column), or `false` to leave
 it out.
 
-`autoColumns` **defaults to `true` when `columns` is omitted** — so `useTable({ rows })` still gives
+`autoColumns` **defaults to `true` when `columns` is omitted** — so `useTable({ data: rows })` still gives
 you a working table — and to `false` when it isn't. Set it explicitly to get both, which is the point:
 configuring one column no longer costs you automatic generation of the rest.
 
@@ -298,7 +336,7 @@ The three are independent of `autoColumns`, and none of them switch it off:
 
 - `addColumn` adds to a separate list, so auto columns keep being generated alongside it.
 - `removeColumn` records a **suppression** rather than editing a def list, so the removal survives
-  re-derivation instead of being undone by the next `setRows`.
+  re-derivation instead of being undone by the next `setData`.
 - `setColumns` is a full reset of the curated set: runtime additions and suppressions go with it. It
   _does_ stop auto-generation, because `autoColumns` defaults to off once columns are configured —
   pass `autoColumns: true` if you want both.
@@ -463,13 +501,13 @@ just the row — so a column is also how you attach a predicate that isn't about
 ```
 
 It narrows rows without ever being rendered, and nothing can reveal it. Filtering _upstream_ instead
-— `rows: () => all.filter(pred)` — is the thing to avoid: `setRows` then intersects selection against
+— `data: () => all.filter(pred)` — is the thing to avoid: `setData` then intersects selection against
 the smaller set and drops it permanently, because the table cannot tell "filtered out" from
 "deleted".
 
 `sortable: false` is advisory — it's for hiding header controls. The model's sort APIs are never gated, so `setSort` and `applyState` still work.
 
-For **server-side sorting**, set `sortMode: "manual"`. Sort state behaves identically (so header UIs need no changes) but row order is left untouched — react to `sorts`, refetch, and `setRows`.
+For **server-side sorting**, set `sortMode: "manual"`. Sort state behaves identically (so header UIs need no changes) but row order is left untouched — react to `sorts`, refetch, and `setData`.
 
 ## Selection
 
@@ -513,14 +551,14 @@ no configuration at all, because every identity-mapped record is the same instan
 
 ```tsx
 // no getRowId: selection follows the record through a refetch, a poll, a re-sort
-useTable({ rows: surveyStore.all });
+useTable({ data: surveyStore.all });
 ```
 
 **With `getRowId`**, the id comes from the data, so the same _record_ survives even when it arrives
 as a **different object** — a plain-JSON refetch, anything not identity-mapped:
 
 ```tsx
-useTable({ rows, getRowId: (s) => s.id });
+useTable({ data: rows, getRowId: (s) => s.id });
 ```
 
 | your rows are…                        | without `getRowId` | with it  |
@@ -533,7 +571,7 @@ in that position.
 
 > The default used to be the row's **index**. That was only safe while the dataset was re-applied
 > wholesale — a source that replaces its contents in place, which is what every
-> `LazyObservableArray` does, would leave a selected index pointing at whatever row later occupied
+> `LazyArray` does, would leave a selected index pointing at whatever row later occupied
 > the slot. Object identity has no such failure mode.
 
 #### The same id keys React
@@ -603,7 +641,7 @@ const columns: ColumnsDef<User> = [
   { key: "score", filter: () => new DateFilter() },
 ];
 
-const table = useTable({ rows, columns });
+const table = useTable({ data: rows, columns });
 ```
 
 **Use the factory form for defs declared outside the component.** A bare `new SetFilter()` in a
@@ -625,7 +663,7 @@ A discriminant (`filter: "set"`) is the one form deliberately unsupported: it wo
 `"set" -> SetFilter` map into the table, so every consumer would ship every filter type. Both
 supported forms keep your page's own import as the only thing that pulls one in.
 
-Either way the filter survives everything that rebuilds column defs — `setRows`, `appendRows`,
+Either way the filter survives everything that rebuilds column defs — `setData`, `appendRows`,
 `setColumns` — because `syncColumns` preserves the `ColumnModel` behind a key it already has, and the
 factory is not called again for a key that already has one. (Which is also why a new def for an
 existing key is ignored wholesale: to swap a filter type at runtime, use `removeColumn` +
@@ -832,7 +870,7 @@ serializes into `table.filterQuery` for you to send onward.
 
 ```ts
 const table = useTable({
-  rows,
+  data: rows,
   columns: [
     { key: "time", filter: () => new DateFilter(), filterMode: "server", field: "created_at" },
     { key: "level", filter: () => new SetFilter({ options: LEVELS }), filterMode: "server" },
@@ -842,7 +880,7 @@ const table = useTable({
 
 reaction(
   () => table.filterQuery,
-  (query) => void refetch({ where: query?.map(toClause) }).then((r) => table.setRows(r)),
+  (query) => void refetch({ where: query?.map(toClause) }).then((r) => table.setData(r)),
   { equals: comparer.structural },
 );
 ```
@@ -854,7 +892,7 @@ server half, and `activeClientColumnFilters` / `activeServerColumnFilters` split
 places.
 
 Applying client filters _on top of_ server results needs no new machinery either: the table filters
-over `rows` without replacing them, so `setRows(serverResults)` followed by a client filter is the
+over `rows` without replacing them, so `setData(serverResults)` followed by a client filter is the
 behaviour you already have.
 
 `filterQuery` is a `FilterCondition[]` — plain JSON, so it compares with `comparer.structural` and
@@ -891,7 +929,7 @@ already applied to `rows`. That falls out of the partition rather than being a s
 The search has its own mode:
 
 ```ts
-useTable({ rows, search: { mode: "server" } });
+useTable({ data: rows, search: { mode: "server" } });
 ```
 
 In server mode the query stops narrowing rows and becomes a `{ op: "search" }` condition instead.
@@ -906,7 +944,7 @@ one the user actually waits on — would go out with no conditions at all.
 
 Columns that genuinely depend on data still wait for it: a factory def resolves against the first
 row, and `autoColumns` can't know the keys until one arrives. Both materialize on the first
-`setRows` and pick up any state already applied.
+`setData` and pick up any state already applied.
 
 ## Persisting the view
 
@@ -916,7 +954,7 @@ Storage is entirely yours — the library only hands you a snapshot and takes on
 
 ```ts
 const table = useTable({
-  rows,
+  data: rows,
   onStateChange: (state) => localStorage.setItem("users.table", JSON.stringify(state)),
 });
 
@@ -926,7 +964,7 @@ useMountEffect(() => {
 });
 ```
 
-`applyState` accepts partial snapshots and tolerates drift: keys with no matching column are held aside and applied if that column later appears (so restoring before the first `setRows` works), and columns the snapshot doesn't mention keep their state, ordered after the ones it does. Debouncing and storage are yours.
+`applyState` accepts partial snapshots and tolerates drift: keys with no matching column are held aside and applied if that column later appears (so restoring before the first `setData` works), and columns the snapshot doesn't mention keep their state, ordered after the ones it does. Debouncing and storage are yours.
 
 ### Filters and search in the snapshot
 
@@ -1080,8 +1118,28 @@ Drop a `<Table.Resizer>` inside a header cell. It handles the drag (on the corre
 | `search`                                      | the built-in cross-column search          |
 | `virtualWidth` / `virtualHeight`              | full scroll extent                        |
 
-Mutations all go through actions: `setRows`, `appendRows`, `clearColumnFilters`, `setSort`/`setSorts`/`clearSort`, `toggleRow`/`selectAllRows`/`toggleAllRows`/`clearSelection`, `toggleRowExpanded`/`collapseAllRows`, `moveColumn`, `applyState`, `scrollToRow`/`scrollToEnd`.
+Mutations all go through actions: `setData`, `appendRows`, `clearColumnFilters`, `setSort`/`setSorts`/`clearSort`, `toggleRow`/`selectAllRows`/`toggleAllRows`/`clearSelection`, `toggleRowExpanded`/`collapseAllRows`, `moveColumn`, `applyState`, `scrollToRow`/`scrollToEnd`.
 
 `ColumnModel`: `key`, `title`, `width`, `pinned`, `hidden`, `sortDirection`, `sortIndex`, `sortable`, `resizable`, `getValue(row)`, `setPinned`, `setHidden`, `setManualWidth`, `sortBy`, `clearSort`, `setConfig`, plus the filtering surface — `filter`, `filterable`, `facets`, `filterMode`, `field`, `filterCondition`, `searchable`, `searchValue(row)`, `clearFilter()`.
 
-When you build the model yourself rather than via `useTable`, call `dispose()` to drop the model's reactions — `onStateChange`, and the one tracking a getter `rows` — and `activate()` to re-arm them. A `TableModel` built directly with an **array** `rows` applies it once, at construction: identity-based syncing is `useTable`'s job, so update it with `setRows`. The getter form needs no such help; it tracks its source wherever the model lives.
+### Lifecycle: `dispose()` and `activate()`
+
+When you build the model yourself rather than via `useTable`, `dispose()` drops its three reactions
+— the one reading rows through `data`, the one re-deriving factory columns once a first row exists,
+and `onStateChange` — and `activate()` re-arms them. They are the _only_ pair that controls this:
+`setData` re-points the dataset and nothing else.
+
+**`dispose()` is not just hygiene.** The rows reaction reads a lazy's `value`, and `value` is one of
+the lazy's observation sources — so an undisposed table keeps its lazy **observed**. The lazy then
+never drops its value, and if it was built with `reloadEvery` it goes on polling. A table that
+unmounts without disposing leaves a lazy quietly fetching forever for a screen nobody is looking at.
+The reaction stays reachable from the store that owns the lazy, so nothing collects it either.
+
+`activate()` exists as its pair mainly for React StrictMode, which runs mount → cleanup → mount
+against the _same_ surviving model; a cleanup-only effect would leave the second mount deaf. That is
+why `useTable` calls `activate()` on mount rather than relying on the constructor's call. (`uploader`
+uses the identical pair, for the same reason.)
+
+A `TableModel` built directly with an **array** `data` applies it once, at construction:
+identity-based syncing is `useTable`'s job, so update it with `setData`. The getter and lazy forms
+need no such help; they track wherever the model lives.

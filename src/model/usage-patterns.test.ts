@@ -1,7 +1,7 @@
 import { describe, expect, test, vi } from "vite-plus/test";
 import { action, autorun, makeObservable, observable, runInAction } from "mobx";
 import * as T from "typebox";
-import { lazyObservableArray } from "../lazy-observable/lazy-observable";
+import { lazyArray } from "../lazy/lazy";
 import { TableModel } from "../table/table.model";
 import type { RowData } from "../table/table.types";
 import { makeModel, type ModelEventType, type ModelListener } from "./make-model";
@@ -143,7 +143,7 @@ class SurveyPager implements ModelListener {
   readonly rows;
 
   constructor(private readonly api: ReturnType<typeof makeApi>) {
-    this.rows = lazyObservableArray(
+    this.rows = lazyArray(
       async () => {
         const res = await this.api.page({ page: this.page, perPage: this.perPage });
         // the envelope's other fields have to be smuggled out as a side effect
@@ -203,7 +203,7 @@ describe("load more", () => {
     await feed.loadMore();
 
     const table = new TableModel({
-      rows: () => feed.rows,
+      data: () => feed.rows,
       getRowId: (row: RowData) => (row as SurveyInstance).id,
     });
     const stop = autorun(() => void table.clientFilteredRows.length);

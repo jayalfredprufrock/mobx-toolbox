@@ -5,14 +5,14 @@ import { observer } from "mobx-react-lite";
 import { act } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, describe, expect, it, vi } from "vite-plus/test";
-import { lazyObservable, lazyObservableArray } from "../lazy-observable/lazy-observable";
+import { lazy, lazyArray } from "../lazy/lazy";
 import { Router } from "./components/router";
 import { makeRoutes } from "./make-routes";
 import { RouterStore } from "./router.store";
 import { LOAD } from "./symbols";
 
 // Mirrors panelpro client-app: enforceActions + observer() page gated on two
-// lazyObservables, rendered through the full Router -> outlet -> page chain,
+// lazies, rendered through the full Router -> outlet -> page chain,
 // with the model provided via a [LOAD] loader (route.data).
 configure({ enforceActions: "always" });
 
@@ -26,16 +26,16 @@ const flush = async () => {
   });
 };
 
-describe("Router + observer() page + lazyObservable", () => {
+describe("Router + observer() page + lazy", () => {
   it("triggers gated lazy loaders through the full router chain", async () => {
     const fetchA = vi.fn(async () => "versionA");
     const fetchB = vi.fn(async () => "versionB");
     const fetchItems = vi.fn(async () => [1, 2, 3]);
 
     const survey = {
-      latestVersion: lazyObservable(fetchA),
-      publishedVersion: lazyObservable(fetchB),
-      distributions: lazyObservableArray(fetchItems),
+      latestVersion: lazy(fetchA),
+      publishedVersion: lazy(fetchB),
+      distributions: lazyArray(fetchItems),
     };
 
     const Table = observer(() => <div>{survey.distributions.value?.length ?? 0}</div>);

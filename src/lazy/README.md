@@ -1,13 +1,31 @@
-# @mobx-toolbox/lazy-observable
+# @mobx-toolbox/lazy
 
 Lazy-loading MobX observables that fetch their value on first observation and drop it automatically when they go unobserved.
 
-## `lazyObservable`
+## Naming
+
+The factories are `lazy` and `lazyArray`; the types are `Lazy`, `LazyArray`, `LazyApi`,
+`LazyOptions`, `LazyArrayOptions`, `LoadedLazy`, `LoadedLazyArray` and `InferLazy`.
+
+The old `lazyObservable*` / `LazyObservable*` spellings still export as deprecated aliases, and the
+old import path `mobx-toolbox/lazy-observable` still resolves, so a codebase can migrate a file at a
+time. **Both go away at 1.0** — the aliases live in `deprecated.ts`, and the old path is a second
+`pack` entry in `vite.config.ts` that re-exports this one (284 bytes; the implementation is in a
+shared chunk either way). Removing them is deleting that file, its line in `index.ts`, and that
+entry — at which point every remaining use of an old name or the old path fails loudly rather than
+drifting.
+
+> **Importing alongside React?** `lazy` collides with `React.lazy`, which is common in the same
+> files that do route-level code splitting. Alias one of them at the import — `import { lazy as
+lazyValue }` or `import { lazy as reactLazy }` — or import this one as
+> `import * as Lazy from ".../lazy"`.
+
+## `lazy`
 
 ```ts
-import { lazyObservable } from "@jayalfredprufrock/mobx-toolbox/lazy-observable";
+import { lazy } from "@jayalfredprufrock/mobx-toolbox/lazy";
 
-const currentUser = lazyObservable(() => api.fetchCurrentUser());
+const currentUser = lazy(() => api.fetchCurrentUser());
 ```
 
 The fetch function runs the first time the observable is accessed inside a reactive context (observer component, autorun, reaction, etc.). It does **not** run on direct access outside a reactive context.
@@ -140,7 +158,7 @@ confusion:
   first load, applied to a value that already existed.
 
 ```ts
-const surveys = lazyObservableArray(() => api.getSurveys());
+const surveys = lazyArray(() => api.getSurveys());
 
 await surveys.getOrLoad(); // demand: fetches, nothing observing
 surveys.invalidate(); // staleness: nothing observing → drops the value, no fetch
@@ -152,7 +170,7 @@ surveys.invalidate(); // staleness: nothing observing → drops the value, no fe
 `reloadEvery` refreshes the value on an interval — for data that shouldn't go stale on screen:
 
 ```ts
-const queue = lazyObservableArray(() => api.getQueue(), { reloadEvery: 30_000 });
+const queue = lazyArray(() => api.getQueue(), { reloadEvery: 30_000 });
 ```
 
 It only runs **while something is observing**, so an unobserved lazy never polls in the background,
@@ -196,7 +214,7 @@ an explicit write.
 ### Options
 
 ```ts
-lazyObservable(fetch, {
+lazy(fetch, {
   initialValue: seed, // start loaded with this, and still revalidate — default: none
   //                    (narrows the result — see “A seed narrows the type”)
   deep: false, // convert the value's contents to observables? — default: true
@@ -223,7 +241,7 @@ without breaking every fetcher, and so a client whose own first parameter is an 
 **attached directly**:
 
 ```ts
-const surveys = lazyObservableArray(api.getSurveys); // if its first param is `{ signal? }`
+const surveys = lazyArray(api.getSurveys); // if its first param is `{ signal? }`
 ```
 
 The signal aborts the moment its request is superseded — by `reload()`, `set()`, `invalidate()`,
@@ -231,7 +249,7 @@ going unobserved, or a dependency change. Taking the argument is optional, so ze
 keep working:
 
 ```ts
-const surveys = lazyObservableArray(({ signal }) => api.getSurveys({ signal }));
+const surveys = lazyArray(({ signal }) => api.getSurveys({ signal }));
 ```
 
 A superseded result is discarded whether or not you use the signal; passing it through is what
@@ -251,13 +269,13 @@ never trigger a request you didn't ask for:
 
 ```ts
 // no refetch when session.orgId changes
-const surveys = lazyObservableArray(() => api.getSurveys({ orgId: session.orgId }));
+const surveys = lazyArray(() => api.getSurveys({ orgId: session.orgId }));
 ```
 
 Opt in with `trackDependencies` when the refetch is the point:
 
 ```ts
-const surveys = lazyObservableArray(() => api.getSurveys({ orgId: session.orgId }), {
+const surveys = lazyArray(() => api.getSurveys({ orgId: session.orgId }), {
   trackDependencies: true,
 });
 ```
@@ -269,7 +287,7 @@ is why this isn't the default. Each re-run supersedes the previous request and a
 For an observable that changes rapidly, throttle the refetching:
 
 ```ts
-const results = lazyObservableArray(({ signal }) => api.search({ q: query.get(), signal }), {
+const results = lazyArray(({ signal }) => api.search({ q: query.get(), signal }), {
   trackDependencies: { throttle: 300 },
 });
 ```
@@ -294,14 +312,14 @@ reaction(
 );
 ```
 
-## `lazyObservableArray`
+## `lazyArray`
 
 A variant that initializes with `[]` so you never have to handle an undefined array.
 
 ```ts
-import { lazyObservableArray } from "@jayalfredprufrock/mobx-toolbox/lazy-observable";
+import { lazyArray } from "@jayalfredprufrock/mobx-toolbox/lazy";
 
-const users = lazyObservableArray(() => api.getUsers());
+const users = lazyArray(() => api.getUsers());
 
 // value is always IObservableArray<User>, never undefined
 users.value.map((u) => u.name);
@@ -351,7 +369,7 @@ so a reference taken earlier is still valid when the next load fills it back in.
 `value` is `undefined` until a load lands, not `[]`:
 
 ```ts
-const rows = lazyObservableArray(api.listSurveys);
+const rows = lazyArray(api.listSurveys);
 
 rows.value; // undefined — "not known yet"
 await rows.getOrLoad();
@@ -363,7 +381,7 @@ it is the reason table empty-states used to need the loading case wired in by ha
 If you want that behaviour on purpose, ask for it — and it means what it says:
 
 ```ts
-lazyObservableArray(api.listSurveys, { initialValue: [] }); // loaded, zero rows, still revalidates
+lazyArray(api.listSurveys, { initialValue: [] }); // loaded, zero rows, still revalidates
 ```
 
 ## A seed narrows the type
@@ -373,24 +391,24 @@ nothing, so a seeded lazy is `loaded` from construction and can never go back. T
 which means no guard at the call site:
 
 ```ts
-const rows = lazyObservableArray(api.listSurveys, { initialValue: [] });
+const rows = lazyArray(api.listSurveys, { initialValue: [] });
 rows.value.length; // IObservableArray<Survey> — no `loaded` check, no `?.`, no `?? []`
 
-const count = lazyObservable(api.countSurveys, { initialValue: 0 });
+const count = lazy(api.countSurveys, { initialValue: 0 });
 count.value * 2; // number
 ```
 
 Without a seed you get the union, and the `loaded` guard is still how you read it:
 
 ```ts
-const rows = lazyObservableArray(api.listSurveys);
+const rows = lazyArray(api.listSurveys);
 rows.value; // IObservableArray<Survey> | undefined
 ```
 
 This works through `useLazy` and `useLazyArray` too, and the narrowed type is just the `loaded:
-true` arm of the union — so anything that accepts a `LazyObservable` still accepts a seeded one,
-`<LazyObserver>` and table `rows={...}` included. Name it `LoadedLazyObservable<T>` or
-`LoadedLazyObservableArray<T>` if you need to write it down.
+true` arm of the union — so anything that accepts a `Lazy` still accepts a seeded one,
+`<LazyObserver>` and table `rows={...}` included. Name it `LoadedLazy<T>` or
+`LoadedLazyArray<T>` if you need to write it down.
 
 ### `undefined` can be a seed, when it can be a value
 
@@ -398,14 +416,14 @@ For a lazy whose `T` includes `undefined`, seeding with `undefined` means "I alr
 isn't one" — and it reports `loaded`, exactly as a fetch resolving `undefined` always has:
 
 ```ts
-lazyObservable<Session | undefined>(api.getSession, { initialValue: undefined });
+lazy<Session | undefined>(api.getSession, { initialValue: undefined });
 // loaded: true, value: undefined — no spinner, and still revalidates on first observation
 ```
 
 What separates that from an unseeded lazy is the _presence of the option_, not its value:
 
 ```ts
-lazyObservable<Session | undefined>(api.getSession); // loaded: false — nothing known yet
+lazy<Session | undefined>(api.getSession); // loaded: false — nothing known yet
 ```
 
 The consequence is that a seed which _might_ be `undefined` can't be taken at face value, because
@@ -414,15 +432,15 @@ readings stay true:
 
 ```ts
 declare const maybe: number | undefined;
-const c = lazyObservable(api.countSurveys, { initialValue: maybe });
-// LoadedLazyObservable<number | undefined> — loaded, and `value` still admits undefined
+const c = lazy(api.countSurveys, { initialValue: maybe });
+// LoadedLazy<number | undefined> — loaded, and `value` still admits undefined
 ```
 
 Pin the type and there is nothing left to widen, so it is rejected instead:
 
 ```ts
-lazyObservable<number>(api.countSurveys, { initialValue: maybe });
-// ✗ 'initialValue' does not exist in type 'LazyObservableOptions'
+lazy<number>(api.countSurveys, { initialValue: maybe });
+// ✗ 'initialValue' does not exist in type 'LazyOptions'
 ```
 
 Resolve it at the call site — `initialValue: maybe ?? 0`, or branch — rather than handing the lazy
@@ -437,7 +455,7 @@ A lazy that belongs to one component, for an async read whose inputs are the com
 route param, a prop, a piece of local state.
 
 ```tsx
-import { useLazy } from "@jayalfredprufrock/mobx-toolbox/lazy-observable";
+import { useLazy } from "@jayalfredprufrock/mobx-toolbox/lazy";
 
 const StudyPage = observer(({ studyId }: { studyId: string }) => {
   const study = useLazy((options) => api.getStudy({ id: studyId }, options), [studyId]);
@@ -450,7 +468,7 @@ const StudyPage = observer(({ studyId }: { studyId: string }) => {
 });
 ```
 
-What comes back is an ordinary `lazyObservable` — nothing reading one can tell whether it came from a
+What comes back is an ordinary `lazy` — nothing reading one can tell whether it came from a
 hook, a store, or a hand-rolled construction. It loads when observed, keeps its value while it
 reloads, and aborts what it supersedes. Passing the fetch options through, as above, is what gives
 you that abort.
@@ -460,7 +478,7 @@ you that abort.
 > double as the dependency list, so there is no array to keep in step with them. `useLazy` is for
 > everything else: a count, a summary, an endpoint with no model behind it.
 
-`useLazyArray` is the same for a list-shaped value, and returns a `lazyObservableArray`.
+`useLazyArray` is the same for a list-shaped value, and returns a `lazyArray`.
 
 Both take an `initialValue`, and narrow when you pass one, exactly as the factories do — see
 [A seed narrows the type](#a-seed-narrows-the-type). The seed belongs to _this_ lazy, so a
@@ -489,7 +507,7 @@ Renders `children` once every observed lazy holds a value, a `placeholder` while
 re-throws a failure that leaves nothing to render so an error boundary can take over.
 
 ```tsx
-import { LazyObserver } from "@jayalfredprufrock/mobx-toolbox/lazy-observable";
+import { LazyObserver } from "@jayalfredprufrock/mobx-toolbox/lazy";
 
 // Single observable
 <LazyObserver observe={users} placeholder={<Spinner />}>
@@ -539,7 +557,7 @@ Note also that the gate is `loaded`, not `fetching`: a reload that keeps its val
 
 ### Why a failed load can't just throw
 
-`lazyObservable` captures errors rather than throwing them, and that is structural rather than a
+`lazy` captures errors rather than throwing them, and that is structural rather than a
 preference. Loads are triggered by _observation_ — when a component renders, reads `value`, and that
 starts a fetch, there is no call stack belonging to anyone. Throwing from inside a MobX reaction
 produces an unhandled rejection no error boundary can catch, and the render that caused it finished
@@ -553,16 +571,16 @@ turns a captured error back into one a boundary can see.
 
 ```ts
 import type {
-  LazyObservable, // the object returned by lazyObservable() and useLazy()
-  LazyObservableApi, // the half of it that doesn't depend on `loaded`
-  LazyObservableArray, // the object returned by lazyObservableArray() and useLazyArray()
-  LoadedLazyObservable, // its `loaded: true` arm — what a seeded lazyObservable() returns
-  LoadedLazyObservableArray, // the same for a seeded lazyObservableArray()
-  LazyObservableOptions, // options for lazyObservable()
-  LazyObservableOptionsWithInitialValue, // ...plus the seed, for the seeded overload
+  Lazy, // the object returned by lazy() and useLazy()
+  LazyApi, // the half of it that doesn't depend on `loaded`
+  LazyArray, // the object returned by lazyArray() and useLazyArray()
+  LoadedLazy, // its `loaded: true` arm — what a seeded lazy() returns
+  LoadedLazyArray, // the same for a seeded lazyArray()
+  LazyOptions, // options for lazy()
+  LazyOptionsWithInitialValue, // ...plus the seed, for the seeded overload
   LazyInvalidateOptions, // options for invalidate()
   LazyFetch, // ({ signal }: LazyFetchOptions) => Promise<T>
   LazyFetchOptions, // what a fetch is handed — currently { signal }
-  InferLazyObservable, // InferLazyObservable<typeof obs> → T
-} from "@jayalfredprufrock/mobx-toolbox/lazy-observable";
+  InferLazy, // InferLazy<typeof obs> → T
+} from "@jayalfredprufrock/mobx-toolbox/lazy";
 ```

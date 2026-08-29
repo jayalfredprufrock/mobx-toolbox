@@ -1,5 +1,5 @@
-import { useLazy } from "../lazy-observable/use-lazy";
-import type { LazyObservable, LazyObservableOptions } from "../lazy-observable/lazy-observable";
+import { useLazy } from "../lazy/use-lazy";
+import type { Lazy, LazyOptions } from "../lazy/lazy";
 import type { AnyModelClass } from "./make-store";
 
 /**
@@ -35,8 +35,8 @@ type Keyless<MC> = MC extends { keys: infer K }
  */
 type UseModelArgs<MC> =
   Keyless<MC> extends true
-    ? [options?: LazyObservableOptions]
-    : [params: GetParams<MC>, options?: LazyObservableOptions];
+    ? [options?: LazyOptions]
+    : [params: GetParams<MC>, options?: LazyOptions];
 
 /**
  * Turn `params` into a dependency list. Sorted by key so a differently-ordered object of the same
@@ -65,7 +65,7 @@ const paramsToDeps = (params: unknown): unknown[] => {
  * });
  * ```
  *
- * What comes back is an ordinary `lazyObservable` over the model's own `get`, so it loads when
+ * What comes back is an ordinary `lazy` over the model's own `get`, so it loads when
  * something observes it, honours whatever the model declared for `cache`, and hands back the
  * identity-mapped instance — an edit made anywhere else in the app shows up here.
  *
@@ -87,14 +87,14 @@ const paramsToDeps = (params: unknown): unknown[] => {
 export function useModel<MC extends AnyModelClass>(
   model: MC,
   ...args: UseModelArgs<MC>
-): LazyObservable<InstanceType<MC>> {
+): Lazy<InstanceType<MC>> {
   // Which argument holds what depends on whether the model declared keys — the same question
   // `buildParams()` asks, so a keyless model's `get` is called with the fetch options first rather
   // than with a placeholder ahead of them.
   const keys = (model as { keys?: unknown }).keys;
   const keyed = Array.isArray(keys) && keys.length > 0;
   const params = keyed ? (args[0] as object) : undefined;
-  const options = (keyed ? args[1] : args[0]) as LazyObservableOptions | undefined;
+  const options = (keyed ? args[1] : args[0]) as LazyOptions | undefined;
 
   // `get` is generic over the class it is called on, so it can't be reached through a structural
   // type — the conditional above is what types the params, and this is what reaches the function.

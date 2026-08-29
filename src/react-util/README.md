@@ -135,7 +135,7 @@ subscriptions. Reach for `useStable` whenever the value **is** the state rather 
 `deps` are compared with `Object.is`, exactly as React compares its own, and a change in the list's
 length counts.
 
-It backs [`useLazy`](../lazy-observable/README.md#uselazy--uselazyarray) and
+It backs [`useLazy`](../lazy/README.md#uselazy--uselazyarray) and
 [`useCollection`](../model/README.md#component-scoped-collections--usecollection).
 
 ## `useResize`

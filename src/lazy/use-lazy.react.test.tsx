@@ -149,11 +149,11 @@ describe("useLazy", () => {
       return (
         <Observer>
           {() => {
-            const lazy = useLazy(async () => {
+            const subject = useLazy(async () => {
               calls++;
               return n;
             }, []);
-            return <span>{String(lazy.value)}</span>;
+            return <span>{String(subject.value)}</span>;
           }}
         </Observer>
       );
@@ -212,7 +212,7 @@ describe("useLazy", () => {
       return (
         <Observer>
           {() => {
-            const lazy = useLazy(
+            const subject = useLazy(
               ({ signal }) =>
                 new Promise<number>((resolve) => {
                   signal.addEventListener("abort", () => aborted.push(id));
@@ -220,7 +220,7 @@ describe("useLazy", () => {
                 }),
               [id],
             );
-            return <span>{String(lazy.value)}</span>;
+            return <span>{String(subject.value)}</span>;
           }}
         </Observer>
       );

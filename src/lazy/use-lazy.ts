@@ -1,16 +1,16 @@
 import { useStable } from "../react-util/useStable";
 import {
-  lazyObservable,
-  lazyObservableArray,
+  lazy,
+  lazyArray,
   type LazyFetch,
-  type LazyObservable,
-  type LazyObservableArray,
-  type LazyObservableArrayOptions,
-  type LazyObservableOptions,
-  type LazyObservableOptionsWithInitialValue,
-  type LoadedLazyObservable,
-  type LoadedLazyObservableArray,
-} from "./lazy-observable";
+  type Lazy,
+  type LazyArray,
+  type LazyArrayOptions,
+  type LazyOptions,
+  type LazyOptionsWithInitialValue,
+  type LoadedLazy,
+  type LoadedLazyArray,
+} from "./lazy";
 
 /**
  * A lazy observable that belongs to one component, for an async read whose inputs are the
@@ -20,7 +20,7 @@ import {
  * const study = useLazy((options) => StudyModel.get({ id: studyId }, options), [studyId]);
  * ```
  *
- * What comes back is an ordinary `lazyObservable`: it loads when something observes it, keeps its
+ * What comes back is an ordinary `lazy`: it loads when something observes it, keeps its
  * value while it reloads, and aborts a request it supersedes. Nothing reading one can tell whether
  * it came from a hook, a store, or a hand-rolled construction — which is the point.
  *
@@ -41,21 +41,21 @@ import {
 export function useLazy<T>(
   fetch: LazyFetch<T>,
   deps: React.DependencyList,
-  options: LazyObservableOptionsWithInitialValue<T> & { initialValue: T },
-): LoadedLazyObservable<T>;
+  options: LazyOptionsWithInitialValue<T> & { initialValue: T },
+): LoadedLazy<T>;
 export function useLazy<T>(
   fetch: LazyFetch<T>,
   deps: React.DependencyList,
-  options?: LazyObservableOptions,
-): LazyObservable<T>;
+  options?: LazyOptions,
+): Lazy<T>;
 export function useLazy<T>(
   fetch: LazyFetch<T>,
   deps: React.DependencyList,
-  options?: LazyObservableOptionsWithInitialValue<T>,
-): LazyObservable<T> {
+  options?: LazyOptionsWithInitialValue<T>,
+): Lazy<T> {
   // `?? {}` rather than passing `options` straight through: the seed is read off the presence of
   // the key, which an absent bag and an empty one answer the same way.
-  return useStable(() => lazyObservable(fetch, options ?? {}), deps);
+  return useStable(() => lazy(fetch, options ?? {}), deps);
 }
 
 /**
@@ -76,17 +76,17 @@ export function useLazy<T>(
 export function useLazyArray<T>(
   fetch: LazyFetch<T[]>,
   deps: React.DependencyList,
-  options: LazyObservableArrayOptions<T> & { initialValue: T[] },
-): LoadedLazyObservableArray<T>;
+  options: LazyArrayOptions<T> & { initialValue: T[] },
+): LoadedLazyArray<T>;
 export function useLazyArray<T>(
   fetch: LazyFetch<T[]>,
   deps: React.DependencyList,
-  options?: LazyObservableArrayOptions<T>,
-): LazyObservableArray<T>;
+  options?: LazyArrayOptions<T>,
+): LazyArray<T>;
 export function useLazyArray<T>(
   fetch: LazyFetch<T[]>,
   deps: React.DependencyList,
-  options?: LazyObservableArrayOptions<T>,
-): LazyObservableArray<T> {
-  return useStable(() => lazyObservableArray(fetch, options), deps);
+  options?: LazyArrayOptions<T>,
+): LazyArray<T> {
+  return useStable(() => lazyArray(fetch, options), deps);
 }

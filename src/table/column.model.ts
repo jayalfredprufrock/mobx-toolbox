@@ -457,7 +457,7 @@ export class ColumnModel {
       render: render ?? value,
       // A factory def is called here and only here. `syncColumns` builds a column only for a key it
       // does not already have, so this runs once per column: each table gets its own filter and a
-      // remount starts clean, while `setRows`/`setColumns` — which preserve the `ColumnModel` —
+      // remount starts clean, while `setData`/`setColumns` — which preserve the `ColumnModel` —
       // leave the user's selection alone.
       filter: typeof filter === "function" ? filter() : filter,
     });

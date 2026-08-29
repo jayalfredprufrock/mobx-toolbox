@@ -1,3 +1,4 @@
+import type { LazyArray } from "../lazy/lazy";
 import type { FilterCondition, SetFilterValue } from "../filter/filter.types";
 
 // Re-exported so a consumer reading `table.filterQuery` gets the type from `/table` rather than
@@ -34,77 +35,35 @@ export type AutoColumnFn<T> = (
 
 export type RowId = string | number;
 
-/**
- * A dataset that knows whether it is still arriving, and how the last attempt ended.
- *
- * Structural on purpose: `LazyObservableArray` satisfies it, so `rows={list}` works — but `table`
- * declares the shape rather than importing the type, and stays independent of `lazy-observable`.
- * Anything with these properties works, including a hand-rolled object.
- *
- * The three facts are orthogonal, which is why this is not a `status` enum: `value` says whether
- * there is anything to show, `fetching` says whether a request is running, `error` says how the
- * last one ended. A refresh that fails while rows are on screen has all three at once, and every
- * one of them is a true statement about it.
- *
- * `undefined` and `[]` are likewise different answers — "not known yet" versus "there are none" —
- * and that distinction is what lets the table tell a first load from an empty result without the
- * caller wiring it up.
- */
-export interface RowSource<T> {
-  /** The rows, or `undefined` while nothing has arrived yet. */
-  value: T[] | undefined;
-  /** Whether a request is in flight — including a refresh that still has rows to show. */
-  fetching: boolean;
-  /**
-   * How the last request ended, or `undefined` if it succeeded (or none has run). Expected to be
-   * cleared when a new request starts, so a state derived from it describes the latest attempt
-   * rather than the worst one ever seen.
-   *
-   * A failure does **not** have to clear `value`, and shouldn't: a refresh that fails while rows
-   * are on screen keeps showing them, so an error and a readable value coexist. Whether there is a
-   * value is exactly what the table uses to decide what a failure means. With none it is fatal —
-   * {@link TableModel.error}, the state `<Table.Error>` renders for. With rows still on screen the
-   * table deliberately says nothing: they are good rows, and blanking them over a background
-   * request would cost more than the failure did. Surfacing *that* one is the caller's, from
-   * wherever their fetching already keeps it.
-   *
-   * Optional, so a source predating this keeps working; a source that never sets it simply never
-   * reports an error, exactly as before.
-   */
-  error?: unknown;
-}
-
 export interface TableConfig<T> {
   /**
-   * The dataset, in either of two shapes — and they differ in *who decides
-   * the rows changed*, which is what decides when row-keyed state resets
-   * (see `setRows`).
+   * Where the table's rows come from, in any of three shapes — and they differ in *who decides the
+   * rows changed*, which is what decides when row-keyed state resets (see `setData`).
    *
-   * **An array** — React decides. `useTable` re-applies it whenever it is a
-   * different array than the one last applied, so callers must keep it
-   * referentially stable (a MobX `computed`, or `useMemo`). Rebuilding it
-   * inline on every render (`rows={data.filter(isActive)}`) reads as a new
-   * dataset every time and clears selection with it. Passing a `TableModel`
-   * a config directly (no hook) applies the array once, at construction.
+   * Named for what it is rather than for one of its shapes: only the first is literally rows.
+   * Whatever you pass, the resolved array is always `table.rows`.
    *
-   * **A getter** — MobX decides. `() => store.clientFilteredRows` is tracked in a
-   * reaction, so it re-applies when the observables it *read* change, on
-   * MobX's cadence rather than React's. Two caveats, both silent if missed:
-   * the getter must read observables (a getter over React props or state is
-   * never re-run, and the table keeps the first dataset forever), and it is
-   * captured once — so close over observables, not over render-scoped
-   * values, which would go stale.
+   * **An array** — React decides. `useTable` re-applies it whenever it is a different array than
+   * the one last applied, so it must be referentially stable (a MobX `computed`, or `useMemo`).
+   * Rebuilding it inline on every render (`data={rows.filter(isActive)}`) reads as a new dataset
+   * every time and clears selection with it.
    *
-   * **A row source** — an object with `value`, `fetching` and optionally `error`, which a
-   * `LazyObservableArray` satisfies. The table tracks its contents itself, so this form needs no
-   * `.slice()`, and the source works out the dataset's state on its own: see `loading`, `isEmpty`
-   * and `error` on the model.
+   * **A getter** — MobX decides. `() => store.activeRows` is tracked in a reaction, so it
+   * re-applies when the observables it *read* change, on MobX's cadence rather than React's. Two
+   * caveats, both silent if missed: the getter must read observables (a getter over React props or
+   * state is never re-run, and the table keeps the first dataset forever), and it is captured once
+   * — so close over observables, not over render-scoped values, which would go stale.
    *
-   * The first two forms reach those same five states through {@link UseTableConfig.loading} and
-   * {@link UseTableConfig.error}, which is the *controlled* form — you keep the status where your
-   * fetching already keeps it, and the table derives the rest.
+   * **A lazy** — the lazy decides, and it is the only shape that knows anything beyond the rows
+   * themselves. It says whether a request is running and how the last one ended, which is what
+   * lets the table tell a first load from an empty result from a failure with nothing to show:
+   * see `loading`, `error` and `isEmpty` on the model. A keyed collection works because
+   * `store.byOrg({ orgId })` hands back a *different* lazy per key, and the table follows it.
+   *
+   * With the first two, that same information is yours to supply — see
+   * {@link UseTableConfig.loading} and {@link UseTableConfig.error}.
    */
-  rows?: T[] | (() => T[]) | RowSource<T>;
+  data?: T[] | (() => T[]) | LazyArray<T>;
   /** Fixed pixel height of every row (the virtualization contract). Default 40. */
   rowHeight?: number;
   /**
@@ -149,7 +108,7 @@ export interface TableConfig<T> {
   /**
    * How the sort list is applied. `"auto"` (default) sorts rows client-side through each
    * column's value accessor / `compare`. `"manual"` treats `sorts` as pure reactive state and
-   * leaves row order untouched — react to `sorts`, refetch server-sorted rows, `setRows`. The
+   * leaves row order untouched — react to `sorts`, refetch server-sorted rows, `setData`. The
    * sort state APIs (`setSort`, `clearSort`, `sortDirection`, `sortIndex`) behave identically
    * in both modes, so header sort UIs need no changes.
    */
@@ -161,7 +120,7 @@ export interface TableConfig<T> {
   /**
    * Stable row identity, used to key all row-scoped state (selection) and React row keys. Must be
    * unique per row. Defaults to the row's index in the source array — stable across `appendRows`,
-   * reset (with the rest of row-keyed state) by `setRows`. Provide a business key when row objects
+   * reset (with the rest of row-keyed state) by `setData`. Provide a business key when row objects
    * may be replaced by fresh instances that mean the same row.
    */
   getRowId?: (row: T, index: number) => RowId;
@@ -184,40 +143,59 @@ export interface TableConfig<T> {
 }
 
 /**
- * What {@link useTable} accepts: everything a {@link TableModel} takes, plus the two React-facing
- * status props that make up the *controlled* form of `rows`.
+ * What {@link useTable} accepts: everything a {@link TableModel} takes, plus the two status props
+ * that stand in for what a lazy would have known by itself.
  *
- * The split is honest rather than cosmetic. `loading` and `error` are mirrored out of React on
- * every render, which is a thing only a hook can do — a `TableModel` built directly has no render
- * to mirror from, so it takes a {@link RowSource} and reads the same three facts off that instead.
+ * They live here rather than on `TableConfig` because mirroring React state on every render is a
+ * thing only a hook can do. A `TableModel` built directly has no render to mirror from, so its
+ * answer for a dataset with a loading story is a lazy, which carries its own.
  */
-export interface UseTableConfig<T> extends TableConfig<T> {
+/**
+ * The status props that stand in for what a lazy would have known by itself.
+ *
+ * They exist only on {@link useTable} and not on `TableConfig` because mirroring React state on
+ * every render is a thing only a hook can do. A `TableModel` built directly has no render to mirror
+ * from, so its answer for a dataset with a loading story is a lazy, which carries its own.
+ */
+export interface TableStatus {
   /**
-   * Whether a request is in flight. The controlled counterpart of a source's `fetching`.
+   * Whether a request is in flight, for a `data` that cannot say so itself — an array or a getter.
+   * **Ignored when `data` is a lazy**, which already knows.
    *
-   * What it produces depends on whether there are rows. With none it is a first load, and the
-   * table reports it as `table.loading`. Behind rows already on screen it is a refresh, which the
-   * table deliberately has no state for — the rows stay exactly as they are, and you already know
-   * a request is running, since you are the one passing this. You do not have to distinguish the
-   * two: passing the one fact you know is enough.
+   * What it produces depends on whether there are rows. With none it is a first load, reported as
+   * `table.loading`. Behind rows already on screen it is a refresh, which the table deliberately has
+   * no state for — the rows stay exactly as they are, and you already know a request is running,
+   * since you are the one passing this.
    *
-   * Pass it from the first render, not from the first effect. A render with no rows and
-   * `loading: false` is a settled empty result by definition, and the table will say so.
+   * Pass it from the first render, not from the first effect. No rows and `loading: false` is a
+   * settled empty result by definition, and the table will say so.
    */
   loading?: boolean;
   /**
-   * How the last request ended. The controlled counterpart of a source's `error`, and read the
-   * same way: it matters when there are no rows, where it is fatal (`table.error`, what
-   * `<Table.Error>` renders) and stops the table reporting a load that will never finish.
+   * How the last request ended, for a `data` that cannot say so itself. **Ignored when `data` is a
+   * lazy.**
    *
-   * Behind rows that are still on screen the table ignores it on purpose — they are good rows, and
-   * a failed refresh is not worth blanking them for. You passed the error in, so you still have it;
-   * put it on a refresh control or in a toast, somewhere that isn't the rows.
+   * Read the same way as `loading`: it matters when there are no rows, where it is fatal
+   * (`table.error`, what `<Table.Error>` renders) and stops the table reporting a load that will
+   * never finish. Behind rows still on screen the table ignores it on purpose — they are good rows,
+   * and a failed refresh is not worth blanking them for.
    *
    * Clear it when the next request starts, or the table will keep describing the older failure.
    */
   error?: unknown;
 }
+
+/**
+ * What {@link useTable} accepts — a `TableConfig`, in one of two combinations that cannot be mixed.
+ *
+ * A lazy already knows whether a request is running and how the last one ended, so pairing it with
+ * `loading` or `error` is a contradiction rather than a preference. Expressed as a union so it is a
+ * compile error rather than a prop that silently does nothing: passing both tells you at the call
+ * site, which is where the mistake is.
+ */
+export type UseTableConfig<T> =
+  | (TableConfig<T> & { data?: LazyArray<T> } & { [K in keyof TableStatus]?: never })
+  | (TableConfig<T> & { data?: T[] | (() => T[]) } & TableStatus);
 
 /** Persisted per-column state (see TableState). `width` is the manual resize override; absent = automatic. */
 export interface ColumnState {
@@ -265,7 +243,7 @@ export interface TableState {
  * value. The table calls `matches(column.getValue(row))`, so the filter needs no accessor, no path
  * and no row type — which is what makes a computed column filterable with no extra config.
  *
- * Structural for the same reason as {@link RowSource}: `SetFilter` / `NumberFilter` / `DateFilter` / `TextFilter`
+ * Structural rather than an `instanceof`: `SetFilter` / `NumberFilter` / `DateFilter` / `TextFilter`
  * from the `filter` subpath satisfy it, but `table` declares the shape rather than importing the
  * classes, so a page's own `new SetFilter()` is the only thing that pulls them into the bundle. A
  * string discriminant (`filter: "set"`) would force a `"set" -> SetFilter` map into the table and
@@ -455,7 +433,7 @@ export interface BaseColumnDef<T> {
    * A discriminant (`filter: "set"`) is the one form deliberately not supported: it would force a
    * `"set" -> SetFilter` map into the table, so every consumer would ship every filter type.
    *
-   * Either way the filter survives everything that rebuilds column definitions — `setRows`,
+   * Either way the filter survives everything that rebuilds column definitions — `setData`,
    * `appendRows`, `setColumns` — because `syncColumns` preserves the `ColumnModel` behind an
    * existing key, and the factory is not called again for a key that already has one. It does *not*
    * survive `removeColumn`, which destroys the model; the filter type on a key cannot be swapped at
@@ -486,7 +464,7 @@ export interface BaseColumnDef<T> {
    * The two sets are **disjoint**, which is what makes a mixed table cheap: a server-mode filter is
    * never evaluated client-side, so every filter is applied exactly once, in exactly one place. A
    * server-mode filter contributes to `TableModel.filterQuery` instead of to `predicate`; react to
-   * that, refetch, and `setRows`. Client filters then narrow the server's results, because the
+   * that, refetch, and `setData`. Client filters then narrow the server's results, because the
    * table filters over `rows` without replacing them.
    *
    * Two consequences for facets, both because `rows` here are already narrowed by this very filter:

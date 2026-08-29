@@ -27,8 +27,8 @@ const NEVER: SlowLoadingOptions = { after: 0, minDuration: 0 };
  * not its business, and whoever owns the fetching knows about it anyway (`refreshing` on a lazy,
  * `isFetching` on a query). Put a quiet indication somewhere that isn't the rows themselves.
  *
- * Needs the table to have been told about loading, which is either form of `rows` state: a
- * `RowSource` that knows, or a `loading` prop passed to `useTable` alongside a plain array.
+ * Needs the table to have been told about loading — a `data` that is a lazy, which knows on its
+ * own, or a `loading` prop passed to `useTable` alongside an array or getter.
  */
 export const TableLoading: FC<TableLoadingProps> = observer(({ children, sustain, ...rest }) => {
   const table = useTableContext();

@@ -18,7 +18,7 @@ const tasks: Task[] = [
 const ids = (rows: RowData[]): number[] => rows.map((r) => r.id as number);
 
 const makeTable = (columns: ColumnsDef<Task>): TableModel => {
-  const table = new TableModel({ rows: tasks, columns, getRowId: (t: Task) => t.id });
+  const table = new TableModel({ data: tasks, columns, getRowId: (t: Task) => t.id });
   table.setWidth(1000);
   table.setHeight(200);
   return table;

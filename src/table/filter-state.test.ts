@@ -35,7 +35,7 @@ const columns: ColumnsDef<Item> = [
 ];
 
 const makeTable = (config: Partial<TableConfig<Item>> = {}): TableModel => {
-  const table = new TableModel({ rows: items, columns, getRowId: (i: Item) => i.id, ...config });
+  const table = new TableModel({ data: items, columns, getRowId: (i: Item) => i.id, ...config });
   table.setWidth(1000);
   table.setHeight(200);
   return table;
@@ -132,7 +132,7 @@ describe("filter state in the snapshot", () => {
     table.applyState({ columnFilters: { category: { selected: ["a"], matchMode: "any" } } });
     expect(filterOf(table, "category", SetFilter).has("a")).toBe(true);
 
-    table.setRows(items as RowData[]);
+    table.setData(items as RowData[]);
     expect(ids(table.clientFilteredRows)).toEqual([1, 3]);
   });
 
@@ -145,7 +145,7 @@ describe("filter state in the snapshot", () => {
     table.applyState({ columnFilters: { name: { selected: ["ada"], matchMode: "any" } } });
     expect(table.column("name")).toBeUndefined();
 
-    table.setRows(items as RowData[]);
+    table.setData(items as RowData[]);
     expect(filterOf(table, "name", SetFilter).has("ada")).toBe(true);
     expect(ids(table.clientFilteredRows)).toEqual([1]);
   });

@@ -1,9 +1,10 @@
-import { autorun, comparer, observable, reaction, runInAction } from "mobx";
+import { autorun, comparer, reaction } from "mobx";
 import { afterEach, describe, expect, test } from "vite-plus/test";
 import { DateFilter } from "../filter/date-filter.model";
 import { SetFilter } from "../filter/set-filter.model";
 import { TextFilter } from "../filter/text-filter.model";
 import { BLANK } from "../filter/util";
+import { lazyArray } from "../lazy/lazy";
 import { TableModel } from "./table.model";
 import type { ColumnsDef, FilterCondition, RowData, TableConfig } from "./table.types";
 
@@ -44,7 +45,7 @@ const makeTable = (
   columns: ColumnsDef<Log>,
   config: Partial<TableConfig<Log>> = {},
 ): TableModel => {
-  const table = new TableModel({ rows: logs, columns, getRowId: (l: Log) => l.id, ...config });
+  const table = new TableModel({ data: logs, columns, getRowId: (l: Log) => l.id, ...config });
   table.setWidth(1000);
   table.setHeight(200);
   return table;
@@ -178,7 +179,7 @@ describe("server-mode filters", () => {
 
     level.toggle("error");
     // what the server sent back for that query
-    table.setRows(logs.filter((l) => l.level === "error"));
+    table.setData(logs.filter((l) => l.level === "error"));
 
     message.setText("again");
     expect(ids(table.clientFilteredRows)).toEqual([4]);
@@ -210,7 +211,7 @@ describe("server-mode facets", () => {
     const table = makeTable([{ key: "level", filter, filterMode: "server" }]);
 
     filter.toggle("error");
-    table.setRows(logs.filter((l) => l.level === "error"));
+    table.setData(logs.filter((l) => l.level === "error"));
 
     expect(table.column("level")?.facets).toEqual([
       { value: "info" },
@@ -357,15 +358,14 @@ describe("blanks survive serialization", () => {
 // ---------------------------------------------------------------------------
 
 describe("filterQuery before any rows arrive", () => {
-  // What a lazy source looks like on the very first render: fetching, nothing yet. The rows
-  // reaction fires immediately with `undefined` and its handler skips it, so this used to leave
-  // the table with no columns at all.
-  const pendingSource = (): { value: Log[] | undefined; fetching: boolean } =>
-    observable({ value: undefined as Log[] | undefined, fetching: true }, {}, { deep: false });
+  // A lazy on the very first render: fetching, nothing yet. The rows reaction fires immediately
+  // with `undefined` and its handler skips it, so this used to leave the table with no columns at
+  // all. `release` lands the rows when a test wants them.
+  const pendingSource = () => lazyArray<Log>(() => new Promise<Log[]>(() => {}), { deep: false });
 
   test("configured columns exist immediately", () => {
     const table = new TableModel({
-      rows: pendingSource(),
+      data: pendingSource(),
       columns: [{ key: "level", filter: new SetFilter({ options: ["error"] }) }, "message"],
     });
 
@@ -380,7 +380,7 @@ describe("filterQuery before any rows arrive", () => {
     const level = new SetFilter({ options: ["error"], selected: ["error"] });
     const time = new DateFilter({ min: T });
     const table = new TableModel({
-      rows: pendingSource(),
+      data: pendingSource(),
       columns: [
         { key: "level", filter: level, filterMode: "server" },
         { key: "time", filter: time, filterMode: "server", field: "created_at" },
@@ -397,7 +397,7 @@ describe("filterQuery before any rows arrive", () => {
   test("the query a reaction sees first is already the seeded one", () => {
     const filter = new SetFilter({ options: ["error"], selected: ["error"] });
     const table = new TableModel({
-      rows: pendingSource(),
+      data: pendingSource(),
       columns: [{ key: "level", filter, filterMode: "server" }],
     });
 
@@ -418,13 +418,11 @@ describe("filterQuery before any rows arrive", () => {
 
   test("auto columns still wait for a row, as they must", () => {
     const source = pendingSource();
-    const table = new TableModel({ rows: source, autoColumns: true });
+    const table = new TableModel({ data: source, autoColumns: true });
     expect(table.allColumns).toEqual([]);
 
-    runInAction(() => {
-      source.value = logs;
-      source.fetching = false;
-    });
+    // `set` lands a value without fetching, so the reaction fires synchronously
+    source.set(logs);
     expect(table.allColumns.map((c) => c.key)).toEqual(["id", "level", "message", "time"]);
   });
 });

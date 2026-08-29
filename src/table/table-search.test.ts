@@ -29,7 +29,7 @@ const people: Person[] = [
 const ids = (rows: RowData[]): number[] => rows.map((r) => r.id as number);
 
 const makeTable = (columns: ColumnsDef<Person>): TableModel => {
-  const table = new TableModel({ rows: people, columns, getRowId: (p: Person) => p.id });
+  const table = new TableModel({ data: people, columns, getRowId: (p: Person) => p.id });
   table.setWidth(1000);
   table.setHeight(200);
   return table;

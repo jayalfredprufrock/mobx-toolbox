@@ -7,7 +7,7 @@ import { observer } from "mobx-react-lite";
 import { afterEach, beforeEach, describe, expect, test } from "vite-plus/test";
 import { makeModel } from "../model/make-model";
 import { makeStore } from "../model/make-store";
-import { lazyObservableArray } from "../lazy-observable/lazy-observable";
+import { lazyArray } from "../lazy/lazy";
 import { useCollection } from "../model/use-collection";
 import { TableModel } from "./table.model";
 import { useTable } from "./use-table";
@@ -70,7 +70,7 @@ describe("feeding a table from a parameterised collection", () => {
     const Probe = observer(() => {
       const [orgId, setter] = useState("acme");
       setOrg = setter;
-      table = useTable({ rows: store.byOrg({ orgId }), getRowId: (r) => (r as { id: number }).id });
+      table = useTable({ data: store.byOrg({ orgId }), getRowId: (r) => (r as { id: number }).id });
       return <span>{titles(table)}</span>;
     });
 
@@ -94,7 +94,7 @@ describe("feeding a table from a parameterised collection", () => {
     const Probe = observer(() => {
       const [orgId, setter] = useState("acme");
       setOrg = setter;
-      const table = useTable({ rows: store.byOrg({ orgId }) });
+      const table = useTable({ data: store.byOrg({ orgId }) });
       return <span>{titles(table)}</span>;
     });
 
@@ -125,7 +125,7 @@ describe("feeding a table from a parameterised collection", () => {
     const Probe = observer(() => {
       const [orgId, setter] = useState("acme");
       setOrg = setter;
-      table = useTable({ rows: store.byOrg({ orgId }) });
+      table = useTable({ data: store.byOrg({ orgId }) });
       return <span>{titles(table)}</span>;
     });
 
@@ -157,7 +157,7 @@ describe("feeding a table from a parameterised collection", () => {
         params: { orgId },
       });
       sources.add(rows);
-      const table = useTable({ rows, getRowId: (r) => (r as { id: number }).id });
+      const table = useTable({ data: rows, getRowId: (r) => (r as { id: number }).id });
       return <span>{titles(table)}</span>;
     });
 
@@ -182,7 +182,7 @@ describe("feeding a table from a parameterised collection", () => {
     const Probe = observer(() => {
       const [orgId, setter] = useState("acme");
       setOrg = setter;
-      table = useTable({ rows: store.byOrg({ orgId }), getRowId: (r) => (r as { id: number }).id });
+      table = useTable({ data: store.byOrg({ orgId }), getRowId: (r) => (r as { id: number }).id });
       return <span>{titles(table)}</span>;
     });
 
@@ -201,13 +201,13 @@ describe("feeding a table from a parameterised collection", () => {
   });
 
   // Without `getRowId` the row's own object identity is the id. That is what makes a source whose
-  // contents are replaced in place — every `LazyObservableArray` — safe: a stable array means
+  // contents are replaced in place — every `LazyArray` — safe: a stable array means
   // `setRows` runs once, so index-based ids would silently re-point at whatever later occupied
   // the slot.
   test("selection follows the record, not the slot, when rows keep their identity", async () => {
     const Row = makeModel(Schema, { keys: ["id"] });
     let n = 0;
-    const lazy = lazyObservableArray(
+    const lazy = lazyArray(
       async () => {
         n++;
         const rows = [
@@ -219,7 +219,7 @@ describe("feeding a table from a parameterised collection", () => {
       { deep: false },
     );
 
-    const table = new TableModel({ rows: lazy }); // deliberately no getRowId
+    const table = new TableModel({ data: lazy }); // deliberately no getRowId
     table.setWidth(600);
     table.setHeight(200);
     const stop = autorun(() => void table.clientFilteredRows.length);
@@ -239,7 +239,7 @@ describe("feeding a table from a parameterised collection", () => {
 
   test("rows rebuilt as new objects drop the selection rather than moving it", async () => {
     let n = 0;
-    const lazy = lazyObservableArray(
+    const lazy = lazyArray(
       async () => {
         n++;
         const rows = [
@@ -251,7 +251,7 @@ describe("feeding a table from a parameterised collection", () => {
       { deep: false },
     );
 
-    const table = new TableModel({ rows: lazy });
+    const table = new TableModel({ data: lazy });
     table.setWidth(600);
     table.setHeight(200);
     const stop = autorun(() => void table.clientFilteredRows.length);
@@ -271,7 +271,7 @@ describe("feeding a table from a parameterised collection", () => {
 
   test("getRowId still earns its place: it survives records arriving as new objects", async () => {
     let n = 0;
-    const lazy = lazyObservableArray(
+    const lazy = lazyArray(
       async () => {
         n++;
         const rows = [
@@ -283,7 +283,7 @@ describe("feeding a table from a parameterised collection", () => {
       { deep: false },
     );
 
-    const table = new TableModel({ rows: lazy, getRowId: (r) => (r as { id: number }).id });
+    const table = new TableModel({ data: lazy, getRowId: (r) => (r as { id: number }).id });
     table.setWidth(600);
     table.setHeight(200);
     const stop = autorun(() => void table.clientFilteredRows.length);
@@ -301,14 +301,14 @@ describe("feeding a table from a parameterised collection", () => {
     const { Surveys, calls } = setup();
     const store = new Surveys();
     const source = store.byOrg({ orgId: "acme" });
-    const table = new TableModel({ rows: source });
+    const table = new TableModel({ data: source });
     table.setWidth(600);
     table.setHeight(120);
     const stop = autorun(() => void table.clientFilteredRows.length);
     await tick();
 
     const before = table.rows;
-    table.setRowSource(source);
+    table.setData(source);
     await tick();
 
     // the same binding is not a change: no re-arm, no re-application, no second request

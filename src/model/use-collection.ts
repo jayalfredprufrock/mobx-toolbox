@@ -1,11 +1,7 @@
 import { useObservableBox } from "../util/use-observable-box";
 import { useStable } from "../react-util/useStable";
 import type * as T from "typebox";
-import type {
-  LazyFetch,
-  LazyFetchOptions,
-  LazyObservableArray,
-} from "../lazy-observable/lazy-observable";
+import type { LazyFetch, LazyFetchOptions, LazyArray } from "../lazy/lazy";
 import { makeStore, type AnyModelClass, type CollectionOptions } from "./make-store";
 
 /** The payload a model's collections resolve to arrays of. */
@@ -67,12 +63,12 @@ export function useCollection<MC extends AnyModelClass>(
   model: MC,
   fetch: LazyFetch<Payload<MC>[]>,
   options?: CollectionOptions<InstanceType<MC>>,
-): LazyObservableArray<InstanceType<MC>>;
+): LazyArray<InstanceType<MC>>;
 export function useCollection<MC extends AnyModelClass, P extends object>(
   model: MC,
   fetch: (params: P, options: LazyFetchOptions) => Promise<Payload<MC>[]>,
   options: UseCollectionOptions<P, InstanceType<MC>>,
-): LazyObservableArray<InstanceType<MC>>;
+): LazyArray<InstanceType<MC>>;
 
 export function useCollection(model: AnyModelClass, fetch: any, options?: any): any {
   const hasParams = options !== undefined && "params" in options;

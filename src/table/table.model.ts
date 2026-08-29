@@ -9,6 +9,7 @@ import {
 } from "mobx";
 import { ColumnModel } from "./column.model";
 import { TableSearchFilter } from "./search-filter.model";
+import type { LazyArray } from "../lazy/lazy";
 import type {
   ColumnDef,
   ColumnSort,
@@ -18,12 +19,11 @@ import type {
   FilterMode,
   RowData,
   RowId,
-  RowSource,
   SortDirection,
   TableConfig,
   TableState,
 } from "./table.types";
-import { isRowSource } from "./util";
+import { isLazy } from "./is-lazy";
 
 export class TableModel {
   readonly config?: TableConfig<any>;
@@ -68,7 +68,7 @@ export class TableModel {
   selectedIds = new Set<RowId>();
 
   // Rows expanded to show a detail panel, tracked by row id like selection. Ephemeral: reset by
-  // setRows, preserved by appendRows, excluded from persisted TableState.
+  // setData, preserved by appendRows, excluded from persisted TableState.
   expandedIds = new Set<RowId>();
 
   // A pending programmatic scroll. The model owns the intent; <Table.Root> executes it against
@@ -77,7 +77,7 @@ export class TableModel {
   scrollRequest: { y: number | "end" } | undefined = undefined;
 
   // The last snapshot given to applyState. Consulted whenever columns (re)sync, so state applied
-  // before the columns exist (applyState before the first setRows, factory defs materializing on
+  // before the columns exist (applyState before the first setData, factory defs materializing on
   // first data) still lands. Never re-applied to columns that already exist — later user changes win.
   private appliedState: Partial<TableState> | undefined;
 
@@ -87,18 +87,21 @@ export class TableModel {
   private rowsReactionDisposer: IReactionDisposer | undefined;
 
   /**
-   * The `RowSource` form of `rows`, if that is what was given. Held so `loading` and `error` can
-   * read it: an array or a getter says nothing about whether more is coming, and only a source can
-   * distinguish "no rows yet" from "no rows".
+   * The live `data` binding: the lazy or getter currently driving the dataset, if it is one of
+   * those. An array is applied outright and leaves nothing to hold.
    *
    * Held here rather than read off `config` because it can be replaced — a keyed collection hands
-   * out a *different* lazy per key, so `store.byOrg({ orgId })` is a new source whenever `orgId`
-   * changes. See {@link setRowSource}.
+   * out a *different* lazy per key, so `store.byOrg({ orgId })` is a new lazy whenever `orgId`
+   * changes. See {@link setData}.
    */
-  private rowSource: RowSource<RowData> | undefined;
+  private binding: LazyArray<RowData> | (() => RowData[]) | undefined;
 
-  /** The live `rows` binding: whichever source or getter is currently driving the dataset. */
-  private rowsBinding: RowSource<RowData> | (() => RowData[]) | undefined;
+  /**
+   * The status a caller supplies for a dataset that cannot describe its own — see
+   * {@link UseTableConfig.loading}. Meaningless, and ignored, when {@link TableModel.lazy} is set.
+   */
+  private givenLoading = false;
+  private givenError: unknown = undefined;
 
   // Re-derives factory columns once data exists; see activate().
   private columnsReactionDisposer: IReactionDisposer | undefined;
@@ -142,7 +145,7 @@ export class TableModel {
    * row → id, from `config.getRowId` when given and from the row's own object identity otherwise.
    *
    * The default used to be the row's *index*, which is only safe while the dataset is re-applied
-   * wholesale: a source that replaces its contents in place — which is what a `LazyObservableArray`
+   * wholesale: a source that replaces its contents in place — which is what a `LazyArray`
    * does — would leave a selected index pointing at whatever row later occupied that slot.
    */
   get rowIds(): Map<RowData, RowId> {
@@ -380,7 +383,7 @@ export class TableModel {
    * here, never both — so nothing is double-applied and there is nothing to reconcile.
    *
    * Plain JSON, so it compares with `comparer.structural`: react to it, map the conditions onto
-   * your endpoint's shape, refetch, and `setRows`. Debouncing and cursor invalidation are yours —
+   * your endpoint's shape, refetch, and `setData`. Debouncing and cursor invalidation are yours —
    * the table has no idea what a request costs you.
    *
    * ```ts
@@ -407,12 +410,31 @@ export class TableModel {
   // (dot-paths, computed `value` fns) and optional `compare` def — never a raw `row[key]` lookup.
   // Sort keys with no matching column are skipped.
   /**
+   * The lazy currently driving the table, or `undefined` if `data` was an array or a getter.
+   *
+   * Exposed for the one case that cannot be served any other way: a component handed a `TableModel`
+   * and nothing else — a generic table wrapper, a toolbar rendered from context — that wants to
+   * know whether this dataset can be refreshed and offer a control for it. `table.lazy?.reload()`
+   * triggers one, `refreshing` says whether a request is running behind rows already on screen, and
+   * `error` alongside `loaded` says how the last one ended.
+   *
+   * `fetching` covers requests the lazy started by *itself* — revalidating on reobservation, a
+   * `reloadEvery` tick — so an indicator reading it is honest about background work. (The warning
+   * on the lazy's own `fetching` is narrower than it looks: reading it doesn't mark the lazy
+   * *observed*, so it can't keep one alive or trigger a load. A mounted table is already observing
+   * its lazy, so reading through here is safe.)
+   */
+  get lazy(): LazyArray<RowData> | undefined {
+    return isLazy(this.binding) ? this.binding : undefined;
+  }
+
+  /**
    * Nothing has arrived yet and nothing has gone wrong — the state a first-load treatment belongs
    * to, and the one where the empty slot would be a lie.
    *
    * The `error` term is load-bearing. Without it a failed first load reads as loading forever:
    * nothing ever arrives to end it, and `isEmpty` stays `false` too, so the table shows a permanent
-   * spinner with no way out. `lazy-observable` removed a property with exactly this bug (its own
+   * spinner with no way out. `lazy` removed a property with exactly this bug (its own
    * `loading`, which mishandled a failed first load), and this is the same fix one module over.
    *
    * Deliberately not gated on `fetching`. A source typically defers its first request past the
@@ -426,13 +448,16 @@ export class TableModel {
    * Whoever owns the fetching knows a refresh is running — `refreshing` on a lazy, `isFetching` on
    * a query — and can say so somewhere that isn't the rows.
    *
-   * Reported for either form of dataset state: a `RowSource` works this out itself, and `useTable`
-   * assembles one from `loading`/`error` props for callers who keep that state in React. A model
-   * given a bare array and never told otherwise has no loading story, and does not invent one.
+   * Reported for either form of dataset: a lazy works it out itself, and an array or getter is
+   * described by the `loading` prop passed to `useTable`. A model given a bare array and never told
+   * otherwise has no loading story, and does not invent one.
    */
   get loading(): boolean {
-    const source = this.rowSource;
-    return source !== undefined && source.value === undefined && source.error === undefined;
+    const lazy = this.lazy;
+    if (lazy) return lazy.value === undefined && lazy.error === undefined;
+    // No lazy: the caller's own account of it, and only meaningful with nothing to show. Rows on
+    // screen mean any request behind them is a refresh, which is not this and has no state here.
+    return this.givenLoading && this.rows.length === 0;
   }
 
   /**
@@ -446,13 +471,22 @@ export class TableModel {
    * lazy as `error`, or in hand as the prop they passed — and can surface it somewhere that isn't
    * the rows.
    *
-   * Raw passthrough — whatever the source was rejected with, or whatever was handed to `useTable`
-   * as the `error` prop. Unwrapped and uninterpreted either way.
+   * Raw passthrough — whatever the lazy was rejected with, or whatever was handed to `useTable` as
+   * the `error` prop. Unwrapped and uninterpreted either way.
    */
   get error(): unknown {
-    const source = this.rowSource;
-    if (source === undefined || source.value !== undefined) return undefined;
-    return source.error;
+    const lazy = this.lazy;
+    if (lazy) return lazy.value === undefined ? lazy.error : undefined;
+    return this.rows.length === 0 ? this.givenError : undefined;
+  }
+
+  /**
+   * Supply the status for a dataset that cannot describe its own. Called by `useTable` on every
+   * render whose `loading` or `error` prop changed; pointless for a lazy, which is asked directly.
+   */
+  setStatus(loading: boolean, error: unknown): void {
+    this.givenLoading = loading;
+    this.givenError = error;
   }
 
   /**
@@ -601,11 +635,13 @@ export class TableModel {
     makeObservable<
       this,
       | "syncColumns"
+      | "applyRows"
       | "configuredDefs"
       | "runtimeDefs"
       | "suppressedKeys"
-      | "rowSource"
-      | "rowsBinding"
+      | "binding"
+      | "givenLoading"
+      | "givenError"
       | "identityIds"
       | "nextIdentityId"
       | "identityId"
@@ -643,16 +679,16 @@ export class TableModel {
       unpinnedRenderedColumns: computed,
       leftPinnedRenderedColumns: computed,
       rightPinnedRenderedColumns: computed,
-      // Someone else's observable object, so `ref` rather than `observable` — mobx must not convert
-      // what it holds, only track which one is held. Tracking that much matters: `loading` and
-      // `error` both read through whichever source is current, and
-      // a keyed collection replaces it (`store.byOrg({ orgId })` is a different lazy per key). Left
-      // untracked, swapping to a source that has not loaded yet left every one of those computeds
-      // holding the previous source's answer until something else happened to invalidate them.
-      rowSource: observable.ref,
-      // The binding is read only when the reaction is (re-)armed, which `setRowSource` does
-      // explicitly, so there is nothing here to observe.
-      rowsBinding: false,
+      // Someone else's object, so `ref` rather than `observable` — mobx must not convert what it
+      // holds, only track which one is held. Tracking that much matters: `lazy`, and `loading` and
+      // `error` through it, all read whichever binding is current, and a keyed collection replaces
+      // it (`store.byOrg({ orgId })` is a different lazy per key). Left untracked, swapping to a
+      // lazy that has not loaded yet left every one of those computeds holding the previous one's
+      // answer until something else happened to invalidate them.
+      binding: observable.ref,
+      givenLoading: observable,
+      givenError: observable.ref,
+      setStatus: action.bound,
 
       // Memoization behind `rowIds`, not state: a WeakMap keyed by row and a counter. Neither is
       // observable, and `identityId` only ever fills a gap in the map.
@@ -668,6 +704,7 @@ export class TableModel {
       activeServerColumnFilters: computed,
       activeColumnFiltersIn: false,
       filterQuery: computed,
+      lazy: computed,
       loading: computed,
       error: computed,
       isEmpty: computed,
@@ -695,8 +732,8 @@ export class TableModel {
       addColumn: action.bound,
       removeColumn: action.bound,
       moveColumn: action.bound,
-      setRows: action.bound,
-      setRowSource: action.bound,
+      applyRows: action,
+      setData: action.bound,
       appendRows: action.bound,
       setScroll: action.bound,
       scrollToRow: action.bound,
@@ -719,7 +756,7 @@ export class TableModel {
     //
     // Without this there is a window where `columns` is empty: the rows reaction fires immediately
     // but its handler skips an `undefined` value (nothing has arrived yet is not an empty dataset),
-    // and the columns reaction isn't immediate — so a `RowSource` that starts empty leaves
+    // and the columns reaction isn't immediate — so a lazy that starts empty leaves
     // `column()`, `activeColumnFilters` and `filterQuery` blank until the first response lands.
     // That inverts the dependency for a page that *fetches from* `filterQuery`: its first request,
     // the one the user actually waits on, would go out with no conditions at all.
@@ -729,12 +766,11 @@ export class TableModel {
     if (this.configuredDefs) {
       this.syncColumns();
     }
-    // the getter and row-source forms are applied by their reaction in activate(), below
-    if (Array.isArray(config?.rows)) {
-      this.setRows(config.rows);
-    } else if (config?.rows) {
-      this.rowsBinding = config.rows;
-      if (isRowSource<RowData>(config.rows)) this.rowSource = config.rows;
+    // the getter and lazy forms are applied by their reaction in activate(), below
+    if (Array.isArray(config?.data)) {
+      this.applyRows(config.data);
+    } else if (config?.data) {
+      this.binding = config.data;
     }
     // registered after initial config so construction itself never fires; structural equality
     // suppresses echoes from unrelated observable churn
@@ -751,24 +787,30 @@ export class TableModel {
     // A getter `rows` is tracked here rather than read once in the constructor: the model follows
     // whatever observables the getter touches. Ordered before the state reaction so the columns
     // this first materializes are part of that reaction's baseline rather than a change to report.
-    const rows = this.rowsBinding;
-    // A source is tracked by the *identity* of its `value`, not a copy of its contents. That is
-    // what lets a `LazyObservableArray` — which keeps one array for its lifetime and replaces the
+    // One reaction for the model's lifetime, reading *through* the binding rather than being built
+    // against a fixed one. `binding` is an observable ref, so replacing it re-runs this, which
+    // re-tracks against the new binding and drops the old dependency — no disarm/re-arm dance, and
+    // no window where a replaced lazy can still write its rows back over the new dataset.
+    //
+    // A lazy is tracked by the *identity* of its `value`, not a copy of its contents. That is what
+    // lets a `LazyArray` — which keeps one array for its lifetime and replaces the
     // contents on each load — be applied exactly once: later loads reach the table's computeds
     // through MobX directly, with no re-application and no copy of every row.
     //
-    // A source whose `value` is a fresh array each load still works: its identity changes, so the
+    // A lazy whose `value` is a fresh array each load still works: its identity changes, so the
     // reaction fires and the dataset is re-applied, which is the correct behaviour there.
-    const readRows =
-      typeof rows === "function" ? rows : isRowSource<RowData>(rows) ? () => rows.value : undefined;
-
-    if (readRows && !this.rowsReactionDisposer) {
+    if (!this.rowsReactionDisposer) {
       this.rowsReactionDisposer = reaction(
-        readRows,
-        // `undefined` means nothing has arrived, which is not the same as an empty dataset — leave
-        // the rows alone rather than clearing them, and let `loading` describe the state.
+        () => {
+          const binding = this.binding;
+          if (typeof binding === "function") return binding();
+          return isLazy(binding) ? binding.value : undefined;
+        },
+        // `undefined` means nothing has arrived — or that the dataset is a plain array, which is
+        // applied outright and has no binding to read. Either way it is not an empty dataset, so
+        // leave the rows alone and let `loading` describe the state.
         (next) => {
-          if (next) this.setRows(next);
+          if (next) this.applyRows(next);
         },
         { fireImmediately: true },
       );
@@ -794,27 +836,27 @@ export class TableModel {
   }
 
   /**
-   * Point the table at a different dataset binding — another `RowSource` or getter.
+   * Point the table at a different dataset — a new array, getter or lazy.
    *
-   * A keyed collection hands out a *different* lazy per key, so `store.byOrg({ orgId })` is a new
-   * object whenever `orgId` changes, and the table has to follow it rather than keep reading the
-   * one it was built with. `useTable` calls this for you; a model driven directly needs it when the
-   * binding it was constructed with is no longer the right one.
+   * The one setter, because the three shapes differ only in who decides the rows changed. An array
+   * is applied outright; a getter or a lazy becomes the binding a reaction reads through, which is
+   * what makes a keyed collection work: `store.byOrg({ orgId })` hands back a different lazy per
+   * key, and the table has to follow it rather than keep reading the one it was built with.
    *
-   * Row-keyed state is not cleared: `setRows` intersects, so with `getRowId` configured a row
+   * Row-keyed state is not cleared: rows are intersected, so with `getRowId` configured a row
    * present in both datasets keeps its selection and expansion.
    */
-  setRowSource(rows: RowSource<RowData> | (() => RowData[])): void {
-    if (rows === this.rowsBinding) return;
-
-    this.rowsBinding = rows;
-    this.rowSource = isRowSource<RowData>(rows) ? rows : undefined;
-
-    // Re-arm against the new binding. Dropping the old reaction first matters: it closes over the
-    // previous source, and left running it would keep writing that one's rows over these.
-    this.rowsReactionDisposer?.();
-    this.rowsReactionDisposer = undefined;
-    this.activate();
+  setData(data: RowData[] | (() => RowData[]) | LazyArray<RowData>): void {
+    // Nothing to arm or disarm: the rows reaction reads through `binding`, so assigning it is the
+    // whole operation. An array clears the binding — there is nothing to read through — and is
+    // applied outright.
+    if (Array.isArray(data)) {
+      this.binding = undefined;
+      this.applyRows(data);
+      return;
+    }
+    if (data === this.binding) return;
+    this.binding = data;
   }
 
   /** Drop the model's reactions. Pairs with `activate`. */
@@ -881,7 +923,7 @@ export class TableModel {
     }
     // Present means complete: a filter the map doesn't mention is cleared, which is what makes
     // getState -> applyState exact. Keys with no column yet land when one appears, via
-    // applyColumnState — same as column state applied before the first setRows.
+    // applyColumnState — same as column state applied before the first setData.
     if (state.columnFilters) {
       for (const col of this.columns.values()) this.applyFilterState(col);
     }
@@ -1057,7 +1099,7 @@ export class TableModel {
    * same array, same dataset. (`rows` is an `observable.ref`, so mutating one in place is invisible
    * either way — hand over a new array to change the data.)
    */
-  setRows(rows: RowData[]): void {
+  private applyRows(rows: RowData[]): void {
     if (rows === this.rows) return;
     this.rows = rows;
     this.syncColumns();
@@ -1275,7 +1317,7 @@ export class TableModel {
       return defOrFactory;
     });
 
-    // Keys are derived from the defs rather than from built columns: this runs on every setRows and
+    // Keys are derived from the defs rather than from built columns: this runs on every setData and
     // appendRows, and all but the first sync needs a `ColumnModel` only for keys it doesn't already
     // have. `keyOf` is what `fromDef` itself uses to assign the key, so the two cannot disagree.
     // Deduped because a repeated key collapses in `columns` below — leaving it twice in the display
@@ -1291,7 +1333,7 @@ export class TableModel {
     }
 
     // add any new columns; freshly created ones pick up persisted state (applyState may have
-    // run before they existed — e.g. before the first setRows)
+    // run before they existed — e.g. before the first setData)
     const firstSync = this.columns.size === 0;
     for (const def of syncedDefs) {
       const key = ColumnModel.keyOf(def);
@@ -1330,7 +1372,7 @@ export class TableModel {
   }
 
   private applyColumnState(col: ColumnModel): void {
-    // A snapshot may have been applied before this column existed — before the first setRows, or
+    // A snapshot may have been applied before this column existed — before the first setData, or
     // before a factory def had a row to build from — so both halves are re-consulted here.
     this.applyFilterState(col);
     const state = this.appliedState?.columns?.[col.key];

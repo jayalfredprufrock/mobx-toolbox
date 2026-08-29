@@ -16,7 +16,7 @@ const makeTable = (
   config: Partial<ConstructorParameters<typeof TableModel>[0]> = {},
   size: { width?: number; height?: number } = {},
 ): TableModel => {
-  const table = new TableModel({ rows, ...config });
+  const table = new TableModel({ data: rows, ...config });
   table.setWidth(size.width ?? 1000);
   table.setHeight(size.height ?? 200);
   return table;
@@ -129,7 +129,7 @@ describe("column defs", () => {
     const table = makeTable([{ a: 1, b: 2 }]);
     expect(table.allColumns.map((c) => c.key)).toEqual(["a", "b"]);
 
-    table.setRows([{ a: 1, c: 3 }]);
+    table.setData([{ a: 1, c: 3 }]);
     expect(table.allColumns.map((c) => c.key)).toEqual(["a", "c"]);
   });
 
@@ -238,7 +238,7 @@ describe("runtime columns", () => {
   test("setColumns stops the derive-from-the-first-row default", () => {
     const table = makeTable([{ a: 1, b: 2 }]);
     table.setColumns(["a"]);
-    table.setRows([{ a: 1, b: 2, z: 3 }]);
+    table.setData([{ a: 1, b: 2, z: 3 }]);
     expect(table.allColumns.map((c) => c.key)).toEqual(["a"]);
   });
 
@@ -673,7 +673,7 @@ describe("selection", () => {
     expect(table.rows).toHaveLength(4);
     expect(table.selectedRows.map((r) => r.n)).toEqual([0]);
 
-    table.setRows(makeRows(2));
+    table.setData(makeRows(2));
     expect(table.selectedRows).toEqual([]);
   });
 
@@ -761,7 +761,7 @@ describe("expansion", () => {
     expect(table.expandedDisplayIndices).toEqual([]);
 
     table.toggleRowExpanded(rows[0]!);
-    table.setRows(makeRows(3));
+    table.setData(makeRows(3));
     expect(table.expandedDisplayIndices).toEqual([]);
   });
 });
@@ -987,7 +987,7 @@ describe("table state", () => {
       columns: { a: { hidden: true, pinned: false } },
     });
 
-    table.setRows([{ a: 1, b: 2 }]);
+    table.setData([{ a: 1, b: 2 }]);
     expect(table.columnOrder).toEqual(["b", "a"]);
     expect(table.columns.get("a")!.hidden).toBe(true);
   });
@@ -1063,7 +1063,7 @@ describe("setRows", () => {
     table.toggleRow(rows[0]!);
     table.toggleRowExpanded(rows[1]!);
 
-    table.setRows(makeRows(3));
+    table.setData(makeRows(3));
     expect(table.selectedRows).toEqual([]);
     expect(table.expandedIds.size).toBe(0);
   });
@@ -1075,7 +1075,7 @@ describe("setRows", () => {
 
     // same array, same dataset — the reset would be gratuitous, and this is
     // what lets useTable and the rows reaction re-apply without consequence
-    table.setRows(rows);
+    table.setData(rows);
     expect(table.selectedRows.map((r) => r.n)).toEqual([0]);
   });
 });
@@ -1083,7 +1083,7 @@ describe("setRows", () => {
 describe("rows as a getter", () => {
   test("tracks the observables the getter reads", () => {
     const source = observable.box(makeRows(2));
-    const table = new TableModel({ rows: () => source.get() });
+    const table = new TableModel({ data: () => source.get() });
     expect(table.rows).toHaveLength(2);
 
     runInAction(() => source.set(makeRows(5)));
@@ -1092,7 +1092,7 @@ describe("rows as a getter", () => {
 
   test("stops tracking once disposed, and picks up again on activate", () => {
     const source = observable.box(makeRows(2));
-    const table = new TableModel({ rows: () => source.get() });
+    const table = new TableModel({ data: () => source.get() });
 
     table.dispose();
     runInAction(() => source.set(makeRows(5)));
@@ -1104,7 +1104,7 @@ describe("rows as a getter", () => {
 
   test("a row-keyed reset only happens when the dataset actually changes", () => {
     const source = observable.box(makeRows(3));
-    const table = new TableModel({ rows: () => source.get() });
+    const table = new TableModel({ data: () => source.get() });
     table.toggleRow(table.rows[0]!);
 
     // re-activating (a StrictMode remount does this) re-reads the getter,
@@ -1132,7 +1132,7 @@ describe("setRows row-keyed state", () => {
     table.expandedIds.add(3);
 
     // same records, new array — what a refetch produces
-    table.setRows(rowsOf(1, 2, 3));
+    table.setData(rowsOf(1, 2, 3));
 
     expect([...table.selectedIds]).toEqual([2]);
     expect([...table.expandedIds]).toEqual([3]);
@@ -1144,7 +1144,7 @@ describe("setRows row-keyed state", () => {
     table.selectedIds.add(2);
     table.selectedIds.add(3);
 
-    table.setRows(rowsOf(1, 3));
+    table.setData(rowsOf(1, 3));
 
     expect([...table.selectedIds]).toEqual([3]);
   });
@@ -1153,7 +1153,7 @@ describe("setRows row-keyed state", () => {
     const table = makeTable(rowsOf(1, 2), byId);
     table.selectedIds.add(1);
 
-    table.setRows(rowsOf(90, 91));
+    table.setData(rowsOf(90, 91));
 
     expect([...table.selectedIds]).toEqual([]);
   });
@@ -1163,7 +1163,7 @@ describe("setRows row-keyed state", () => {
     table.selectedIds.add(0);
     table.expandedIds.add(1);
 
-    table.setRows(rowsOf(1, 2, 3));
+    table.setData(rowsOf(1, 2, 3));
 
     expect([...table.selectedIds]).toEqual([]);
     expect([...table.expandedIds]).toEqual([]);
@@ -1174,7 +1174,7 @@ describe("setRows row-keyed state", () => {
     const table = makeTable(rows, byId);
     table.selectedIds.add(1);
 
-    table.setRows(rows);
+    table.setData(rows);
 
     expect([...table.selectedIds]).toEqual([1]);
   });
@@ -1301,7 +1301,7 @@ describe("autoColumns", () => {
     const table = makeTable([{ a: 1, b: 2 }]);
     table.addColumn({ key: "c", value: () => 3 });
 
-    table.setRows([{ a: 1, b: 2, z: 9 }]);
+    table.setData([{ a: 1, b: 2, z: 9 }]);
 
     // "z" appeared, and the runtime addition stayed
     expect(keys(table)).toEqual(["a", "b", "c", "z"]);
@@ -1311,7 +1311,7 @@ describe("autoColumns", () => {
     const table = makeTable([{ a: 1, b: 2 }]);
     table.removeColumn("b");
 
-    table.setRows([{ a: 1, b: 2, z: 9 }]);
+    table.setData([{ a: 1, b: 2, z: 9 }]);
 
     expect(keys(table)).toEqual(["a", "z"]); // "b" suppressed, "z" still derived
   });
@@ -1322,7 +1322,7 @@ describe("autoColumns", () => {
     table.addColumn("b");
 
     expect(keys(table)).toEqual(["a", "b"]);
-    table.setRows([{ a: 1, b: 2 }]);
+    table.setData([{ a: 1, b: 2 }]);
     expect(keys(table)).toEqual(["a", "b"]); // and only once
   });
 
@@ -1394,7 +1394,7 @@ describe("column order", () => {
     });
     expect(order(table)).toEqual(["a", "z"]);
 
-    table.setRows([{ a: 1, b: 2, z: 3 }]);
+    table.setData([{ a: 1, b: 2, z: 3 }]);
 
     expect(order(table)).toEqual(["a", "b", "z"]); // "b" landed before "z", not after it
   });
@@ -1425,7 +1425,7 @@ describe("column order", () => {
     expect(order(table)).toEqual(["a", "b", "c"]);
 
     table.moveColumn("c", 0);
-    table.setRows([{ a: 1, b: 2, c: 3 }]);
+    table.setData([{ a: 1, b: 2, c: 3 }]);
 
     expect(order(table)).toEqual(["c", "a", "b"]);
   });
@@ -1455,7 +1455,7 @@ describe("column order", () => {
     });
     expect(order(table)).toEqual([]);
 
-    table.setRows([{ a: 1, b: 2 }]);
+    table.setData([{ a: 1, b: 2 }]);
 
     expect(order(table)).toEqual(["b", "a"]);
   });

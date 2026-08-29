@@ -20,7 +20,7 @@ const makeRows = (count: number): RowData[] =>
   Array.from({ length: count }, (_, i) => ({ id: i, name: `row-${i}` }));
 
 const makeTable = (rows: RowData[], columns?: ColumnsDef<RowData>): TableModel => {
-  const table = new TableModel({ rows, columns, rowHeight: 40, rowOverscan: 0 });
+  const table = new TableModel({ data: rows, columns, rowHeight: 40, rowOverscan: 0 });
   table.setWidth(600);
   table.setHeight(120);
   return table;
@@ -80,7 +80,7 @@ describe("<Table.Root>", () => {
   });
 
   test("renders nothing until the viewport has been measured", async () => {
-    const table = new TableModel({ rows: makeRows(5), columns: ["id"] });
+    const table = new TableModel({ data: makeRows(5), columns: ["id"] });
     const { container } = await mount(<BasicTable table={table} />);
     expect(container.querySelectorAll('[role="cell"]')).toHaveLength(0);
 
@@ -308,7 +308,7 @@ describe("row keys and reconciliation", () => {
 
     // the same two objects, other way round
     await act(async () => {
-      table.setRows([beta, alpha]);
+      table.setData([beta, alpha]);
     });
 
     const after = bodyRows(container);
@@ -324,7 +324,7 @@ describe("row keys and reconciliation", () => {
     const before = bodyRows(container)[0];
 
     await act(async () => {
-      table.setRows([{ id: 1, name: "alpha" }]); // same values, different object
+      table.setData([{ id: 1, name: "alpha" }]); // same values, different object
     });
 
     // nothing claims this is the row that was there before, so React builds a new one
@@ -333,7 +333,7 @@ describe("row keys and reconciliation", () => {
 
   test("getRowId makes the node survive a replaced object", async () => {
     const table = new TableModel({
-      rows: [{ id: 1, name: "alpha" }],
+      data: [{ id: 1, name: "alpha" }],
       columns: ["id", "name"],
       rowHeight: 40,
       rowOverscan: 0,
@@ -345,7 +345,7 @@ describe("row keys and reconciliation", () => {
     const before = bodyRows(container)[0];
 
     await act(async () => {
-      table.setRows([{ id: 1, name: "alpha renamed" }]);
+      table.setData([{ id: 1, name: "alpha renamed" }]);
     });
 
     const after = bodyRows(container)[0];

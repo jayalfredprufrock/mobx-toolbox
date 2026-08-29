@@ -31,10 +31,9 @@ export default defineConfig({
       filter: "src/filter/index.ts",
       form: "src/form/index.ts",
       lazy: "src/lazy/index.ts",
-      // Pre-rename import path, kept so `mobx-toolbox/lazy-observable` keeps resolving. The
-      // implementation lives in a shared chunk, so this second entry is a re-export shim rather
-      // than a duplicate copy. Delete at 1.0, with `src/lazy/deprecated.ts`.
-      "lazy-observable": "src/lazy/index.ts",
+      // Pre-rename import path, kept so `mobx-toolbox/lazy-observable` keeps resolving. Points at
+      // its own module, not at `index.ts` — see the note in `src/lazy/compat.ts`. Delete at 1.0.
+      "lazy-observable": "src/lazy/compat.ts",
       model: "src/model/index.ts",
       router: "src/router/index.ts",
       table: "src/table/index.ts",

@@ -20,8 +20,8 @@ import { isRowSource } from "./util";
  * | rows      | loading | error | reads as               |
  * | --------- | ------- | ----- | ---------------------- |
  * | some      | –       | –     | rows                   |
- * | some      | yes     | –     | refreshing (rows stay) |
- * | some      | –       | yes   | refresh failed         |
+ * | some      | yes     | –     | rows (a refresh, kept) |
+ * | some      | –       | yes   | rows (failure ignored) |
  * | none      | yes     | –     | first load             |
  * | none      | –       | yes   | failed, nothing to show|
  * | none      | no      | no    | genuinely empty        |
@@ -70,8 +70,8 @@ const controlledSource = (
  * is running and how the last one ended, so the table reads all of it from there and `loading` /
  * `error` are ignored. Hand over anything else and the table is controlled: it knows only what you
  * tell it each render, which is what makes `loading` and `error` worth passing. Both forms end up
- * at the same five states (`loading`, `refreshing`, `error`, `refreshError`, `isEmpty`); they
- * differ only in who works them out.
+ * at the same three states (`loading`, `error`, `isEmpty`); they differ only in who works them
+ * out.
  *
  * A config with no `rows` key at all is neither — the table is yours to drive with `setRows`, and
  * nothing is installed that could overwrite what you put there.

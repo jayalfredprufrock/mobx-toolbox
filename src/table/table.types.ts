@@ -61,10 +61,12 @@ export interface RowSource<T> {
    * rather than the worst one ever seen.
    *
    * A failure does **not** have to clear `value`, and shouldn't: a refresh that fails while rows
-   * are on screen keeps showing them, so an error and a readable value coexist. Which of the two
-   * situations the table is in is what separates {@link TableModel.error} — nothing to show, the
-   * fatal state `<Table.Error>` renders for — from {@link TableModel.refreshError}, where the rows
-   * are fine and only the last refresh wasn't.
+   * are on screen keeps showing them, so an error and a readable value coexist. Whether there is a
+   * value is exactly what the table uses to decide what a failure means. With none it is fatal —
+   * {@link TableModel.error}, the state `<Table.Error>` renders for. With rows still on screen the
+   * table deliberately says nothing: they are good rows, and blanking them over a background
+   * request would cost more than the failure did. Surfacing *that* one is the caller's, from
+   * wherever their fetching already keeps it.
    *
    * Optional, so a source predating this keeps working; a source that never sets it simply never
    * reports an error, exactly as before.
@@ -95,8 +97,8 @@ export interface TableConfig<T> {
    *
    * **A row source** — an object with `value`, `fetching` and optionally `error`, which a
    * `LazyObservableArray` satisfies. The table tracks its contents itself, so this form needs no
-   * `.slice()`, and the source works out the dataset's state on its own: see `loading`,
-   * `refreshing`, `isEmpty`, `error` and `refreshError` on the model.
+   * `.slice()`, and the source works out the dataset's state on its own: see `loading`, `isEmpty`
+   * and `error` on the model.
    *
    * The first two forms reach those same five states through {@link UseTableConfig.loading} and
    * {@link UseTableConfig.error}, which is the *controlled* form — you keep the status where your
@@ -193,18 +195,24 @@ export interface UseTableConfig<T> extends TableConfig<T> {
   /**
    * Whether a request is in flight. The controlled counterpart of a source's `fetching`.
    *
-   * Which state this produces depends on whether there are rows: with none it is a first load
-   * (`table.loading`), behind rows already on screen it is a refresh (`table.refreshing`). You do
-   * not have to distinguish them — passing the one fact you know is enough.
+   * What it produces depends on whether there are rows. With none it is a first load, and the
+   * table reports it as `table.loading`. Behind rows already on screen it is a refresh, which the
+   * table deliberately has no state for — the rows stay exactly as they are, and you already know
+   * a request is running, since you are the one passing this. You do not have to distinguish the
+   * two: passing the one fact you know is enough.
    *
    * Pass it from the first render, not from the first effect. A render with no rows and
    * `loading: false` is a settled empty result by definition, and the table will say so.
    */
   loading?: boolean;
   /**
-   * How the last request ended. The controlled counterpart of a source's `error`, and split the
-   * same way: with no rows it is fatal (`table.error`, what `<Table.Error>` renders), behind rows
-   * still on screen it is a failed refresh (`table.refreshError`, which disturbs nothing).
+   * How the last request ended. The controlled counterpart of a source's `error`, and read the
+   * same way: it matters when there are no rows, where it is fatal (`table.error`, what
+   * `<Table.Error>` renders) and stops the table reporting a load that will never finish.
+   *
+   * Behind rows that are still on screen the table ignores it on purpose — they are good rows, and
+   * a failed refresh is not worth blanking them for. You passed the error in, so you still have it;
+   * put it on a refresh control or in a toast, somewhere that isn't the rows.
    *
    * Clear it when the next request starts, or the table will keep describing the older failure.
    */

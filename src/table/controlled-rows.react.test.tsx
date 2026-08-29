@@ -40,13 +40,11 @@ const mount = async (config: UseTableConfig<RowData>) => {
 /** The five states, as a caller would read them off the model. */
 const state = (table: TableModel) => ({
   loading: table.loading,
-  refreshing: table.refreshing,
   error: table.error,
-  refreshError: table.refreshError,
   isEmpty: table.isEmpty,
 });
 
-const settled = { loading: false, refreshing: false, error: undefined, refreshError: undefined };
+const settled = { loading: false, error: undefined };
 
 describe("the controlled form: rows plus loading/error props", () => {
   test("a first load reports loading, not empty", async () => {
@@ -78,14 +76,15 @@ describe("the controlled form: rows plus loading/error props", () => {
     expect(state(table())).toEqual({ ...settled, isEmpty: true });
   });
 
-  test("loading behind rows is a refresh, and the rows stay", async () => {
+  test("loading behind rows is a refresh: the rows stay, and no state changes", async () => {
     const rows = rowsOf("alpha", "beta");
     const { table, render } = await mount({ rows, loading: false });
     table().selectedIds.add(0);
 
     await render({ rows, loading: true });
 
-    expect(state(table())).toEqual({ ...settled, refreshing: true, isEmpty: false });
+    // the table reports nothing — you passed `loading`, so you already know a request is running
+    expect(state(table())).toEqual({ ...settled, isEmpty: false });
     expect(table().rows).toHaveLength(2);
     expect([...table().selectedIds]).toEqual([0]);
   });
@@ -98,13 +97,14 @@ describe("the controlled form: rows plus loading/error props", () => {
     expect(state(table())).toEqual({ ...settled, error: boom, isEmpty: false });
   });
 
-  test("an error behind rows is a failed refresh, and disturbs nothing", async () => {
+  test("an error behind rows disturbs nothing, and the table stays quiet about it", async () => {
     const boom = new Error("boom");
     const rows = rowsOf("alpha", "beta");
     const { table, render } = await mount({ rows, loading: false });
     await render({ rows, loading: false, error: boom });
 
-    expect(state(table())).toEqual({ ...settled, refreshError: boom, isEmpty: false });
+    // you passed the error in, so you still have it; the table declines to blank good rows over it
+    expect(state(table())).toEqual({ ...settled, isEmpty: false });
     expect(table().rows).toHaveLength(2);
   });
 
@@ -120,12 +120,15 @@ describe("the controlled form: rows plus loading/error props", () => {
     const rows = rowsOf("alpha");
     const { table, render } = await mount({ rows: () => rows, loading: true });
 
-    // a getter that already has rows to give reads as a refresh, exactly as an array would
-    expect(table().refreshing).toBe(true);
+    // a getter that already has rows to give reads as a refresh, exactly as an array would: the
+    // rows stay and nothing else moves
+    expect(table().loading).toBe(false);
+    expect(table().isEmpty).toBe(false);
     expect(table().rows).toHaveLength(1);
 
     await render({ rows: () => rows, loading: false, error: new Error("boom") });
-    expect(table().refreshError).toBeInstanceOf(Error);
+    expect(table().error).toBeUndefined();
+    expect(table().rows).toHaveLength(1);
   });
 });
 
@@ -189,14 +192,16 @@ describe("a StrictMode remount", () => {
     expect(table.rows).toHaveLength(2);
     expect(state(table)).toEqual({ ...settled, isEmpty: false });
 
-    // and it still tracks props afterwards rather than being deaf
+    // and it still tracks props afterwards rather than being deaf: an empty dataset that is still
+    // loading has to come back as a first load, which only a live prop mirror can report
     await act(async () => {
       root.render(
         <StrictMode>
-          <Probe config={{ rows, loading: true }} />
+          <Probe config={{ rows: [], loading: true }} />
         </StrictMode>,
       );
     });
-    expect(table.refreshing).toBe(true);
+    expect(table.loading).toBe(true);
+    expect(table.isEmpty).toBe(false);
   });
 });

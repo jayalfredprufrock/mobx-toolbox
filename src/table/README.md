@@ -108,7 +108,7 @@ useTable({ rows: surveyStore.all, getRowId: (s) => s.id });
 
 The table tracks the array's contents itself, so there is no `.slice()` to remember — and this is
 the only form that can tell **a first load from an empty result**, which is what drives
-[loading and empty states](#loading-and-empty-states).
+[loading, empty and error states](#loading-empty-and-error-states).
 
 It is structural, not a dependency: `table` declares the shape it needs and never imports
 `lazy-observable`.
@@ -135,8 +135,8 @@ That produces a new array on each load, so `setRows` re-applies the dataset — 
 `getRowId` selection is intersected rather than cleared. It carries no loading information, though,
 so `table.loading` stays `false`.
 
-(`table.loading` and `table.refreshing` are the table's own state, unrelated to any property on a
-lazy — the table reads `value` and `fetching` off the source and derives the rest.)
+(`table.loading` and `table.error` are the table's own state, unrelated to any property on a lazy —
+the table reads `value`, `fetching` and `error` off the source and derives the rest.)
 
 **`getRowId` is worth configuring, but it is no longer the difference between working and not.**
 Without it, a row's id is its own object identity — see [row identity](#row-identity) — so anything
@@ -185,26 +185,51 @@ Two behaviours worth expecting from the keyed form:
 Driving a `TableModel` directly rather than through `useTable`? `setRowSource(rows)` is the same
 re-pointing, for when the binding it was constructed with is no longer the right one.
 
-### Loading and empty states
+### Loading, empty and error states
 
-Given a row source, the table distinguishes four states — and the one that used to need hand-wiring
-is the first:
+The table derives three states, and they are mutually exclusive by construction — so ordering the
+slots that render them is not your problem:
 
-| state                                 | `loading` | `refreshing` | `isEmpty` |
-| ------------------------------------- | --------- | ------------ | --------- |
-| nothing loaded yet, request in flight | `true`    | `false`      | `false`   |
-| rows present, request in flight       | `false`   | `true`       | `false`   |
-| settled, zero rows                    | `false`   | `false`      | `true`    |
-| rows present, idle                    | `false`   | `false`      | `false`   |
+| state                               | `loading` | `error`     | `isEmpty` |
+| ----------------------------------- | --------- | ----------- | --------- |
+| nothing yet, nothing failed         | `true`    | `undefined` | `false`   |
+| the request failed, nothing to show | `false`   | the error   | `false`   |
+| settled, zero rows                  | `false`   | `undefined` | `true`    |
+| rows present                        | `false`   | `undefined` | `false`   |
 
-`isEmpty` is `false` during a first load, so a table can no longer claim "no results" while it is
-still fetching them. Without a row source, `loading` and `refreshing` are always `false` — an array
-or a getter carries no notion of loading, and the table does not invent one.
+`isEmpty` is `false` during a first load _and_ after a failure, so a table never claims "no results"
+about rows it is still fetching or never got. `loading` excludes a failure for the same reason: a
+failed first load used to leave the spinner up forever, since nothing was ever going to arrive to
+take it down.
 
-**A refresh keeps its rows.** They stay rendered and fully interactive, because replacing them to
-fetch mostly-identical rows would throw away scroll position, column arrangement and selection. Use
-`table.refreshing` to indicate it somewhere that isn't the rows themselves — and don't dim them,
-which reads as _disabled_.
+**A refresh keeps its rows, and the table says nothing about it.** They stay rendered and fully
+interactive, because replacing them to fetch mostly-identical rows would throw away scroll position,
+column arrangement and selection. A request running behind rows the table already has is not its
+business — whoever owns the fetching knows about it (`refreshing` on a lazy, `isFetching` on a
+query) and can indicate it somewhere that isn't the rows themselves. Don't dim them, which reads as
+_disabled_.
+
+The same goes for a **failed** refresh: `table.error` stays `undefined`, the rows stay put, and the
+error is still wherever you keep it. Only a failure with nothing to show is the table's business.
+
+#### Controlled: the same states without a row source
+
+A row source works all of this out itself. If your loading state lives in React instead — TanStack
+Query, SWR, a plain `useEffect` — pass it and get the identical states:
+
+```tsx
+const query = useQuery(...);
+const table = useTable({ rows: query.data, loading: query.isFetching, error: query.error });
+```
+
+Which form you are in is decided by what `rows` is: a `RowSource` is uncontrolled and authoritative
+about itself (the props are ignored), anything else is controlled. Rows win when there are any, and
+`loading`/`error` decide what an empty-looking dataset means — so `rows={[]} loading` is a first
+load rather than a settled empty result, which is the "No results" flash the uncontrolled form
+avoids for free.
+
+Pass `loading` from the first render, not from the first effect: no rows and `loading: false` is a
+settled empty result by definition, and the table will say so.
 
 Everything else (`columns`, `getRowId`, `onStateChange`) is captured at construction. Change those through the model — `setColumns`, `applyState` — rather than by re-rendering. Column filters need none of this: they are instances you hold, so you mutate them directly.
 
@@ -963,14 +988,16 @@ Pinned cells must be opaque because they overlap scrolling ones. Set `--table-pi
 
 The library reads `--table-viewport-width` (set by `<Table.Root>`) for the pieces that pin horizontally, and exposes `--table-row-height`. `<Table.Empty>` also honors `--table-header-height` / `--table-header-gap` when computing its height.
 
-## Empty and loading slots
+## Empty, loading and error slots
 
-Both gate themselves. Render them after `<Table.Body>` and they appear only when they should:
+All three gate themselves. Render them after `<Table.Body>` and they appear only when they should —
+and never two at once, since the states they read are mutually exclusive:
 
 ```tsx
 <Table.Body>{...}</Table.Body>
 <Table.Empty>{table.rows.length ? "No matches" : "No users yet"}</Table.Empty>
 <Table.Loading><Skeleton /></Table.Loading>
+<Table.Error>{(error) => <Retry error={error} />}</Table.Error>
 ```
 
 The library decides **when**; you decide **what**. That split is the point: the gate can't know
@@ -1002,8 +1029,28 @@ be worth mentioning — a fast load renders nothing at all rather than flashing 
 `sustain={false}` to show it immediately, or `sustain={{ after: 100 }}` to retune it; the timing is
 [`useSlowLoading`](../util/README.md#useslowloading).
 
-Both own placement only — filling the viewport below the sticky header and pinning horizontally.
-Cosmetics are yours; `data-empty` and `data-loading` are the styling hooks.
+`<Table.Error>` shows only when `table.error` — a failure that left nothing to show. A failed
+_refresh_ renders nothing here on purpose: blanking a working table over a background request costs
+more than the failure did. Its children may be a render prop, called with whatever the request
+failed with, so the wording can come from the error itself.
+
+All three own placement only — filling the viewport below the sticky header and pinning
+horizontally. Cosmetics are yours; `data-empty`, `data-loading` and `data-error` are the styling
+hooks.
+
+### `<Table.Overlay>`
+
+The placement primitive the three gated slots are built from, with no gate of its own. The
+positioning is the hard part; deciding whether to show a message about a failed save is an `if`:
+
+```tsx
+{
+  saveError && <Table.Overlay>Couldn't save changes</Table.Overlay>;
+}
+```
+
+It carries no data attribute — `data-empty` and friends mean "the table decided this", and a
+hand-shown overlay hasn't earned that claim. Pass your own if you want a styling hook.
 
 ## Resizing
 

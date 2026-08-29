@@ -59,7 +59,7 @@ describe("binding a table to a lazy observable array", () => {
     stop();
   });
 
-  test("a row source distinguishes the four states", async () => {
+  test("a row source distinguishes a first load from a refresh from an empty result", async () => {
     let release!: (rows: { id: number; name: string }[]) => void;
     const gate = new Promise<{ id: number; name: string }[]>((resolve) => {
       release = resolve;
@@ -73,7 +73,6 @@ describe("binding a table to a lazy observable array", () => {
     // nothing loaded yet, request in flight — and emphatically not "empty"
     expect(table.loading).toBe(true);
     expect(table.isEmpty).toBe(false);
-    expect(table.refreshing).toBe(false);
 
     release([
       { id: 1, name: "alpha" },
@@ -84,14 +83,16 @@ describe("binding a table to a lazy observable array", () => {
     expect(table.loading).toBe(false);
     expect(table.isEmpty).toBe(false);
 
-    // rows present, request in flight: they stay, and this is a refresh rather than a load
+    // rows present, request in flight: they stay, and the table reports nothing at all. A refresh
+    // is the lazy's business — `lazy.refreshing` — not a state the table needs to carry.
     const reloading = lazy.reload();
-    expect(table.refreshing).toBe(true);
+    expect(lazy.refreshing).toBe(true);
     expect(table.loading).toBe(false);
+    expect(table.isEmpty).toBe(false);
     expect(table.rows).toHaveLength(2); // never blanked
     await reloading;
     await tick(20);
-    expect(table.refreshing).toBe(false);
+    expect(lazy.refreshing).toBe(false);
 
     stop();
   });
@@ -183,14 +184,13 @@ describe("binding a table to a lazy observable array", () => {
     stop();
   });
 
-  test("an array or getter form reports neither loading nor refreshing", async () => {
+  test("an array or getter form reports no loading state at all", async () => {
     const table = new TableModel({ rows: [{ id: 1, name: "alpha" }] });
     const stop = render(table);
     await tick(0);
 
     // no source, so the table does not invent a loading story for a dataset it was handed
     expect(table.loading).toBe(false);
-    expect(table.refreshing).toBe(false);
     expect(table.isEmpty).toBe(false);
     stop();
   });
@@ -311,11 +311,10 @@ describe("a row source that fails", () => {
 
     // and it is not quietly re-labelled as an empty result, which would be its own lie
     expect(table.isEmpty).toBe(false);
-    expect(table.refreshError).toBeUndefined();
     stop();
   });
 
-  test("a failed refresh keeps the rows and reports separately", async () => {
+  test("a failed refresh disturbs nothing, and the table stays quiet about it", async () => {
     let calls = 0;
     const lazy = lazyObservableArray(
       () => {
@@ -348,9 +347,11 @@ describe("a row source that fails", () => {
     expect(table.loading).toBe(false);
     expect(table.isEmpty).toBe(false);
 
-    // the failure is real, it just belongs somewhere that isn't the rows
+    // the failure is real and still readable — on the lazy, where whoever owns the fetching can
+    // put it on a refresh control or in a toast. The table says nothing, which is the point: these
+    // are good rows, and blanking them over a background request costs more than the failure did.
     expect(table.error).toBeUndefined();
-    expect(table.refreshError).toBeInstanceOf(Error);
+    expect(lazy.error).toBeInstanceOf(Error);
     stop();
   });
 
@@ -375,7 +376,6 @@ describe("a row source that fails", () => {
     await tick(20);
 
     expect(table.error).toBeUndefined();
-    expect(table.refreshError).toBeUndefined();
     expect(table.loading).toBe(false);
     expect(table.rows).toHaveLength(1);
     stop();
@@ -400,7 +400,6 @@ describe("a row source that fails", () => {
 
     // no source, so the table has no failure story to tell either — same rule as `loading`
     expect(table.error).toBeUndefined();
-    expect(table.refreshError).toBeUndefined();
     stop();
   });
 });

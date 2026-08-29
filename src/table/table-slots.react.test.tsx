@@ -151,8 +151,9 @@ describe("Table.Empty and Table.Loading gate themselves", () => {
       void lazy.reload();
     });
 
-    // rows stay on screen and stay interactive — this is `refreshing`, not `loading`
-    expect(table.refreshing).toBe(true);
+    // rows stay on screen and stay interactive — a refresh is not a load, and the table has no
+    // state for it at all; the lazy is where anyone who cares can see one is running
+    expect(lazy.refreshing).toBe(true);
     expect(table.loading).toBe(false);
     expect(container.textContent).toContain("alpha");
     expect(container.textContent).not.toContain("LOADING");
@@ -160,7 +161,7 @@ describe("Table.Empty and Table.Loading gate themselves", () => {
 
     second.resolve([{ id: 1, name: "beta" }]);
     await act(async () => {});
-    expect(table.refreshing).toBe(false);
+    expect(lazy.refreshing).toBe(false);
     expect(container.textContent).toContain("beta");
   });
 
@@ -244,8 +245,10 @@ describe("Table.Error gates on a failure with nothing to show", () => {
     expect(container.textContent).not.toContain("LOADING");
     expect(container.textContent).not.toContain("NOTHING HERE");
 
-    // it is still a real failure, reported where it can't destroy anything
-    expect(table.refreshError).toBeInstanceOf(Error);
+    // it is still a real failure, still readable where the caller keeps it — the table just
+    // declines to render anything about it
+    expect(table.error).toBeUndefined();
+    expect(lazy.error).toBeInstanceOf(Error);
   });
 
   test("the error slot receives the error, so the wording can come from it", async () => {

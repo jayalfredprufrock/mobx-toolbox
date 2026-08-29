@@ -87,9 +87,9 @@ export class TableModel {
   private rowsReactionDisposer: IReactionDisposer | undefined;
 
   /**
-   * The `RowSource` form of `rows`, if that is what was given. Held so `loading` and `refreshing`
-   * can read it: an array or a getter says nothing about whether more is coming, and only a source
-   * can distinguish "no rows yet" from "no rows".
+   * The `RowSource` form of `rows`, if that is what was given. Held so `loading` and `error` can
+   * read it: an array or a getter says nothing about whether more is coming, and only a source can
+   * distinguish "no rows yet" from "no rows".
    *
    * Held here rather than read off `config` because it can be replaced — a keyed collection hands
    * out a *different* lazy per key, so `store.byOrg({ orgId })` is a new source whenever `orgId`
@@ -420,6 +420,12 @@ export class TableModel {
    * either; gating on `fetching` would call that beat "not loading" and flash the empty slot before
    * the spinner. Absence of a value with no error to explain it is the honest reading.
    *
+   * Only ever a *first* load. A request running behind rows already on screen is not this and has
+   * no state here at all: the rows stay rendered and fully interactive, because replacing them to
+   * fetch mostly-identical ones would throw away scroll position, column arrangement and selection.
+   * Whoever owns the fetching knows a refresh is running — `refreshing` on a lazy, `isFetching` on
+   * a query — and can say so somewhere that isn't the rows.
+   *
    * Reported for either form of dataset state: a `RowSource` works this out itself, and `useTable`
    * assembles one from `loading`/`error` props for callers who keep that state in React. A model
    * given a bare array and never told otherwise has no loading story, and does not invent one.
@@ -430,24 +436,15 @@ export class TableModel {
   }
 
   /**
-   * Rows are on screen and a request is in flight behind them. Deliberately not the same as
-   * `loading`: the rows stay rendered and fully interactive, because replacing them to fetch
-   * mostly-identical rows would throw away scroll position, column arrangement and selection.
-   */
-  get refreshing(): boolean {
-    return (
-      this.rowSource !== undefined && this.rowSource.value !== undefined && this.rowSource.fetching
-    );
-  }
-
-  /**
    * The request failed and there is nothing to show for it — the fatal state, and the only one
    * `<Table.Error>` renders for.
    *
-   * Mutually exclusive with {@link TableModel.refreshError} by construction: whether the source has
-   * a value is what sorts the same underlying failure into one or the other. That split is the
-   * whole point. A refresh that fails behind rows already on screen must not blank a working table
-   * over a background request, so it reports there instead and leaves this `undefined`.
+   * A failure behind rows that are still on screen is deliberately *not* this. Blanking a working
+   * table over a background request would destroy scroll position, column arrangement and selection
+   * for something the user never asked for, so a failed refresh leaves this `undefined` and the
+   * table carries on showing what it has. Whoever owns the fetching still has that error — on the
+   * lazy as `error`, or in hand as the prop they passed — and can surface it somewhere that isn't
+   * the rows.
    *
    * Raw passthrough — whatever the source was rejected with, or whatever was handed to `useTable`
    * as the `error` prop. Unwrapped and uninterpreted either way.
@@ -455,20 +452,6 @@ export class TableModel {
   get error(): unknown {
     const source = this.rowSource;
     if (source === undefined || source.value !== undefined) return undefined;
-    return source.error;
-  }
-
-  /**
-   * A request failed behind rows that are still on screen — the last refresh didn't take, and
-   * everything visible is simply older than it should be.
-   *
-   * Not a reason to disturb the table. This is what a refresh control reads to go red, and what a
-   * toast reads to say so, while the rows stay exactly where they are. See {@link TableModel.error}
-   * for the case where there is nothing left to show.
-   */
-  get refreshError(): unknown {
-    const source = this.rowSource;
-    if (source === undefined || source.value === undefined) return undefined;
     return source.error;
   }
 
@@ -661,8 +644,8 @@ export class TableModel {
       leftPinnedRenderedColumns: computed,
       rightPinnedRenderedColumns: computed,
       // Someone else's observable object, so `ref` rather than `observable` — mobx must not convert
-      // what it holds, only track which one is held. Tracking that much matters: `loading`,
-      // `refreshing`, `error` and `refreshError` all read through whichever source is current, and
+      // what it holds, only track which one is held. Tracking that much matters: `loading` and
+      // `error` both read through whichever source is current, and
       // a keyed collection replaces it (`store.byOrg({ orgId })` is a different lazy per key). Left
       // untracked, swapping to a source that has not loaded yet left every one of those computeds
       // holding the previous source's answer until something else happened to invalidate them.
@@ -686,9 +669,7 @@ export class TableModel {
       activeColumnFiltersIn: false,
       filterQuery: computed,
       loading: computed,
-      refreshing: computed,
       error: computed,
-      refreshError: computed,
       isEmpty: computed,
       displayRows: computed,
       firstRenderedIndex: computed,

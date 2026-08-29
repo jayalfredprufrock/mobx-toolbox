@@ -24,8 +24,9 @@ export interface TableErrorProps extends Omit<TableOverlayProps, "children"> {
  * **A failed *refresh* does not render this**, and that is the whole point of the gate. Rows
  * already on screen are still perfectly good rows, and blanking a working table because a
  * background request came back 500 destroys scroll position, column arrangement and selection over
- * something the user never asked for. That case reports through `table.refreshError` instead —
- * put it on a refresh control or in a toast, somewhere that isn't the rows.
+ * something the user never asked for. The table says nothing at all about that case; the error is
+ * still on your lazy, or still in the prop you passed, and belongs on a refresh control or in a
+ * toast — somewhere that isn't the rows.
  *
  * The three slots are mutually exclusive by construction, so ordering them is not your problem:
  * `loading` excludes a failure, `isEmpty` excludes both, and this renders only for the failure

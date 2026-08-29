@@ -23,8 +23,9 @@ const NEVER: SlowLoadingOptions = { after: 0, minDuration: 0 };
  *
  * It has nothing to say about a *refresh* — rows already on screen stay put and stay interactive,
  * because replacing them to fetch mostly-identical rows would throw away scroll position, column
- * arrangement and selection. Use `table.refreshing` to put a quiet indication somewhere that isn't
- * the rows themselves.
+ * arrangement and selection. Nor does the table: a request running behind rows it already has is
+ * not its business, and whoever owns the fetching knows about it anyway (`refreshing` on a lazy,
+ * `isFetching` on a query). Put a quiet indication somewhere that isn't the rows themselves.
  *
  * Needs the table to have been told about loading, which is either form of `rows` state: a
  * `RowSource` that knows, or a `loading` prop passed to `useTable` alongside a plain array.

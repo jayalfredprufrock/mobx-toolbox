@@ -36,8 +36,7 @@ const LooseLink = Link as React.FC<any>;
 const mount = async (node: (router: RouterStore) => React.ReactNode, initialPath = "/") => {
   const history = createMemoryHistory({ initialEntries: [initialPath] });
   const router = new RouterStore({ history });
-  router.initialize(routes);
-  await act(async () => {});
+  await router.initialize(routes);
 
   const container = document.createElement("div");
   document.body.appendChild(container);

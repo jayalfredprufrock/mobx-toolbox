@@ -802,9 +802,8 @@ describe("RouterStore", () => {
       const history = createMemoryHistory({ initialEntries: ["/secret"] });
       const router = new RouterStore({ history });
       // Use full initialize so the history listener wires up the redirect chain.
-      router.initialize(guardRoutes);
-      // The initial setLocation fires async from initialize; wait for the redirect to resolve.
-      await vi.waitFor(() => expect(router.activeRoute?.path).toBe("about"));
+      await router.initialize(guardRoutes);
+      expect(router.activeRoute?.path).toBe("about");
     });
   });
 
@@ -874,25 +873,25 @@ describe("RouterStore", () => {
   describe("navigate", () => {
     test("updates history location", async () => {
       const { router, history } = await makeRouter("/");
-      router.navigate({ to: "/about" });
+      void router.navigate({ to: "/about" });
       expect(history.location.pathname).toBe("/about");
     });
 
     test("replace option replaces history entry", async () => {
       const { router, history } = await makeRouter("/");
-      router.navigate({ to: "/about", replace: true });
+      void router.navigate({ to: "/about", replace: true });
       expect(history.index).toBe(0);
     });
 
     test("search params appear in location", async () => {
       const { router, history } = await makeRouter("/");
-      router.navigate({ to: "/about", search: { q: "hello" } });
+      void router.navigate({ to: "/about", search: { q: "hello" } });
       expect(history.location.search).toContain("q=hello");
     });
 
     test("resolves :params into the pathname", async () => {
       const { router, history } = await makeRouter("/");
-      router.navigate({ to: "/users/:id", params: { id: "42" } });
+      void router.navigate({ to: "/users/:id", params: { id: "42" } });
       expect(history.location.pathname).toBe("/users/42");
     });
 
@@ -901,7 +900,7 @@ describe("RouterStore", () => {
       // @ts-expect-error — "/users/:id" requires params
       expect(() => router.navigate({ to: "/users/:id" })).toThrow("Parameter ':id' not specified");
       // @ts-expect-error — params must not be passed for static paths
-      router.navigate({ to: "/about", params: { id: "42" } });
+      void router.navigate({ to: "/about", params: { id: "42" } });
       // @ts-expect-error — redirect enforces params the same way
       expect(redirect({ to: "/users/:id" })).toBeInstanceOf(Redirect);
     });
@@ -909,24 +908,24 @@ describe("RouterStore", () => {
     test("navigating to the current URL is a no-op", async () => {
       const { router, history } = await makeRouter("/about");
       const before = router.activeRoute;
-      router.navigate({ to: "/about" });
+      void router.navigate({ to: "/about" });
       expect(history.index).toBe(0);
       expect(router.activeRoute).toBe(before);
     });
 
     test("the no-op comparison includes search params", async () => {
       const { router, history } = await makeRouter("/about?q=1");
-      router.navigate({ to: "/about", search: { q: "1" } });
+      void router.navigate({ to: "/about", search: { q: "1" } });
       expect(history.index).toBe(0);
 
-      router.navigate({ to: "/about", search: { q: "2" } });
+      void router.navigate({ to: "/about", search: { q: "2" } });
       expect(history.index).toBe(1);
       expect(history.location.search).toBe("?q=2");
     });
 
     test("navigating to the current URL with state still navigates", async () => {
       const { router, history } = await makeRouter("/about");
-      router.navigate({ to: "/about", state: { fromMenu: true } });
+      void router.navigate({ to: "/about", state: { fromMenu: true } });
       expect(history.index).toBe(1);
     });
 
@@ -937,7 +936,7 @@ describe("RouterStore", () => {
       // with a trailing-slash index path this pushed "/users/" and relied on
       // setLocation replacing it back, so the no-op check never fired
       const before = router.activeRoute;
-      router.navigate({ to: "/users" });
+      void router.navigate({ to: "/users" });
       expect(history.index).toBe(0);
       expect(router.activeRoute).toBe(before);
     });
@@ -957,13 +956,12 @@ describe("RouterStore", () => {
       });
       const history = createMemoryHistory({ initialEntries: ["/dashboard"] });
       const router = new RouterStore({ history });
-      router.initialize(loaderRoutes);
-      await vi.waitFor(() => expect(router.activeRoute).toBeDefined());
-      await vi.waitFor(() => expect(loads).toBe(1));
+      await router.initialize(loaderRoutes);
+      expect(loads).toBe(1);
       const route = router.activeRoute;
 
       router.setQueryParam("page", "2");
-      await vi.waitFor(() => expect(router.location.search).toBe("?page=2"));
+      expect(router.location.search).toBe("?page=2");
 
       expect(router.activeRoute).toBe(route);
       expect(loads).toBe(1);
@@ -1227,9 +1225,9 @@ describe("error handling", () => {
       });
       const history = createMemoryHistory({ initialEntries: ["/org/7"] });
       const router = new RouterStore({ history });
-      router.initialize(routes);
+      await router.initialize(routes);
 
-      await vi.waitFor(() => expect(router.activeRoute?.path).toBe("org/7/home"));
+      expect(router.activeRoute?.path).toBe("org/7/home");
       expect(history.location.pathname).toBe("/org/7/home");
       expect(router.activeRoute?.error).toBeUndefined();
     });
@@ -1251,11 +1249,11 @@ describe("error handling", () => {
       });
       const history = createMemoryHistory({ initialEntries: ["/about"] });
       const router = new RouterStore({ history });
-      router.initialize(routes);
-      await vi.waitFor(() => expect(router.activeRoute?.path).toBe("about"));
+      await router.initialize(routes);
+      expect(router.activeRoute?.path).toBe("about");
 
-      router.navigate({ to: "/org/:orgId" as any, params: { orgId: "7" } } as any);
-      await vi.waitFor(() => expect(router.activeRoute?.path).toBe("org/7/home"));
+      await router.navigate({ to: "/org/:orgId" as any, params: { orgId: "7" } } as any);
+      expect(router.activeRoute?.path).toBe("org/7/home");
 
       // /org/7 renders nothing of its own — it must not hold an entry, or
       // Back would land on it and be thrown forward to /org/7/home again
@@ -1277,11 +1275,11 @@ describe("error handling", () => {
       });
       const history = createMemoryHistory({ initialEntries: ["/about"] });
       const router = new RouterStore({ history });
-      router.initialize(routes);
-      await vi.waitFor(() => expect(router.activeRoute?.path).toBe("about"));
+      await router.initialize(routes);
+      expect(router.activeRoute?.path).toBe("about");
 
-      router.navigate({ to: "/admin" as any });
-      await vi.waitFor(() => expect(router.activeRoute?.path).toBe("login"));
+      await router.navigate({ to: "/admin" as any });
+      expect(router.activeRoute?.path).toBe("login");
 
       expect(history.index).toBe(1);
       history.back();
@@ -1304,7 +1302,8 @@ describe("error handling", () => {
       });
       const history = createMemoryHistory({ initialEntries: ["/"] });
       const router = new RouterStore({ history });
-      router.initialize(routes);
+      // awaited, so the autorun below records only the /survey navigation
+      await router.initialize(routes);
 
       // the outlet that loads belongs to pendingRoute — activeRoute still
       // holds the previous page until the swap
@@ -1313,8 +1312,7 @@ describe("error handling", () => {
           for (const outlet of route?.outlets ?? []) seen.push(outlet.state);
         }
       });
-      router.navigate({ to: "/survey" as any });
-      await vi.waitFor(() => expect(router.activeRoute?.path).toBe("surveys"));
+      await router.navigate({ to: "/survey" as any });
       stop();
 
       expect(seen).not.toContain("error");
@@ -1333,10 +1331,10 @@ describe("error handling", () => {
       });
       const history = createMemoryHistory({ initialEntries: ["/"] });
       const router = new RouterStore({ history });
-      router.initialize(routes);
+      await router.initialize(routes);
 
-      router.navigate({ to: "/old" as any });
-      await vi.waitFor(() => expect(router.activeRoute?.path).toBe("about"));
+      await router.navigate({ to: "/old" as any });
+      expect(router.activeRoute?.path).toBe("about");
 
       // one entry for /old, one for /about
       expect(history.index).toBe(2);
@@ -1685,8 +1683,7 @@ describe("deferred route swap", () => {
   const makeWarmRouter = async (routes: any) => {
     const history = createMemoryHistory({ initialEntries: ["/"] });
     const router = new RouterStore({ history });
-    router.initialize(routes);
-    await vi.advanceTimersByTimeAsync(0);
+    await router.initialize(routes);
     expect(router.activeRoute?.path).toBe("");
     return { router, history };
   };
@@ -1707,7 +1704,7 @@ describe("deferred route swap", () => {
       }),
     );
 
-    router.navigate({ to: "/slow" } as any);
+    void router.navigate({ to: "/slow" } as any);
     await vi.advanceTimersByTimeAsync(0);
 
     // the old page is still on screen; the new one is only pending
@@ -1739,7 +1736,7 @@ describe("deferred route swap", () => {
       }),
     );
 
-    router.navigate({ to: "/slow" } as any);
+    void router.navigate({ to: "/slow" } as any);
     await vi.advanceTimersByTimeAsync(300); // long enough to cross the debounce
 
     load.resolve({ a: 1 });
@@ -1756,7 +1753,7 @@ describe("deferred route swap", () => {
     const routes = makeRoutes()({ slow: { [LOAD]: () => load.promise, [PAGE]: PageB } });
     const history = createMemoryHistory({ initialEntries: ["/slow"] });
     const router = new RouterStore({ history });
-    router.initialize(routes);
+    void router.initialize(routes);
 
     await vi.advanceTimersByTimeAsync(300);
     const pending = router.pendingRoute;
@@ -1785,11 +1782,11 @@ describe("deferred route swap", () => {
       }),
     );
 
-    router.navigate({ to: "/slow" } as any);
+    void router.navigate({ to: "/slow" } as any);
     await vi.advanceTimersByTimeAsync(0);
     expect(router.pendingRoute?.path).toBe("slow");
 
-    router.navigate({ to: "/other" } as any);
+    void router.navigate({ to: "/other" } as any);
     await vi.advanceTimersByTimeAsync(0);
     expect(router.activeRoute?.path).toBe("other");
     expect(router.pendingRoute).toBeUndefined();
@@ -1810,7 +1807,7 @@ describe("deferred route swap", () => {
       }),
     );
 
-    router.navigate({ to: "/slow" } as any);
+    void router.navigate({ to: "/slow" } as any);
     await vi.advanceTimersByTimeAsync(0);
     expect(router.pendingRoute?.path).toBe("slow");
 
@@ -1841,7 +1838,7 @@ describe("deferred route swap", () => {
       }),
     );
 
-    router.navigate({ to: "/secret" } as any);
+    void router.navigate({ to: "/secret" } as any);
     await vi.advanceTimersByTimeAsync(0);
 
     expect(router.activeRoute?.error?.type).toBe("GUARD");
@@ -1884,8 +1881,7 @@ describe("view transitions", () => {
   const warmRouter = async (routes: any, config: any = {}) => {
     const history = createMemoryHistory({ initialEntries: ["/"] });
     const router = new RouterStore({ history, ...config });
-    router.initialize(routes);
-    await vi.advanceTimersByTimeAsync(0);
+    await router.initialize(routes);
     expect(router.activeRoute?.path).toBe("");
     return { router, history };
   };
@@ -1902,7 +1898,7 @@ describe("view transitions", () => {
     const load = deferred();
     const { router } = await warmRouter(routesWithSlowPage(load.promise));
 
-    router.navigate({ to: "/slow" } as any);
+    void router.navigate({ to: "/slow" } as any);
     await vi.advanceTimersByTimeAsync(400);
 
     // still loading: starting the transition here would freeze the page on
@@ -1932,7 +1928,7 @@ describe("view transitions", () => {
 
     const { router } = await warmRouter(makeRoutes()({ index: PageA, other: PageC }));
 
-    router.navigate({ to: "/other" } as any);
+    void router.navigate({ to: "/other" } as any);
     await vi.advanceTimersByTimeAsync(0);
 
     // the callback was handed over but never invoked by this stub, so the
@@ -1948,8 +1944,7 @@ describe("view transitions", () => {
     const startViewTransition = stubViewTransitions();
     const history = createMemoryHistory({ initialEntries: ["/"] });
     const router = new RouterStore({ history });
-    router.initialize(makeRoutes()({ index: PageA }));
-    await vi.advanceTimersByTimeAsync(0);
+    await router.initialize(makeRoutes()({ index: PageA }));
 
     expect(router.activeRoute?.path).toBe("");
     expect(startViewTransition).not.toHaveBeenCalled();
@@ -1959,7 +1954,7 @@ describe("view transitions", () => {
     // the outer beforeEach stubs startViewTransition as undefined
     const { router } = await warmRouter(makeRoutes()({ index: PageA, other: PageC }));
 
-    router.navigate({ to: "/other" } as any);
+    void router.navigate({ to: "/other" } as any);
     await vi.advanceTimersByTimeAsync(0);
 
     expect(router.activeRoute?.path).toBe("other");
@@ -1969,7 +1964,7 @@ describe("view transitions", () => {
     const startViewTransition = stubViewTransitions({ readyRejects: true });
     const { router } = await warmRouter(makeRoutes()({ index: PageA, other: PageC }));
 
-    router.navigate({ to: "/other" } as any);
+    void router.navigate({ to: "/other" } as any);
     await vi.advanceTimersByTimeAsync(0);
 
     expect(startViewTransition).toHaveBeenCalledTimes(1);
@@ -1982,7 +1977,7 @@ describe("view transitions", () => {
       viewTransitions: false,
     });
 
-    router.navigate({ to: "/other" } as any);
+    void router.navigate({ to: "/other" } as any);
     await vi.advanceTimersByTimeAsync(0);
 
     expect(startViewTransition).not.toHaveBeenCalled();
@@ -2040,7 +2035,7 @@ describe("loading signals for indicator UI", () => {
     const routes = makeRoutes()({ slow: { [LOAD]: () => load.promise, [PAGE]: PageB } });
     const history = createMemoryHistory({ initialEntries: ["/slow"] });
     const router = new RouterStore({ history });
-    router.initialize(routes as any);
+    void router.initialize(routes as any);
 
     // skeleton on screen: isLoading is set, but there is no previous page,
     // so a bar would be redundant with the skeleton
@@ -2070,11 +2065,10 @@ describe("loading signals for indicator UI", () => {
     });
     const history = createMemoryHistory({ initialEntries: ["/"] });
     const router = new RouterStore({ history });
-    router.initialize(routes as any);
-    await vi.advanceTimersByTimeAsync(0);
+    await router.initialize(routes as any);
 
     // inside the debounce: in flight, but nothing shown yet
-    router.navigate({ to: "/slow" } as any);
+    void router.navigate({ to: "/slow" } as any);
     await vi.advanceTimersByTimeAsync(100);
     expect(router.isNavigating).toBe(true);
     expect(router.isSlowNavigation).toBe(false);
@@ -2104,8 +2098,7 @@ describe("isSlowNavigation spans the guard phase", () => {
   const warmRouter = async (routes: any) => {
     const history = createMemoryHistory({ initialEntries: ["/"] });
     const router = new RouterStore({ history });
-    router.initialize(routes);
-    await vi.advanceTimersByTimeAsync(0);
+    await router.initialize(routes);
     expect(router.activeRoute?.path).toBe("");
     return router;
   };
@@ -2126,7 +2119,7 @@ describe("isSlowNavigation spans the guard phase", () => {
       }),
     );
 
-    router.navigate({ to: "/secret" } as any);
+    void router.navigate({ to: "/secret" } as any);
     await vi.advanceTimersByTimeAsync(100);
     expect(router.isSlowNavigation).toBe(false);
 
@@ -2152,7 +2145,7 @@ describe("isSlowNavigation spans the guard phase", () => {
       }),
     );
 
-    router.navigate({ to: "/secret" } as any);
+    void router.navigate({ to: "/secret" } as any);
     await vi.advanceTimersByTimeAsync(0);
     expect(router.activeRoute?.path).toBe("secret");
     expect(router.isSlowNavigation).toBe(false);
@@ -2176,7 +2169,7 @@ describe("isSlowNavigation spans the guard phase", () => {
       }),
     );
 
-    router.navigate({ to: "/slow" } as any);
+    void router.navigate({ to: "/slow" } as any);
 
     // 200ms of guard — under the 300ms threshold on its own
     await vi.advanceTimersByTimeAsync(200);
@@ -2207,13 +2200,13 @@ describe("isSlowNavigation spans the guard phase", () => {
       }),
     );
 
-    router.navigate({ to: "/first" } as any);
+    void router.navigate({ to: "/first" } as any);
     await vi.advanceTimersByTimeAsync(350);
     expect(router.isSlowNavigation).toBe(true);
 
     // redirecting attention to another slow route mid-flight: the bar stays
     // up rather than dropping out and fading back in
-    router.navigate({ to: "/second" } as any);
+    void router.navigate({ to: "/second" } as any);
     await vi.advanceTimersByTimeAsync(0);
     expect(router.isSlowNavigation).toBe(true);
 
@@ -2244,16 +2237,15 @@ describe("isNavigating spans the guard phase", () => {
     const gate = deferred();
     const history = createMemoryHistory({ initialEntries: ["/"] });
     const router = new RouterStore({ history });
-    router.initialize(
+    await router.initialize(
       makeRoutes()({
         index: PageA,
         secret: { [GUARD]: async () => void (await gate.promise), [PAGE]: PageB },
       }) as any,
     );
-    await vi.advanceTimersByTimeAsync(0);
     expect(router.isNavigating).toBe(false);
 
-    router.navigate({ to: "/secret" } as any);
+    void router.navigate({ to: "/secret" } as any);
     await vi.advanceTimersByTimeAsync(10);
 
     // in flight, but no route is loading yet — the distinction the old
@@ -2271,7 +2263,7 @@ describe("isNavigating spans the guard phase", () => {
     vi.spyOn(console, "error").mockImplementation(() => {});
     const history = createMemoryHistory({ initialEntries: ["/"] });
     const router = new RouterStore({ history });
-    router.initialize(
+    await router.initialize(
       makeRoutes()({
         index: PageA,
         secret: {
@@ -2282,10 +2274,8 @@ describe("isNavigating spans the guard phase", () => {
         },
       }) as any,
     );
-    await vi.advanceTimersByTimeAsync(0);
 
-    router.navigate({ to: "/secret" } as any);
-    await vi.advanceTimersByTimeAsync(0);
+    await router.navigate({ to: "/secret" } as any);
 
     expect(router.activeRoute?.error?.type).toBe("GUARD");
     expect(router.isNavigating).toBe(false);
@@ -2585,8 +2575,8 @@ describe("router.target", () => {
 
   test("holds its value across a [REDIRECT] hop instead of blanking", async () => {
     const { router, history } = makeRouter("/org/7/surveys/drafts");
-    router.initialize(routes);
-    await vi.waitFor(() => expect(router.activeRoute?.path).toBe("org/7/surveys/drafts"));
+    await router.initialize(routes);
+    expect(router.activeRoute?.path).toBe("org/7/surveys/drafts");
 
     const seen: (string | undefined)[] = [];
     const stop = autorun(() => seen.push(router.target?.pattern));
@@ -2756,5 +2746,302 @@ describe("tryResolvePath", () => {
     expect(tryResolvePath("/users/:id")).toBeUndefined();
     expect(tryResolvePath("/teams/:teamId/users/:userId", { teamId: "7" })).toBeUndefined();
     expect(() => resolvePath("/users/:id")).toThrow("Parameter ':id' not specified");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// awaiting navigate()
+// ---------------------------------------------------------------------------
+
+describe("navigate() resolution", () => {
+  const PageD = () => null;
+  const ErrorPage = () => null;
+
+  const makeRouter = async (routes: any, initialPath = "/") => {
+    const history = createMemoryHistory({ initialEntries: [initialPath] });
+    const router = new RouterStore({ history });
+    await router.initialize(routes);
+    return { router, history };
+  };
+
+  test("resolves only once loaders have run and the route has swapped", async () => {
+    let resolveLoader: (value: { name: string }) => void = () => {};
+    const routes = makeRoutes()({
+      index: PageA,
+      profile: {
+        [LOAD]: () => new Promise<{ name: string }>((resolve) => (resolveLoader = resolve)),
+        index: PageB,
+      },
+    });
+    const { router } = await makeRouter(routes);
+
+    let landed = false;
+    const navigation = router.navigate({ to: "/profile" as any }).then(() => (landed = true));
+
+    // the loader is still in flight — the previous page is on screen and
+    // nothing has resolved
+    await Promise.resolve();
+    expect(landed).toBe(false);
+    expect(router.activeRoute?.path).toBe("");
+
+    resolveLoader({ name: "ada" });
+    await navigation;
+
+    expect(landed).toBe(true);
+    expect(router.activeRoute?.path).toBe("profile");
+    expect(router.activeRoute?.data).toEqual({ name: "ada" });
+    expect(router.isNavigating).toBe(false);
+  });
+
+  test("resolves at the end of a redirect chain, not the first hop", async () => {
+    const routes = makeRoutes()({
+      index: PageA,
+      old: { [REDIRECT]: "/older" },
+      older: { [REDIRECT]: "/current" },
+      current: PageB,
+    });
+    const { router, history } = await makeRouter(routes);
+
+    await router.navigate({ to: "/old" as any });
+
+    expect(router.activeRoute?.path).toBe("current");
+    expect(history.location.pathname).toBe("/current");
+    expect(router.isNavigating).toBe(false);
+  });
+
+  test("resolves after a redirect thrown from a guard has landed", async () => {
+    const routes = makeRoutes()({
+      index: PageA,
+      admin: {
+        [GUARD]: async () => {
+          throw redirect({ to: "/login" as any });
+        },
+        index: PageB,
+      },
+      login: PageC,
+    });
+    const { router } = await makeRouter(routes);
+
+    await router.navigate({ to: "/admin" as any });
+
+    expect(router.activeRoute?.path).toBe("login");
+  });
+
+  test("resolves after a guard that navigates rather than redirecting", async () => {
+    // navigating inside a guard supersedes the navigation in flight; the
+    // caller wants the view it ends on, not the hop it abandoned
+    let router!: RouterStore;
+    const routes = makeRoutes()({
+      index: PageA,
+      admin: {
+        [GUARD]: async () => {
+          void router.navigate({ to: "/login" as any });
+        },
+        index: PageB,
+      },
+      login: PageC,
+    });
+    ({ router } = await makeRouter(routes));
+
+    await router.navigate({ to: "/admin" as any });
+
+    expect(router.activeRoute?.path).toBe("login");
+    expect(router.isNavigating).toBe(false);
+  });
+
+  test("resolves with the [ERROR] route committed rather than rejecting", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    const routes = makeRoutes()({
+      [ERROR]: ErrorPage,
+      index: PageA,
+      admin: {
+        [GUARD]: async () => {
+          throw new Error("nope");
+        },
+        index: PageB,
+      },
+    });
+    const { router } = await makeRouter(routes);
+
+    await expect(router.navigate({ to: "/admin" as any })).resolves.toBeUndefined();
+
+    expect(router.activeRoute?.error?.type).toBe("GUARD");
+  });
+
+  test("resolves immediately for a navigation skipped as redundant", async () => {
+    const routes = makeRoutes()({ index: PageA, about: PageD });
+    const { router } = await makeRouter(routes, "/about");
+
+    await expect(router.navigate({ to: "/about" as any })).resolves.toBeUndefined();
+    expect(router.activeRoute?.path).toBe("about");
+  });
+
+  test("still throws synchronously for an unresolvable path", () => {
+    const history = createMemoryHistory({ initialEntries: ["/"] });
+    const router = new RouterStore({ history });
+    void router.initialize(makeRoutes()({ index: PageA, users: { $id: PageB } }));
+
+    // a rejected promise here would escape the try/catch that renders a
+    // failed redirect as [ERROR]
+    expect(() => router.navigate({ to: "/users/:id" } as any)).toThrow(
+      "Parameter ':id' not specified",
+    );
+  });
+
+  test("a query-param-only navigation resolves without re-matching the route", async () => {
+    let loads = 0;
+    const routes = makeRoutes()({
+      index: PageA,
+      search: {
+        [LOAD]: async () => {
+          loads++;
+          return "results";
+        },
+        index: PageB,
+      },
+    });
+    const { router } = await makeRouter(routes);
+    await router.navigate({ to: "/search" as any });
+    const active = router.activeRoute;
+
+    await router.navigate({ to: "/search" as any, search: { q: "hello" } });
+
+    expect(router.location.search).toBe("?q=hello");
+    expect(router.activeRoute).toBe(active);
+    expect(loads).toBe(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// redirect loops that only exist at runtime
+// ---------------------------------------------------------------------------
+
+describe("runtime redirect loops", () => {
+  const LoopErrorPage = () => null;
+
+  beforeEach(() => {
+    vi.spyOn(console, "error").mockImplementation(() => {});
+  });
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  const makeRouter = async (routes: any, initialPath = "/") => {
+    const history = createMemoryHistory({ initialEntries: [initialPath] });
+    const router = new RouterStore({ history });
+    await router.initialize(routes);
+    return { router, history };
+  };
+
+  test("two guards redirecting at each other land an [ERROR] instead of spinning", async () => {
+    // makeRoutes() rejects a static [REDIRECT] cycle at build time; a
+    // redirect thrown from a guard is invisible to it, so the loop can only
+    // be caught by running
+    const routes = makeRoutes()({
+      [ERROR]: LoopErrorPage,
+      index: PageA,
+      a: {
+        [GUARD]: async () => {
+          throw redirect({ to: "/b" as any });
+        },
+        index: PageB,
+      },
+      b: {
+        [GUARD]: async () => {
+          throw redirect({ to: "/a" as any });
+        },
+        index: PageC,
+      },
+    });
+    const { router } = await makeRouter(routes);
+
+    // the promise resolving at all is the assertion: before the chain was
+    // bounded this never settled, so an `await router.navigate(...)` inside
+    // an async caller silently dropped everything after it
+    await router.navigate({ to: "/a" as any });
+
+    expect(router.isNavigating).toBe(false);
+    expect(router.activeRoute?.error?.type).toBe("REDIRECT");
+    expect(router.activeRoute?.error?.message).toContain("10 redirects without landing");
+  });
+
+  test("a [REDIRECT] function cycle is caught the same way", async () => {
+    // the build-time check gives up on the function form, since it cannot
+    // evaluate it without a matched route
+    const routes = makeRoutes()({
+      [ERROR]: LoopErrorPage,
+      index: PageA,
+      one: { [REDIRECT]: () => "/two" },
+      two: { [REDIRECT]: () => "/one" },
+    });
+    const { router } = await makeRouter(routes);
+
+    await router.navigate({ to: "/one" as any });
+
+    expect(router.activeRoute?.error?.type).toBe("REDIRECT");
+    expect(router.activeRoute?.error?.message).toContain("10 redirects without landing");
+  });
+
+  test("a chain that keeps inventing pathnames is bounded too", async () => {
+    // nothing repeats, so there is no cycle to spot even in principle —
+    // the count is the only thing that can end this one
+    const routes = makeRoutes()({
+      [ERROR]: LoopErrorPage,
+      index: PageA,
+      page: {
+        $n: {
+          [GUARD]: async (route: any) => {
+            throw redirect({ to: "/page/:n", params: { n: String(Number(route.params.n) + 1) } });
+          },
+          index: PageB,
+        },
+      },
+    });
+    const { router } = await makeRouter(routes);
+
+    await router.navigate({ to: "/page/:n" as any, params: { n: "0" } } as any);
+
+    expect(router.isNavigating).toBe(false);
+    expect(router.activeRoute?.error?.type).toBe("REDIRECT");
+    expect(router.activeRoute?.error?.message).toContain("10 redirects without landing");
+  });
+
+  test("a long chain that lands is not mistaken for a loop", async () => {
+    const routes = makeRoutes()({
+      [ERROR]: LoopErrorPage,
+      index: PageA,
+      one: { [REDIRECT]: "/two" },
+      two: { [REDIRECT]: "/three" },
+      three: { [REDIRECT]: "/four" },
+      four: PageB,
+    });
+    const { router } = await makeRouter(routes);
+
+    await router.navigate({ to: "/one" as any });
+
+    expect(router.activeRoute?.path).toBe("four");
+    expect(router.activeRoute?.error).toBeUndefined();
+  });
+
+  test("the count resets on landing, so redirects don't accumulate", async () => {
+    // /gate redirects to /home the first time and /away the second. Without
+    // a reset, enough separate redirecting navigations would eventually trip
+    // the cap on a session that never actually looped
+    let hop = 0;
+    const routes = makeRoutes()({
+      [ERROR]: LoopErrorPage,
+      index: PageA,
+      gate: { [REDIRECT]: () => (hop++ === 0 ? "/home" : "/away") },
+      home: PageB,
+      away: PageC,
+    });
+    const { router } = await makeRouter(routes);
+
+    await router.navigate({ to: "/gate" as any });
+    expect(router.activeRoute?.path).toBe("home");
+
+    await router.navigate({ to: "/gate" as any });
+    expect(router.activeRoute?.path).toBe("away");
+    expect(router.activeRoute?.error).toBeUndefined();
   });
 });

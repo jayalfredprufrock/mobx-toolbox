@@ -1,5 +1,5 @@
 import { createBrowserHistory, type History, type Location } from "history";
-import { action, computed, makeObservable, observable, runInAction } from "mobx";
+import { action, computed, makeObservable, observable, runInAction, when } from "mobx";
 import { flushSync } from "react-dom";
 import { redirectFailed, RouterError } from "./errors";
 import { makeErrorRoute, matchRoute } from "./make-routes";
@@ -16,6 +16,14 @@ import type {
   Routes,
 } from "./types";
 import { resolvePath } from "./util";
+
+/**
+ * How many redirects one navigation may chain through before the router
+ * calls it a loop. Every hop is a full match-and-guard cycle, so this is
+ * also how long a looping app spins before it says so — kept well above any
+ * plausible real chain (one or two hops) and well below "the tab is stuck".
+ */
+const MAX_REDIRECTS = 10;
 
 export interface MobxRenderSegment {
   segment: string;
@@ -94,6 +102,12 @@ export class RouterStore {
   private navigating = false;
   private navigationSlow = false;
   private slowTimer: ReturnType<typeof setTimeout> | undefined;
+
+  /**
+   * Redirect hops taken since the last navigation landed. Reset on landing,
+   * so it measures one chain rather than session history.
+   */
+  private redirects = 0;
 
   get search(): URLSearchParams {
     return new URLSearchParams(this.location?.search);
@@ -221,13 +235,26 @@ export class RouterStore {
     this.viewTransitions = config?.viewTransitions ?? true;
   }
 
-  initialize(routesDef: Routes): void {
+  /**
+   * Wires the router to its history and starts the first navigation,
+   * resolving when that navigation lands — the same guarantee
+   * {@link navigate} gives, including any redirect the initial URL runs
+   * through. Await it to hand off from a boot screen, or to hold a test
+   * until there is a route to assert on; ignore it to let `[SPLASH]` and
+   * `[LOADING]` cover the wait, which is the usual case.
+   */
+  initialize(routesDef: Routes): Promise<void> {
     this.routesDef = routesDef;
     this.history.listen((data) => {
       void this.setLocation(data.location);
     });
 
     void this.setLocation(this.history.location);
+
+    // `setLocation` has already claimed the navigation clock synchronously
+    // — it only awaits once matching is done — so there is no window here
+    // in which `settled()` could see an idle router and resolve early.
+    return this.settled();
   }
 
   /**
@@ -250,17 +277,82 @@ export class RouterStore {
     return matchesSegments(path, this.targetSegments, exact);
   }
 
-  navigate<P extends RoutePath>(options: NavigateOptions<P>): void {
+  /**
+   * Navigates to `options`, resolving once the navigation has **landed**.
+   *
+   * Landing is the end of the whole chain, not this hop: guards, loaders,
+   * any redirect they throw, and the `activeRoute` swap (view transition
+   * included). Await it to run a side effect against the page that actually
+   * ended up on screen.
+   *
+   * ```ts
+   * await router.navigate({ to: "/orders/:id", params: { id } });
+   * announce(`Now viewing ${router.target?.pathname}`);
+   * ```
+   *
+   * Resolves rather than rejects when a navigation fails. A rejected guard,
+   * a `NOT_FOUND` or a throwing loader commits the `[ERROR]` route, which is
+   * a landing like any other — the caller's "after navigation" work usually
+   * still wants to run. Read `activeRoute.error`, or compare `target.pattern`
+   * against where you meant to go, when the distinction matters. A
+   * navigation skipped as redundant (already at that URL, no `state`)
+   * resolves immediately.
+   *
+   * An unresolvable `to` — a `:param` left unfilled — still throws
+   * *synchronously*, because that is a caller bug rather than a navigation
+   * outcome, and because the redirect path below depends on catching it.
+   *
+   * A redirect loop resolves too. Guards that redirect to each other would
+   * otherwise chain forever and leave this promise pending for the life of
+   * the page — see {@link redirectLoop}, which cuts the chain and lands an
+   * `[ERROR]` route instead. A guard that calls `navigate()` in a cycle
+   * rather than throwing `redirect()` is *not* bounded: that is the app
+   * driving navigation through the same public API a link click uses, and
+   * the router cannot tell the two apart.
+   *
+   * What is awaited is "nothing is in flight" rather than this call
+   * specifically, so a navigation superseded by another resolves when *that*
+   * one lands. That is the only useful answer: once a redirect has replaced
+   * the destination there is no separate completion for the original hop,
+   * and a caller awaiting navigation wants the view it ends on.
+   *
+   * The router's state is committed when this resolves. React has re-rendered
+   * too wherever a view transition ran, since the swap is flushed inside it;
+   * without one the re-render is left on React's scheduler, so a test reading
+   * the DOM still needs its usual `act` / `waitFor`.
+   */
+  navigate<P extends RoutePath>(options: NavigateOptions<P>): Promise<void> {
     // navigating to the current URL attaches no new information — skip
     // the navigation (and its view transition) entirely so redundant
     // navigations (e.g. clicking an already-active link) cause no churn
     if (!options.state && this.isCurrentLocation(options)) {
-      return;
+      return Promise.resolve();
     }
 
     // the view transition is started around the route swap in
     // `applyRoute`, not here — see the note there
     this._navigate(options);
+
+    // deliberately not `async`: `_navigate` throws synchronously for an
+    // unresolvable path, and the redirect handler in `setLocation` catches
+    // it with a plain `try`/`catch`. An async method would turn that throw
+    // into a rejection and the [ERROR] route would never render.
+    return this.settled();
+  }
+
+  /**
+   * Resolves once no navigation is in flight.
+   *
+   * Reads the same flag `isNavigating` publishes, which spans a redirect
+   * chain unbroken: the follow-up navigation starts inside the previous
+   * one's `catch`, before its `finally` runs, so `beginNavigation` hands the
+   * clock straight over and the flag never dips between hops. The same holds
+   * for a guard that calls `navigate()` itself, and for the trailing-slash
+   * normalization in `setLocation`. That is what makes awaiting a navigation
+   * mean the destination rather than the first redirect.
+   */
+  private async settled(): Promise<void> {
+    await when(() => !this.navigating);
   }
 
   _navigate<P extends RoutePath>(options: NavigateOptions<P>): void {
@@ -406,20 +498,34 @@ export class RouterStore {
       let thrown: unknown = e;
 
       if (thrown instanceof Redirect) {
-        try {
-          // a redirect replaces by default. The URL that redirected renders
-          // nothing of its own, so leaving it in history traps Back: it
-          // resolves to the same redirect and throws the user forward again.
-          // An explicit `replace: false` on the redirect still wins.
-          this.navigate({ ...thrown.options, replace: thrown.options.replace ?? true });
-          return;
-        } catch (cause) {
-          // a redirect that can't be carried out — most often a `to` whose
-          // `:params` weren't filled — is a routing failure like any other.
-          // Falling through renders it via [ERROR] instead of escaping as an
-          // unhandled rejection out of the history listener, where nothing
-          // would catch it and the screen would keep the previous page.
-          thrown = redirectFailed(cause, location.pathname, thrown);
+        const loop = this.redirectLoop(location.pathname);
+
+        if (loop) {
+          // carries the Redirect's own origin so the loop renders under the
+          // same [ERROR] a failure at that level would have, exactly as
+          // `redirectFailed` does for the unresolvable case
+          loop.state = thrown.state;
+          loop.depth = thrown.depth;
+          thrown = loop;
+        } else {
+          try {
+            // a redirect replaces by default. The URL that redirected renders
+            // nothing of its own, so leaving it in history traps Back: it
+            // resolves to the same redirect and throws the user forward again.
+            // An explicit `replace: false` on the redirect still wins.
+            // not awaited: the caller's own `settled()` already spans this
+            // hop, and awaiting here would hold this navigation's `finally`
+            // open behind a chain it no longer owns
+            void this.navigate({ ...thrown.options, replace: thrown.options.replace ?? true });
+            return;
+          } catch (cause) {
+            // a redirect that can't be carried out — most often a `to` whose
+            // `:params` weren't filled — is a routing failure like any other.
+            // Falling through renders it via [ERROR] instead of escaping as an
+            // unhandled rejection out of the history listener, where nothing
+            // would catch it and the screen would keep the previous page.
+            thrown = redirectFailed(cause, location.pathname, thrown);
+          }
         }
       }
 
@@ -483,11 +589,48 @@ export class RouterStore {
       if (this.slowTimer !== timer) return;
       clearTimeout(timer);
       this.slowTimer = undefined;
+      // reaching here is the definition of a chain ending: a superseded hop
+      // returns above, so only the navigation that actually landed clears it
+      this.redirects = 0;
       runInAction(() => {
         this.navigating = false;
         this.navigationSlow = false;
       });
     };
+  }
+
+  /**
+   * Counts a redirect hop away from `pathname`, and reports the chain as a
+   * loop once it has taken too many.
+   *
+   * `makeRoutes` rejects a static `[REDIRECT]` cycle at build time, but it
+   * gives up on the function form and cannot see a `redirect()` thrown from
+   * a guard or loader at all. Those only reveal themselves by running, and
+   * left alone they spin forever: every hop begins a fresh navigation before
+   * the previous one's `finally`, so the clock is handed on indefinitely,
+   * `isNavigating` never drops, and an awaited `navigate()` never settles —
+   * which would silently swallow everything after it in an `async` caller.
+   *
+   * Deliberately a count and not a cycle search. Tracking the pathnames
+   * visited would name the exact cycle in the message and catch a ping-pong
+   * on its second hop rather than its tenth, but it only helps a chain that
+   * repeats itself — one that keeps inventing pathnames still needs the
+   * count — so it buys a better message at the price of being the second
+   * way to answer a question that already has one.
+   *
+   * Either way the loop becomes a `RouterError` and ends the chain the way
+   * any other routing failure does: `[ERROR]` renders and the promise
+   * resolves, instead of a hung tab.
+   */
+  private redirectLoop(pathname: string): RouterError | undefined {
+    if (++this.redirects <= MAX_REDIRECTS) return undefined;
+
+    return new RouterError("REDIRECT", {
+      message:
+        `Redirect loop: ${MAX_REDIRECTS} redirects without landing, still going at '${pathname}'. ` +
+        "A guard, loader or [REDIRECT] is sending this navigation in a circle.",
+      path: pathname,
+    });
   }
 
   /**

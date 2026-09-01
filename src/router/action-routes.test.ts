@@ -25,8 +25,7 @@ const settle = () => new Promise((r) => setTimeout(r, 30));
 const drive = async (routes: Parameters<RouterStore["initialize"]>[0], to: string) => {
   const history = createMemoryHistory({ initialEntries: ["/"] });
   const router = new RouterStore({ history });
-  router.initialize(routes);
-  await vi.waitFor(() => expect(router.activeRoute).toBeDefined());
+  await router.initialize(routes);
   history.push(to);
   await settle();
   return { router, history };
@@ -118,8 +117,8 @@ describe("URLs that do something and leave", () => {
 
     const history = createMemoryHistory({ initialEntries: ["/"] });
     const router = new RouterStore({ history });
-    router.initialize(routes);
-    await vi.waitFor(() => expect(router.activeRoute?.path).toBe(""));
+    await router.initialize(routes);
+    expect(router.activeRoute?.path).toBe("");
 
     history.push("/logout");
     await new Promise((r) => setTimeout(r, 10));

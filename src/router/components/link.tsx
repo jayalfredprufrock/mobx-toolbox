@@ -131,7 +131,9 @@ export const makeLinkComponent = <C extends React.ElementType, I extends React.E
           }
 
           event.preventDefault();
-          router.navigate({
+          // a link click is fire-and-forget; the promise is for callers who
+          // want to sequence work after the navigation lands
+          void router.navigate({
             to,
             params,
             replace,

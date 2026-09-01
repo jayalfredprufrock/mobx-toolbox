@@ -413,11 +413,33 @@ Two things it can't cover:
 - **Function targets are skipped** — what they return depends on the route they matched, which doesn't exist yet. A chain reaching one ends the loop walk there rather than being guessed at, so `a → b → (route) => '/a'` is not reported.
 - **`redirect()` thrown from a guard or loader** is an ordinary runtime value, so it isn't visible to the tree walk at all.
 
+Both are bounded at runtime instead. One navigation may chain through at most **10** redirects; the
+eleventh ends it with an `[ERROR]` of `type: "REDIRECT"`:
+
+```
+Redirect loop: 10 redirects without landing, still going at '/a'.
+A guard, loader or [REDIRECT] is sending this navigation in a circle.
+```
+
+The count resets the moment a navigation lands, so it measures one chain rather than session
+history. It is a count rather than a search for the repeated pathname: naming the exact cycle would
+read better and catch a ping-pong on its second hop, but a chain that keeps inventing pathnames —
+`/page/1` → `/page/2` → … — needs the count anyway, so the search would only ever be a nicer message
+on top of a mechanism that already covers everything.
+
+This matters beyond the error message: an unbounded chain never lets `isNavigating` fall, so
+[awaiting the navigation](#awaiting-a-navigation) would leave a promise pending for the life of the
+page and silently swallow the rest of an `async` caller. Cutting the chain resolves it.
+
+One case is deliberately not bounded: a guard that calls `router.navigate()` in a cycle instead of
+throwing `redirect()`. That is the app driving navigation through the same public API a link click
+uses, and the router can't tell an intentional rapid navigation from a loop.
+
 ### When a redirect fails
 
 A redirect that can't be carried out — a function that throws or returns an unresolvable path, or a `redirect()` thrown by a guard whose `:params` don't resolve — is a navigation failure like any other: it renders the nearest `[ERROR]` with `type: "REDIRECT"` and the underlying error on `cause`, keeping the matched prefix's `[LAYOUT]` and `[WRAPPER]`s and leaving the URL where it was. It does not escape as an unhandled rejection.
 
-Static targets never reach this path — boot validation rejects them first. It covers exactly the two cases that validation can't see: function targets and thrown `redirect()`s.
+Static targets never reach this path — boot validation rejects them first. It covers exactly the two cases that validation can't see: function targets and thrown `redirect()`s. A [redirect loop](#redirect--redirects) surfaces the same way once it exceeds its hop count.
 
 ### URLs that do something and leave
 
@@ -1033,6 +1055,47 @@ router.navigate({ to: "/search", search: { q: "hello" }, preserveSearch: true })
 router.navigate({ to: "/login", replace: true }); // replace history entry
 ```
 
+### Awaiting a navigation
+
+`navigate()` returns a promise that resolves once the navigation has **landed** — guards run,
+loaders resolved, redirects followed, and `activeRoute` swapped. Await it to sequence work against
+the page that actually ended up on screen:
+
+```tsx
+await router.navigate({ to: "/orders/:id", params: { id } });
+analytics.track("order_viewed", { pathname: router.target?.pathname });
+```
+
+It resolves at the end of the whole chain, not the first hop. A `/old` that `[REDIRECT]`s to
+`/current` resolves at `/current`, and so does a `[GUARD]` that throws `redirect()` or calls
+`navigate()` itself.
+
+A few things worth knowing:
+
+- **It resolves, it doesn't reject.** A rejected guard, a `NOT_FOUND`, or a throwing loader commits
+  the `[ERROR]` route, which is a landing like any other — the work you queued after the navigation
+  usually still wants to run. Read `router.activeRoute?.error`, or compare `router.target?.pattern`
+  against where you meant to go, when the distinction matters.
+- **An unresolvable `to` still throws synchronously.** A `:param` left unfilled is a caller bug, not
+  a navigation outcome, so it throws out of the `navigate()` call itself rather than rejecting.
+- **A redundant navigation resolves immediately.** Navigating to the URL you are already on is
+  skipped, so there is nothing to wait for.
+- **What is awaited is "nothing is in flight"**, not this call specifically. If another navigation
+  supersedes yours, the promise resolves when _that_ one lands — which is the only useful answer
+  once a redirect has replaced your destination, and what a caller waiting on "the new view" means.
+- **The router's state is committed when it resolves.** React has re-rendered too wherever a
+  [view transition](#view-transitions) ran, since the swap is flushed inside it; without one the
+  re-render is left on React's scheduler, so a test reading the DOM still needs its usual
+  `act` / `waitFor`.
+
+`initialize()` returns the same promise for the app's first navigation, redirects included. Await it
+to hand off from a boot screen, or to hold a test until there is a route to assert on; ignore it to
+let `[SPLASH]` and `[LOADING]` cover the wait, which is the usual case.
+
+Two things are deliberately _not_ awaitable, because the router doesn't start them: a browser Back or
+Forward, and a `<Link>` click. Both arrive through the history listener, so observe `isNavigating`
+(or the route itself) rather than waiting on a call.
+
 ### Redirecting
 
 There is no redirect _component_. A redirect belongs to the route, not to the render, and the route
@@ -1137,7 +1200,7 @@ A `disabled` link is inert: no navigation, no `href`, and no `onClick` — modif
 
 ```ts
 const router = new RouterStore(config?: MobxRouterConfig);
-router.initialize(routes);             // call once with route definitions
+router.initialize(routes);             // Promise<void> — call once; resolves when the first navigation lands
 
 // Observable state
 router.location                        // History Location — updates as soon as navigation starts
@@ -1152,7 +1215,7 @@ router.query                           // Record<string, string> — parsed sear
 router.pathParams                      // Record<string, string> — URL params
 
 // Navigation
-router.navigate(options)               // programmatic navigation
+router.navigate(options)               // Promise<void> — resolves once the navigation lands
 router.resolveHref(options)            // string — the URL those options address, for `href`
 router.doesPathMatch(path, exact?)     // boolean — active-link detection (lags a navigation)
 router.doesTargetMatch(path, exact?)   // boolean — same, against the destination

@@ -65,6 +65,9 @@ const mount = () => {
 
 // real timers: React's scheduler and the outlet debounce both run on them,
 // and the waits here are short enough not to matter
+// `initialize()` is never awaited in this file: every test here is about what
+// is on screen *during* a navigation, so the cold load has to stay in flight
+// while React mounts and the clock is advanced by hand.
 const wait = async (ms: number) => {
   await act(async () => {
     await new Promise((r) => setTimeout(r, ms));
@@ -81,7 +84,7 @@ describe("router loading UI", () => {
 
     const history = createMemoryHistory({ initialEntries: ["/slow"] });
     const store = new RouterStore({ history });
-    store.initialize(routes as any);
+    void store.initialize(routes as any);
 
     const { container, root } = mount();
     await act(async () => {
@@ -114,7 +117,7 @@ describe("router loading UI", () => {
 
     const history = createMemoryHistory({ initialEntries: ["/"] });
     const store = new RouterStore({ history });
-    store.initialize(routes as any);
+    void store.initialize(routes as any);
 
     const { container, root } = mount();
     await act(async () => {
@@ -124,7 +127,7 @@ describe("router loading UI", () => {
     expect(container.textContent).toBe("HOME");
 
     await act(async () => {
-      store.navigate({ to: "/slow" } as any);
+      void store.navigate({ to: "/slow" } as any);
     });
     await wait(350);
 
@@ -153,7 +156,7 @@ describe("progress bar signals against a real render", () => {
     });
     const history = createMemoryHistory({ initialEntries: ["/slow"] });
     const store = new RouterStore({ history });
-    store.initialize(routes as any);
+    void store.initialize(routes as any);
 
     const { container, root } = mount();
     await act(async () => {
@@ -183,7 +186,7 @@ describe("progress bar signals against a real render", () => {
     });
     const history = createMemoryHistory({ initialEntries: ["/slow"] });
     const store = new RouterStore({ history });
-    store.initialize(routes as any);
+    void store.initialize(routes as any);
 
     const { container, root } = mount();
     await act(async () => {
@@ -208,7 +211,7 @@ describe("progress bar signals against a real render", () => {
     });
     const history = createMemoryHistory({ initialEntries: ["/"] });
     const store = new RouterStore({ history });
-    store.initialize(routes as any);
+    void store.initialize(routes as any);
 
     const { container, root } = mount();
     await act(async () => {
@@ -218,7 +221,7 @@ describe("progress bar signals against a real render", () => {
     expect(container.textContent).toBe("HOME");
 
     await act(async () => {
-      store.navigate({ to: "/slow" } as any);
+      void store.navigate({ to: "/slow" } as any);
     });
     await wait(350);
 
@@ -246,7 +249,7 @@ describe("[SPLASH]", () => {
 
     const history = createMemoryHistory({ initialEntries: ["/secret"] });
     const store = new RouterStore({ history });
-    store.initialize(routes as any);
+    void store.initialize(routes as any);
 
     const { container, root } = mount();
     await act(async () => {
@@ -275,7 +278,7 @@ describe("[SPLASH]", () => {
     });
     const history = createMemoryHistory({ initialEntries: ["/secret"] });
     const store = new RouterStore({ history });
-    store.initialize(routes as any);
+    void store.initialize(routes as any);
 
     const { container, root } = mount();
     await act(async () => {
@@ -298,7 +301,7 @@ describe("[SPLASH]", () => {
     });
     const history = createMemoryHistory({ initialEntries: ["/slow"] });
     const store = new RouterStore({ history });
-    store.initialize(routes as any);
+    void store.initialize(routes as any);
 
     const { container, root } = mount();
     await act(async () => {
@@ -324,7 +327,7 @@ describe("[SPLASH]", () => {
     });
     const history = createMemoryHistory({ initialEntries: ["/"] });
     const store = new RouterStore({ history });
-    store.initialize(routes as any);
+    void store.initialize(routes as any);
 
     const { container, root } = mount();
     await act(async () => {
@@ -334,7 +337,7 @@ describe("[SPLASH]", () => {
     expect(container.textContent).toBe("HOME");
 
     await act(async () => {
-      store.navigate({ to: "/secret" } as any);
+      void store.navigate({ to: "/secret" } as any);
     });
     await wait(400);
 

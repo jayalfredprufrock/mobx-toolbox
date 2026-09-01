@@ -18,7 +18,9 @@ afterEach(() => {
 const mount = async (routes: any, initialPath: string) => {
   const history = createMemoryHistory({ initialEntries: [initialPath] });
   const router = new RouterStore({ history });
-  router.initialize(routes);
+  // not awaited: one test mounts a [LOAD] that never resolves, and the
+  // cold-load [LOADING] state is the subject there
+  void router.initialize(routes);
 
   const container = document.createElement("div");
   document.body.appendChild(container);
@@ -85,7 +87,7 @@ describe("route levels reach the components that render at them", () => {
     expect(seen).toBe("/org/:orgId");
 
     await act(async () => {
-      router.navigate({ to: seen as any, params: { orgId: "9" } } as any);
+      await router.navigate({ to: seen as any, params: { orgId: "9" } } as any);
     });
     expect(router.activeRoute?.params).toEqual({ orgId: "9" });
   });
@@ -139,7 +141,7 @@ describe("route levels reach the components that render at them", () => {
     // the sibling outside the group renders without the chrome, with no
     // render-time conditional inside the wrapper to make it so
     await act(async () => {
-      router.navigate({ to: "/surveys/:surveyId", params: { surveyId: "42" } });
+      await router.navigate({ to: "/surveys/:surveyId", params: { surveyId: "42" } });
     });
     expect(container.textContent).toBe("DETAIL");
   });

@@ -55,7 +55,7 @@ describe("Router + observer() page + lazy", () => {
 
     const history = createMemoryHistory({ initialEntries: ["/distributions"] });
     const store = new RouterStore({ history });
-    store.initialize(routes as any);
+    void store.initialize(routes as any);
 
     const container = document.createElement("div");
     document.body.appendChild(container);

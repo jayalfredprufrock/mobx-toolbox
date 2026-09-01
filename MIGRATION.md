@@ -186,7 +186,28 @@ because facet walking has to project identically or the list offers values that 
 
 ### router
 
-No API changed here — one default did.
+Two signature widenings and one default change.
+
+**`router.navigate()` and `router.initialize()` return `Promise<void>` instead of `void`.** Both
+resolve once the navigation has landed — guards run, loaders resolved, redirects followed, and the
+new route committed. Existing calls keep working untouched; nothing rejects, so ignoring the promise
+is safe.
+
+Two things to check by hand:
+
+- If you lint with `no-floating-promises`, existing bare calls now warn. Add `void` to the
+  fire-and-forget ones.
+- ⚠️ A call used directly as a React effect callback is now a runtime warning, because the effect
+  returns a promise where React expects a cleanup function or nothing:
+
+  ```tsx
+  useEffect(() => router.navigate({ to: "/" }), []); // now warns
+  useEffect(() => void router.navigate({ to: "/" }), []); // fixed
+  ```
+
+This is also the cue to delete any "wait for the router to settle" helper you wrote — a polling
+`waitFor` on `activeRoute`, or a `setTimeout` in tests. `await router.navigate(...)` and
+`await router.initialize(...)` are exact where those were approximate.
 
 **The route-component prop types lost their `Component` infix.** A pure rename — same shapes, same
 behaviour:
@@ -238,7 +259,7 @@ autorun, not a render-time navigation:
 
 ```tsx
 useAutorun(() => {
-  if (!auth.isLoggedIn) router.navigate({ to: "/login" });
+  if (!auth.isLoggedIn) void router.navigate({ to: "/login" });
 });
 ```
 

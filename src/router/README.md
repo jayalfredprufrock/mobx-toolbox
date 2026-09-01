@@ -457,11 +457,13 @@ Three ways to model it, in the order worth trying:
 ```tsx
 const onLogout = async () => {
   await auth.logout();
-  router.navigate({ to: "/login", replace: true });
+  await router.navigate({ to: "/login", replace: true });
 };
 ```
 
-Nothing to configure, and the ordering is explicit. Reach for a URL only when something _outside_
+Nothing to configure, and the ordering is explicit end to end — the `await` holds until `/login` is
+actually on screen, so anything you add after it runs against the page the user landed on. See
+[awaiting a navigation](#awaiting-a-navigation). Reach for a URL only when something _outside_
 your app has to link to it — an email, a plain `<a href>`, an identity provider's return URL.
 
 **2. It must be a URL, and the work needn't be awaited** — a `[REDIRECT]` function:
@@ -619,7 +621,9 @@ const RedirectHome = () => {
   // an error route has already committed, so no guard or loader will run
   // again — this is the one redirect that has to happen from render.
   // `useMountEffect` keeps it to once, and redirects replace by default.
-  useMountEffect(() => router.navigate({ to: "/" }));
+  // `void` because navigate() returns a promise, and an effect callback
+  // that returns anything but a cleanup function makes React complain
+  useMountEffect(() => void router.navigate({ to: "/" }));
   return null;
 };
 
@@ -1090,7 +1094,13 @@ A few things worth knowing:
 
 `initialize()` returns the same promise for the app's first navigation, redirects included. Await it
 to hand off from a boot screen, or to hold a test until there is a route to assert on; ignore it to
-let `[SPLASH]` and `[LOADING]` cover the wait, which is the usual case.
+let `[SPLASH]` and `[LOADING]` cover the wait, which is the usual case — as the
+[setup example](#setup) does.
+
+Ignoring it is safe: neither promise rejects. If you lint with `no-floating-promises`, mark the
+fire-and-forget calls `void router.navigate(...)`. One place that isn't optional is a React effect
+callback, which must return a cleanup function or nothing — `useEffect(() => void router.navigate(...))`,
+never `useEffect(() => router.navigate(...))`.
 
 Two things are deliberately _not_ awaitable, because the router doesn't start them: a browser Back or
 Forward, and a `<Link>` click. Both arrive through the history listener, so observe `isNavigating`
@@ -1128,7 +1138,7 @@ navigation:
 
 ```tsx
 useAutorun(() => {
-  if (!auth.isLoggedIn) router.navigate({ to: "/login" });
+  if (!auth.isLoggedIn) void router.navigate({ to: "/login" });
 });
 ```
 
@@ -1343,7 +1353,7 @@ import type {
 
 **Index paths carry no trailing slash.** `dashboard: { index: Page }` is `/dashboard`, not `/dashboard/`; the root is `/`. `route.path` matches (`"dashboard"`, `""` at the root), so paths compare and prefix-match without normalizing. A URL typed with a trailing slash still matches — the store redirects it to the canonical form.
 
-**Guard execution order.** Guards are collected from outermost to innermost route level and run in that order. A thrown `Redirect` stops the chain immediately. Navigating inside a guard via `router.navigate()` also terminates the remaining chain because the router checks `this.location !== location` after each guard.
+**Guard execution order.** Guards are collected from outermost to innermost route level and run in that order. A thrown `Redirect` stops the chain immediately. Navigating inside a guard via `router.navigate()` also terminates the remaining chain because the router checks `this.location !== location` after each guard — but unlike a thrown `redirect()`, it is not covered by the [redirect loop](#redirect--redirects) bound, so two guards navigating at each other will spin.
 
 **`route.data` is a shallow merge.** Each `[LOAD]` function's resolved value is spread into a single object. If two loaders return `{ user: ... }`, the inner one overwrites the outer. Loaders for a given route all run concurrently via `Promise.all`.
 

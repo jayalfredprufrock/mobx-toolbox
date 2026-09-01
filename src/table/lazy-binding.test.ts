@@ -1,5 +1,5 @@
-import { describe, expect, test } from "vite-plus/test";
-import { autorun, observable, runInAction } from "mobx";
+import { afterEach, describe, expect, test, vi } from "vite-plus/test";
+import { autorun, configure, observable, runInAction } from "mobx";
 import { lazyArray } from "../lazy/lazy";
 import { SetFilter } from "../filter/set-filter.model";
 import { TableModel } from "./table.model";
@@ -617,5 +617,42 @@ describe("setData across shapes", () => {
     );
     expect(table.rows).toHaveLength(2);
     stop();
+  });
+});
+
+// The rest of the suite runs under MobX's default `enforceActions: "observed"`, which stays quiet
+// about a write to an observable nothing is watching yet — so it cannot see a constructor writing
+// to its own fresh state. Apps commonly run `"always"`, which does complain, and did.
+describe('constructing under enforceActions: "always"', () => {
+  afterEach(() => {
+    configure({ enforceActions: "observed" });
+    vi.restoreAllMocks();
+  });
+
+  const warningsWhileConstructing = (build: () => TableModel): string[] => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    configure({ enforceActions: "always" });
+    const table = build();
+    // Read something, so an assertion failure can't be blamed on a table that never woke up.
+    expect(table.rows).toBeDefined();
+    return warn.mock.calls.map((args) => String(args[0]));
+  };
+
+  test("binding a lazy warns about nothing", () => {
+    const { lazy } = makeLazy();
+    expect(warningsWhileConstructing(() => new TableModel({ data: lazy }))).toEqual([]);
+  });
+
+  test("binding a getter warns about nothing", () => {
+    const source = observable.box([{ id: 1, name: "alpha" }]);
+    expect(warningsWhileConstructing(() => new TableModel({ data: () => source.get() }))).toEqual(
+      [],
+    );
+  });
+
+  test("binding a plain array warns about nothing", () => {
+    expect(
+      warningsWhileConstructing(() => new TableModel({ data: [{ id: 1, name: "alpha" }] })),
+    ).toEqual([]);
   });
 });

@@ -631,6 +631,13 @@ export class TableModel {
   constructor(config?: TableConfig<any>) {
     this.config = config;
     this.configuredDefs = config?.columns;
+    // Set before `makeObservable`, alongside the other plain-field seeding: afterwards `binding` is
+    // an observable ref, and a bare write to one from the constructor trips `enforceActions: 'always'`
+    // on every table built against a getter or lazy. The array form is applied further down instead,
+    // through `applyRows`, which is an action and so needs no such care.
+    if (config?.data && !Array.isArray(config.data)) {
+      this.binding = config.data;
+    }
 
     makeObservable<
       this,
@@ -766,11 +773,9 @@ export class TableModel {
     if (this.configuredDefs) {
       this.syncColumns();
     }
-    // the getter and lazy forms are applied by their reaction in activate(), below
+    // the getter and lazy forms were bound above, and are applied by their reaction in activate(), below
     if (Array.isArray(config?.data)) {
       this.applyRows(config.data);
-    } else if (config?.data) {
-      this.binding = config.data;
     }
     // registered after initial config so construction itself never fires; structural equality
     // suppresses echoes from unrelated observable churn

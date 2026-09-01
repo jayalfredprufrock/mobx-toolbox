@@ -372,6 +372,30 @@ class Payment extends PaymentModel {
 | `is(value)` | Type guard — `true` reveals the variant's fields on the same instance |
 | `as(value)` | The same instance narrowed to that variant, or `undefined`            |
 
+### Unions of unions
+
+Variants can be grouped and the groups composed, to any depth — a union of unions is just a longer
+flat union:
+
+```ts
+const ElectronicSchema = T.Union([CardSchema, WireSchema]);
+const ManualSchema = T.Union([BankSchema, CashSchema]);
+const PaymentSchema = T.Union([ElectronicSchema, ManualSchema]);
+
+const PaymentModel = makeUnionModel(PaymentSchema, "kind", { keys: ["id"] });
+```
+
+Nothing about it is a special case: `T.Static` already reads nesting as one flat union, and
+`makeUnionModel` flattens `anyOf` to match, so every variant at every depth contributes its fields.
+`is`/`as`, `keys`, `setData` and `toJSON` behave exactly as they do on a flat union — as does
+`makeStore` over the same class. Two notes:
+
+- **The discriminator must be shared by every leaf variant**, not just by every top-level member. It
+  is one flat union as far as narrowing is concerned; there is no per-group discriminator.
+- **`Model.schema` is the schema you passed**, nesting intact. Flattening happens where `anyOf` is
+  walked, not by rewriting the schema, so a schema shared with a form or a store is still the same
+  object.
+
 ### Things to know
 
 - **`keys`/`buildParams` are limited to shared fields.** `keyof` a union collapses to the keys present in every variant (e.g. `id`) — exactly what you want for a keyed resource. The `discriminator` argument must likewise be a shared key.

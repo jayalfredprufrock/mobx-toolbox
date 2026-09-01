@@ -194,3 +194,27 @@ Two things to know:
   Primitive keys (an id, a composite string) are the intended use.
 - **`get` is the only honest read of liveness.** Between a value being collected and its finalizer
   running, a dead entry can still sit in the underlying map; `get` returns `undefined` for it.
+
+---
+
+## `flattenVariants` / `UnionVariants`
+
+TypeBox does not normalize nested unions: `T.Union([A, T.Union([B, C])])` keeps two members in
+`anyOf`, one of which is itself a union. But `T.Static` reads it as the flat `A | B | C` — so any
+code that walks `anyOf` has to flatten too, or a nested member fails an `extends TObject` test and
+silently collapses to `never` (on the type), or gets `.properties` read off it and throws (at
+runtime).
+
+```ts
+import { flattenVariants, type UnionVariants } from "@jayalfredprufrock/mobx-toolbox/util";
+
+const Shape = T.Union([T.Union([Circle, Square]), Triangle]);
+
+flattenVariants(Shape); // [Circle, Square, Triangle] — every leaf, at any depth
+type Leaf = UnionVariants<typeof Shape>; // Circle | Square | Triangle
+```
+
+This is what lets `makeUnionModel` and `FormModel` accept a union of unions, and it is exported
+because anything else introspecting one of this library's schemas needs the same treatment.
+`Value.Check` and `Value.Clean` already recurse on their own, so once the variant list is flat the
+nesting makes no difference anywhere.

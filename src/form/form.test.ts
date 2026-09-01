@@ -452,6 +452,36 @@ describe("FormModel (discriminated union)", () => {
     form.rawFields.routing.setValue("9999");
     expect(form.validate()).toBe(true);
   });
+
+  test("a union of unions merges every nested variant's fields", () => {
+    // The same variants, grouped and composed rather than listed flat.
+    const Card = T.Object({
+      method: T.Literal("card"),
+      holder: T.String({ minLength: 1 }),
+      cardNumber: T.String({ minLength: 4 }),
+    });
+    const Bank = T.Object({
+      method: T.Literal("bank"),
+      holder: T.String({ minLength: 1 }),
+      routing: T.String({ minLength: 4 }),
+    });
+    const Nested = T.Union([T.Union([Card]), T.Union([Bank])]);
+
+    const form = new FormModel(Nested, {
+      handleSubmit: vi.fn().mockResolvedValue(undefined),
+      initialValues: { method: "card", holder: "Ada", cardNumber: "1234" },
+    });
+
+    expect(Object.keys(form.rawFields).sort()).toEqual([
+      "cardNumber",
+      "holder",
+      "method",
+      "routing",
+    ]);
+    expect(form.valid).toBe(true);
+    form.rawFields.routing.setValue("9999"); // stray value from the other branch
+    expect(form.toJSON()).toEqual({ method: "card", holder: "Ada", cardNumber: "1234" });
+  });
 });
 
 // ---------------------------------------------------------------------------

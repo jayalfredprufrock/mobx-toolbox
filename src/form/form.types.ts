@@ -1,5 +1,6 @@
 import type { Static, TLiteral, TObject, TSchema, TUnion } from "typebox";
 import type { FormFieldModel } from "./form-field.model";
+import type { UnionVariants as Flat } from "../util/union-schema";
 import type { FormModel } from "./form.model";
 
 export type FormSchema = TObject | TUnion;
@@ -63,7 +64,7 @@ type VariantValue<O, K extends PropertyKey> = O extends TObject
 // are reachable through <FormWhen>, which narrows to a single variant.
 export type FormFields<T extends FormSchema = TObject> =
   T extends TUnion<infer V>
-    ? { [K in SharedKeys<V[number]>]: FormFieldModel<VariantSchema<V[number], K>> }
+    ? { [K in SharedKeys<Flat<V[number]>>]: FormFieldModel<VariantSchema<Flat<V[number]>, K>> }
     : T extends TObject
       ? { [K in keyof T["properties"]]: FormFieldModel<T["properties"][K]> }
       : never;
@@ -72,7 +73,7 @@ export type FormFields<T extends FormSchema = TObject> =
 // `form.rawFields` escape hatch for reaching variant fields outside <FormWhen>.
 export type RawFormFields<T extends FormSchema = TObject> =
   T extends TUnion<infer V>
-    ? { [K in VariantKeys<V[number]>]: FormFieldModel<VariantSchema<V[number], K>> }
+    ? { [K in VariantKeys<Flat<V[number]>>]: FormFieldModel<VariantSchema<Flat<V[number]>, K>> }
     : T extends TObject
       ? { [K in keyof T["properties"]]: FormFieldModel<T["properties"][K]> }
       : never;
@@ -80,7 +81,7 @@ export type RawFormFields<T extends FormSchema = TObject> =
 // Every field across all variants is optional, typed by its (possibly unioned) value.
 type FormInitialValues<T extends FormSchema> =
   T extends TUnion<infer V>
-    ? { [K in VariantKeys<V[number]>]?: VariantValue<V[number], K> }
+    ? { [K in VariantKeys<Flat<V[number]>>]?: VariantValue<Flat<V[number]>, K> }
     : T extends TObject
       ? Partial<Static<T>>
       : never;
@@ -89,7 +90,7 @@ type FormInitialValues<T extends FormSchema> =
 
 /** Keys that are typed as a literal in at least one variant — valid discriminators. */
 export type DiscriminatorKeys<T extends TUnion> =
-  T extends TUnion<infer V> ? LiteralKeys<V[number]> : never;
+  T extends TUnion<infer V> ? LiteralKeys<Flat<V[number]>> : never;
 
 type LiteralKeys<O> = O extends TObject
   ? {
@@ -99,7 +100,7 @@ type LiteralKeys<O> = O extends TObject
 
 /** The literal values a given discriminator key can take across all variants. */
 export type DiscriminatorValue<T extends TUnion, D extends PropertyKey> =
-  T extends TUnion<infer V> ? LiteralValue<V[number], D> : never;
+  T extends TUnion<infer V> ? LiteralValue<Flat<V[number]>, D> : never;
 
 type LiteralValue<O, D extends PropertyKey> = O extends TObject
   ? D extends keyof O["properties"]
@@ -111,7 +112,7 @@ type LiteralValue<O, D extends PropertyKey> = O extends TObject
 
 /** The variant object whose discriminator `D` equals the literal `V`. */
 export type MatchVariant<T extends TUnion, D extends PropertyKey, V> =
-  T extends TUnion<infer Vars> ? Distribute<Vars[number], D, V> : never;
+  T extends TUnion<infer Vars> ? Distribute<Flat<Vars[number]>, D, V> : never;
 
 type Distribute<O, D extends PropertyKey, V> = O extends TObject
   ? D extends keyof O["properties"]

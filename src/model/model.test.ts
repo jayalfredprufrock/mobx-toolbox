@@ -291,6 +291,100 @@ describe("makeUnionModel", () => {
 });
 
 // ---------------------------------------------------------------------------
+// makeUnionModel — unions of unions
+// ---------------------------------------------------------------------------
+
+const CardSchema = T.Object({ kind: T.Literal("card"), id: T.Number(), cardNumber: T.String() });
+const WireSchema = T.Object({ kind: T.Literal("wire"), id: T.Number(), swift: T.String() });
+const BankSchema = T.Object({ kind: T.Literal("bank"), id: T.Number(), routing: T.String() });
+const CashSchema = T.Object({ kind: T.Literal("cash"), id: T.Number(), note: T.String() });
+
+const ElectronicSchema = T.Union([CardSchema, WireSchema]);
+const ManualSchema = T.Union([BankSchema, CashSchema]);
+/** Two levels: a union whose every member is itself a union. */
+const NestedPaymentSchema = T.Union([ElectronicSchema, ManualSchema]);
+
+describe("makeUnionModel with a union of unions", () => {
+  test("makes every nested variant's fields observable", () => {
+    const PaymentModel = makeUnionModel(NestedPaymentSchema, "kind");
+    const card = new PaymentModel({ kind: "card", id: 1, cardNumber: "4242" });
+
+    // A field from the *other* branch of the nesting has to exist and be observable, or `setData`
+    // switching to that variant would not be reactive.
+    const seen: (string | undefined)[] = [];
+    const dispose = autorun(() => seen.push((card as any).note));
+    runInAction(() => card.setData({ kind: "cash", id: 1, note: "petty" }));
+    dispose();
+
+    expect(seen).toEqual([undefined, "petty"]);
+    expect((card as any).cardNumber).toBeUndefined();
+  });
+
+  test("toJSON cleans down to the active variant across nesting levels", () => {
+    const PaymentModel = makeUnionModel(NestedPaymentSchema, "kind");
+    const wire = new PaymentModel({
+      kind: "wire",
+      id: 3,
+      swift: "DEUTDEFF",
+      routing: "021",
+      note: "x",
+    } as any);
+    expect(wire.toJSON()).toEqual({ kind: "wire", id: 3, swift: "DEUTDEFF" });
+  });
+
+  test("is()/as() and the identity map work on nested variants", async () => {
+    const PaymentModel = makeUnionModel(NestedPaymentSchema, "kind", { keys: ["id"] as const });
+    const bank = PaymentModel.instantiate({ kind: "bank", id: 9, routing: "021" });
+    expect(bank.is("bank")).toBe(true);
+    expect(bank.is("card")).toBe(false);
+    if (bank.is("bank")) expect(bank.routing).toBe("021");
+    expect(bank.as("cash")).toBeUndefined();
+    expect(bank.buildParams()).toEqual({ id: 9 });
+
+    // Same key, so the same instance — the nesting changes nothing about identity.
+    expect(PaymentModel.instantiate({ kind: "cash", id: 9, note: "refund" })).toBe(bank);
+    expect(bank.kind).toBe("cash");
+  });
+
+  test("handles arbitrary depth and object/union siblings", () => {
+    // Three levels on one side, a bare object as a direct sibling on the other.
+    const DeepSchema = T.Union([T.Union([T.Union([ElectronicSchema]), CashSchema]), BankSchema]);
+    const PaymentModel = makeUnionModel(DeepSchema, "kind");
+    const cash = new PaymentModel({ kind: "cash", id: 1, note: "petty", swift: "X" } as any);
+
+    // Every leaf, however deep, contributed its properties.
+    expect(Object.keys(cash).sort()).toEqual([
+      "cardNumber",
+      "id",
+      "kind",
+      "note",
+      "routing",
+      "swift",
+    ]);
+    expect(cash.toJSON()).toEqual({ kind: "cash", id: 1, note: "petty" });
+  });
+
+  test("a variant reachable through two branches is not duplicated", () => {
+    const DupSchema = T.Union([
+      T.Union([CardSchema, BankSchema]),
+      T.Union([CardSchema, CashSchema]),
+    ]);
+    const PaymentModel = makeUnionModel(DupSchema, "kind");
+    const card = new PaymentModel({ kind: "card", id: 1, cardNumber: "4242" });
+    expect(Object.keys(card).sort()).toEqual(["cardNumber", "id", "kind", "note", "routing"]);
+    expect(card.toJSON()).toEqual({ kind: "card", id: 1, cardNumber: "4242" });
+  });
+
+  test("static schema is the schema as given, nesting intact", () => {
+    const PaymentModel = makeUnionModel(NestedPaymentSchema, "kind");
+    // Flattening happens where `anyOf` is walked, not by rewriting the schema — so a schema shared
+    // with a form or a store is still the same object.
+    expect(PaymentModel.schema).toBe(NestedPaymentSchema);
+    expect(PaymentModel.schema.anyOf).toHaveLength(2);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // makeStore
 // ---------------------------------------------------------------------------
 

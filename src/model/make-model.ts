@@ -1,4 +1,5 @@
 import { action, makeObservable, observable, runInAction, toJS, type AnnotationsMap } from "mobx";
+import { flattenVariants, type UnionSchema } from "../util/union-schema";
 import { WeakRefMap } from "../util/weak-ref-map";
 import * as T from "typebox";
 import * as Value from "typebox/value";
@@ -21,10 +22,11 @@ export interface ModelListener {
 
 /**
  * Root schema for a model: a single object (`makeModel`) or a discriminated
- * union of objects (`makeUnionModel`). Shared by both factories and by
+ * union of objects (`makeUnionModel`) — nested at any depth, since a union of
+ * unions is just a longer flat union. Shared by both factories and by
  * `makeStore`, which accepts either.
  */
-export type ModelSchema = T.TObject | T.TUnion<T.TObject[]>;
+export type ModelSchema = T.TObject | UnionSchema;
 
 /**
  * Fold several values into one map key. A lone value is handed back as it stands, so a numeric id
@@ -60,8 +62,8 @@ const SINGLETON_KEY = "\u0000singleton";
 function getPropertyNames(schema: ModelSchema): string[] {
   if (!T.IsUnion(schema)) return Object.keys(schema.properties);
   const names = new Set<string>();
-  for (const variant of schema.anyOf) {
-    for (const key of Object.keys((variant as T.TObject).properties)) names.add(key);
+  for (const variant of flattenVariants(schema)) {
+    for (const key of Object.keys(variant.properties)) names.add(key);
   }
   return [...names];
 }
@@ -649,8 +651,6 @@ export function makeModel<S extends T.TObject>(
 // -----------------------------------------------------------------------------
 // makeUnionModel (discriminated union schemas)
 // -----------------------------------------------------------------------------
-
-type UnionSchema = T.TUnion<T.TObject[]>;
 
 // Properties common to every variant (`keyof` a union resolves to shared keys).
 type SharedFields<S extends UnionSchema> = { [K in keyof Resource<S>]: Resource<S>[K] };

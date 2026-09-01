@@ -234,6 +234,12 @@ const form = useForm(PaymentSchema, {
 });
 ```
 
+Variants can be grouped and the groups composed to any depth — `T.Union([Electronic, Manual])`,
+where each of those is itself a union. A union of unions is treated as the one flat union of leaf
+variants that `T.Static` already reads it as, so field merging, `fields`/`rawFields`, `<FormWhen>`
+narrowing and `toJSON` cleaning all behave identically. The discriminator has to be shared by every
+leaf variant, not just by every top-level member.
+
 ### `<FormWhen>`
 
 Render variant-specific fields without manual conditionals or casts. `FormWhen` renders its children only while the discriminator `field` holds `value`, passing the **fields narrowed to that variant** (`fields.cardNumber` exists in the `card` block; `fields.routing` does not). The form itself is already in scope, so the render prop only hands you the fields. Stack one per variant:

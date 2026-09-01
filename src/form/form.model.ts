@@ -5,20 +5,22 @@ import { IsUnion, Union, type Static, type TObject, type TSchema } from "typebox
 import { makeAutoObservable } from "mobx";
 import type { FormConfig, FormFields, FormSchema, RawFormFields } from "./form.types";
 import { FormFieldModel } from "./form-field.model";
+import { flattenVariants, type UnionSchema } from "../util/union-schema";
 
 // should these be here?
 Format.Set("password", () => true);
 Format.Set("phone", () => true);
 
 // Flatten a schema's fields into a single property map. For a discriminated
-// union this merges the properties of every variant, unioning the schemas of
-// any field that appears in more than one variant (which naturally turns the
-// discriminator into a union of its literals).
+// union this merges the properties of every variant — nested unions included, as
+// `flattenVariants` collapses them — unioning the schemas of any field that appears
+// in more than one variant (which naturally turns the discriminator into a union of
+// its literals).
 function resolveProperties(schema: FormSchema): Record<string, TSchema> {
   if (!IsUnion(schema)) return schema.properties;
 
   const groups: Record<string, TSchema[]> = {};
-  for (const variant of schema.anyOf) {
+  for (const variant of flattenVariants(schema as UnionSchema)) {
     for (const [key, propSchema] of Object.entries((variant as TObject).properties)) {
       (groups[key] ??= []).push(propSchema as TSchema);
     }
@@ -41,6 +43,20 @@ function resolveProperties(schema: FormSchema): Record<string, TSchema> {
 // stop `submitted` being set. A dedicated error thrown from handleSubmit — carrying a
 // { field: message } map and recognised in the catch — would collapse that into one step and keep it
 // out of `submitError`.
+
+// TODO: discriminator-aware union forms (considered 2026-09-01, deferred).
+// `resolveProperties` unions each key's schema across variants and never reads `required`, so a
+// field validates against the loosest schema of any variant and knows nothing about being required
+// by the active one. Whole-object `valid` keeps *submit* correct, but a union form can be invalid
+// with no field-level error anywhere pointing at the culprit — `validate()` clears every field's
+// error and then only asks the whole-object question.
+// Fixing it needs the *active* variant, and structural matching (what `Value.Clean` does) can't
+// supply it: mid-edit a half-filled form matches no variant, which is exactly when field-level
+// errors matter most. A named discriminator can, from the moment that one field is set — so
+// `discriminator?: D` on `FormConfig` plus `FormModel<T, D = never>` (defaulted, to keep existing
+// annotations compiling), re-pointing each field at the active variant's own schema.
+// No second class needed: unlike `makeUnionModel`, nothing here puts the resource union in a
+// base-class position, so the TS2509 problem that forced that separate factory doesn't apply here.
 
 export class FormModel<T extends FormSchema = TObject> {
   /** Shared fields only (for unions); every field for a plain object schema. */

@@ -1450,6 +1450,32 @@ describe("updateData on a union", () => {
     expect(p.toJSON()).toEqual({ kind: "bank", id: 1, routing: "9999", label: "Chase" });
   });
 
+  test("toJSON follows the narrowing, as updateData's patch does", () => {
+    const p = new Payment(card());
+
+    // un-narrowed, the result is the whole union, so a variant-only field is not reachable —
+    // the value is there at runtime, which is the point: only the type was hiding it
+    // @ts-expect-error `digits` is not on every variant
+    expect(p.toJSON().digits).toBe("4242");
+
+    // narrowed, it is exactly that variant
+    const json = p.as("card")!.toJSON();
+    expect(json.digits).toBe("4242");
+
+    // and the narrowed result satisfies the variant type in full
+    const asVariant: { kind: "card"; id: number; digits: string; label: string } = json;
+    expect(asVariant.kind).toBe("card");
+  });
+
+  test("toJSON narrows through `is` too", () => {
+    const p = new Payment(card());
+    if (p.is("card")) {
+      expect(p.toJSON().digits).toBe("4242");
+    } else {
+      throw new Error("expected the card variant");
+    }
+  });
+
   test("a patched union still serializes as its own variant only", () => {
     const p = new Payment(card());
     p.as("card")!.updateData({ digits: "1111" });

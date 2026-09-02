@@ -131,6 +131,16 @@ type UnionPatch<S extends ModelSchema, D extends PropertyKey, K, Self> = Partial
 >;
 
 /**
+ * The variant a union instance is currently known to be, resolved from `Self` — the polymorphic
+ * `this`, whose discriminator narrows to a single literal once `is`/`as` has been through it.
+ *
+ * Inferred rather than indexed (`Self[D]`): the interface only constrains `D` against
+ * `Resource<S>`, so TypeScript will not accept it as a key of `this`.
+ */
+type VariantOf<S extends ModelSchema, D extends PropertyKey, Self> =
+  Self extends Record<D, infer V> ? Extract<Resource<S>, Record<D, V>> : Resource<S>;
+
+/**
  * Whether the model's methods take a leading params argument. True for both `keys: false` and
  * `keys: []`, which leave nothing to build params from.
  *
@@ -818,7 +828,14 @@ interface UnionModelMembers<S extends UnionSchema, D extends keyof Resource<S>, 
    * through `setData`. Identity keys are not patchable either.
    */
   updateData(patch: UnionPatch<S, D, K, this>): void;
-  toJSON(): Resource<S>;
+  /**
+   * The record as plain data, with any field outside its current variant stripped.
+   *
+   * The return type follows `this` the way `updateData`'s patch does, so a narrowed instance
+   * yields that variant alone rather than the whole union — `payment.as("card")?.toJSON().digits`
+   * compiles, where the un-narrowed `payment.toJSON().digits` correctly does not.
+   */
+  toJSON(): VariantOf<S, D, this>;
   buildParams(): KeyShape<S, K>;
   /** Type guard: true when the discriminator equals `value`, revealing that variant's fields on this same instance. */
   is<V extends Resource<S>[D]>(value: V): this is this & VariantFields<S, D, V>;

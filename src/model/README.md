@@ -509,6 +509,18 @@ class Payment extends PaymentModel {
 | `is(value)` | Type guard — `true` reveals the variant's fields on the same instance |
 | `as(value)` | The same instance narrowed to that variant, or `undefined`            |
 
+Narrowing carries into the members whose shape depends on the variant. `updateData` accepts that
+variant's fields, and `toJSON()` returns that variant alone:
+
+```ts
+block.toJSON().choices; // ✗ not on every variant
+block.as("multiple-choice")?.toJSON().choices; // ✓
+```
+
+`setData` deliberately does _not_ narrow: it takes a whole resource and is the supported way to
+switch a record from one variant to another, so it keeps accepting the full union even on a
+narrowed instance.
+
 ### Unions of unions
 
 Variants can be grouped and the groups composed, to any depth — a union of unions is just a longer
@@ -1094,6 +1106,8 @@ import type {
 **`updateData` is local-only by design, and its three omissions are load-bearing.** No `updated` event (a store would refetch and discard the edit), no load-stamp refresh (`cache` would treat an edited record as freshly loaded), and no patching identity keys (the identity map is keyed on them and `updateData` does not re-register). It is sugar for a hand-written `runInAction`, not a quieter `update()`.
 
 **`invalidateOn` is about lists, not records.** A mutated record needs no event to re-render, because the instance is identity-mapped and shared — the event exists for what a per-record change cannot express: membership, ordering, pagination. That is why `setData` and `updateData` stay silent while `update`/`create`/`delete` emit: the event belongs to the layer that talked to the server, not the layer that mutated the record. Loads never emit.
+
+**Narrowing-dependent return types are inferred from `this`, not indexed off it.** `toJSON` resolves its variant with `Self extends Record<D, infer V>` rather than `Self[D]`, because the interface constrains `D` against `Resource<S>` only — TypeScript rejects it as a key of `this`. Same reason `updateData` picks its patch fields via `Extract<FieldName<S>, keyof Self>`.
 
 **`updateData`'s union patch type is derived from `this`, not from the schema.** That is what makes narrowing flow into it: un-narrowed, `keyof this` exposes only the shared fields, and `is`/`as` widen `this` to a variant so its fields become patchable.
 

@@ -1,7 +1,7 @@
 import { describe, expect, test, vi } from "vite-plus/test";
 import * as T from "typebox";
-import { autorun, runInAction } from "mobx";
-import { makeModel, makeUnionModel } from "./make-model";
+import { autorun, isObservableProp, makeObservable, observable, runInAction } from "mobx";
+import { LOADED_AT, makeModel, makeUnionModel } from "./make-model";
 import { createStore, makeStore } from "./make-store";
 
 // ---------------------------------------------------------------------------
@@ -1147,5 +1147,312 @@ describe("identity modes", () => {
 
       expect(store.list.value![0]).not.toBe(held);
     });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Observability — the default annotation, its per-field override, and the
+// subclass path the override deliberately does not cover
+// ---------------------------------------------------------------------------
+
+describe("field observability", () => {
+  const TaggedSchema = T.Object({
+    id: T.Number(),
+    name: T.String(),
+    tags: T.Array(T.String()),
+  });
+  const tagged = () => ({ id: 1, name: "Alice", tags: ["a"] });
+
+  test("every field defaults to observable.ref: reassigning is reactive, mutating is not", () => {
+    const Model = makeModel(TaggedSchema, { keys: ["id"] as const });
+    const m = new Model(tagged());
+
+    const seen: number[] = [];
+    autorun(() => seen.push(m.tags.length));
+
+    runInAction(() => m.tags.push("b")); // in-place — invisible under .ref
+    expect(seen).toEqual([1]);
+
+    runInAction(() => (m.tags = ["a", "b", "c"])); // whole-value swap — reactive
+    expect(seen).toEqual([1, 3]);
+  });
+
+  test("annotations upgrades a single field to deep observable", () => {
+    const Model = makeModel(TaggedSchema, {
+      keys: ["id"] as const,
+      annotations: { tags: observable },
+    });
+    const m = new Model(tagged());
+
+    const seen: number[] = [];
+    autorun(() => seen.push(m.tags.length));
+    runInAction(() => m.tags.push("b"));
+
+    expect(seen).toEqual([1, 2]);
+    // and it still serializes as plain data, not as an observable array
+    expect(m.toJSON()).toEqual({ id: 1, name: "Alice", tags: ["a", "b"] });
+  });
+
+  test("fields left out of annotations keep the default", () => {
+    const Model = makeModel(TaggedSchema, {
+      keys: ["id"] as const,
+      annotations: { tags: observable },
+    });
+    const m = new Model(tagged());
+
+    expect(isObservableProp(m, "name")).toBe(true);
+    const seen: string[] = [];
+    autorun(() => seen.push(m.name));
+    runInAction(() => (m.name = "Bob"));
+    expect(seen).toEqual(["Alice", "Bob"]);
+  });
+
+  test("annotations: false opts a field out of observability", () => {
+    const Model = makeModel(TaggedSchema, {
+      keys: ["id"] as const,
+      annotations: { tags: false },
+    });
+    const m = new Model(tagged());
+
+    expect(isObservableProp(m, "tags")).toBe(false);
+    expect(m.tags).toEqual(["a"]); // still carries its value, and still serializes
+    expect(m.toJSON()).toEqual(tagged());
+  });
+
+  test("a variant-specific field of a union may be annotated", () => {
+    const Schema = T.Union([
+      T.Object({ kind: T.Literal("card"), id: T.Number(), digits: T.Array(T.String()) }),
+      T.Object({ kind: T.Literal("bank"), id: T.Number(), routing: T.String() }),
+    ]);
+    const Model = makeUnionModel(Schema, "kind", {
+      keys: ["id"] as const,
+      annotations: { digits: observable },
+    });
+    const m = new Model({ kind: "card", id: 1, digits: ["4"] });
+
+    const card = m.as("card")!;
+    const seen: number[] = [];
+    autorun(() => seen.push(card.digits.length));
+    runInAction(() => card.digits.push("2"));
+
+    expect(seen).toEqual([1, 2]);
+  });
+
+  test("naming something that is not a schema field throws when the class is built", () => {
+    expect(() =>
+      // @ts-expect-error `role` is not a field of this schema
+      makeModel(TaggedSchema, { keys: ["id"] as const, annotations: { role: observable } }),
+    ).toThrow(/not a field of this schema/);
+
+    // built-in members are not annotatable either — setData stays an action
+    expect(() =>
+      // @ts-expect-error `setData` is not a schema field
+      makeModel(TaggedSchema, { keys: ["id"] as const, annotations: { setData: false } }),
+    ).toThrow(/not a field of this schema/);
+  });
+
+  test("a subclass annotates its own new members with makeObservable", () => {
+    const Model = makeModel(TaggedSchema, { keys: ["id"] as const });
+    let computes = 0;
+
+    class Draft extends Model {
+      note = "";
+      get shout(): string {
+        computes++;
+        return this.name.toUpperCase();
+      }
+      constructor(data: ReturnType<typeof tagged>) {
+        super(data);
+        // annotations only — mobx rejects an options object on an already-observable instance
+        makeObservable(this, { note: observable, shout: true, setNote: true });
+      }
+      setNote(note: string): void {
+        this.note = note;
+      }
+    }
+
+    const d = new Draft(tagged());
+
+    const notes: string[] = [];
+    autorun(() => notes.push(d.note));
+    d.setNote("hi"); // annotated as an action, so no runInAction needed
+    expect(notes).toEqual(["", "hi"]);
+
+    autorun(() => d.shout);
+    expect(d.shout).toBe("ALICE");
+    expect(d.shout).toBe("ALICE");
+    expect(computes).toBe(1); // memoized as a computed, not recomputed per read
+  });
+
+  test("a subclass cannot re-annotate a schema field — that is what `annotations` is for", () => {
+    const Model = makeModel(TaggedSchema, { keys: ["id"] as const });
+    class Deep extends Model {
+      constructor(data: ReturnType<typeof tagged>) {
+        super(data);
+        makeObservable(this, { tags: observable });
+      }
+    }
+    expect(() => new Deep(tagged())).toThrow(/tags/);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// updateData — partial, purely local edits
+// ---------------------------------------------------------------------------
+
+describe("updateData", () => {
+  const Model = makeModel(UserSchema, { keys: ["id"] as const });
+  const alice = () => ({ id: 1, name: "Alice", email: "alice@example.com" });
+
+  test("applies a partial patch, leaving other fields alone", () => {
+    const m = Model.instantiate(alice());
+    m.updateData({ name: "Bob" });
+    expect(m.toJSON()).toEqual({ ...alice(), name: "Bob" });
+  });
+
+  test("several fields land as one action, so no reaction sees a torn state", () => {
+    const m = new Model(alice());
+    const seen: string[] = [];
+    const stop = autorun(() => seen.push(`${m.name}/${m.email}`));
+
+    m.updateData({ name: "Bob", email: "bob@example.com" });
+    stop();
+
+    expect(seen).toEqual(["Alice/alice@example.com", "Bob/bob@example.com"]);
+  });
+
+  test("emits no event, so a store listening for updates keeps its lists", () => {
+    const events: string[] = [];
+    Model.addListener({ onModelEvent: (type) => events.push(type) });
+
+    const m = Model.instantiate(alice());
+    m.updateData({ name: "Bob" });
+
+    expect(events).toEqual([]);
+  });
+
+  test("does not refresh the load stamp — the record now disagrees with the server", () => {
+    const m = new Model(alice());
+    const stamp = (m as any)[LOADED_AT];
+    m.updateData({ name: "Bob" });
+    expect((m as any)[LOADED_AT]).toBe(stamp);
+  });
+
+  test("an identity key is not patchable", () => {
+    const m = Model.instantiate(alice());
+    // @ts-expect-error `id` is an identity key
+    expect(() => m.updateData({ id: 99 })).toThrow(/identifies which record this is/);
+    // the record is still filed under, and reachable by, its real key
+    expect(Model.peek({ id: 1 })).toBe(m);
+    // and `buildParams` still addresses the right server record
+    expect(m.buildParams()).toEqual({ id: 1 });
+  });
+
+  test("a rejected patch applies nothing at all", () => {
+    const m = new Model(alice());
+    const patch = { name: "Bob", id: 99 } as Record<string, unknown>;
+    expect(() => (m as any).updateData(patch)).toThrow(/identifies which record this is/);
+    // the valid key was checked, not applied — an action batches, it does not roll back
+    expect(m.name).toBe("Alice");
+  });
+
+  test("a field outside the schema is a type error, and inert if one slips past", () => {
+    const m = new Model(alice());
+    // @ts-expect-error `role` is not a schema field
+    m.updateData({ role: "admin" });
+    // deliberately unguarded: nothing downstream is fooled, `toJSON` simply ignores it
+    expect(m.toJSON()).toEqual(alice());
+  });
+
+  test("a model with no identity can patch every field", () => {
+    const Free = makeModel(UserSchema, { keys: false });
+    const m = new Free(alice());
+    m.updateData({ id: 99, name: "Bob" }); // no identity map to desync
+    expect(m.id).toBe(99);
+  });
+});
+
+describe("updateData on a union", () => {
+  const PaymentSchema = T.Union([
+    T.Object({ kind: T.Literal("card"), id: T.Number(), digits: T.String(), label: T.String() }),
+    T.Object({ kind: T.Literal("bank"), id: T.Number(), routing: T.String(), label: T.String() }),
+  ]);
+  const Payment = makeUnionModel(PaymentSchema, "kind", { keys: ["id"] as const });
+  const card = () => ({ kind: "card", id: 1, digits: "4242", label: "Visa" }) as const;
+
+  test("a shared field is patchable without narrowing", () => {
+    const p = new Payment(card());
+    p.updateData({ label: "Personal" });
+    expect(p.label).toBe("Personal");
+  });
+
+  test("a variant field is unreachable until narrowed", () => {
+    const p = new Payment(card());
+
+    // Compile-time guard only: `digits` really is a field of the active variant, so the runtime
+    // check has no reason to object. The type is what makes you prove the variant first.
+    // @ts-expect-error `digits` is not a shared field, so it is not reachable un-narrowed
+    p.updateData({ digits: "1111" });
+
+    const asCard = p.as("card");
+    expect(asCard).toBeDefined();
+    asCard!.updateData({ digits: "2222" });
+    expect(asCard!.digits).toBe("2222");
+  });
+
+  test("the other variant's fields stay out of reach even once narrowed", () => {
+    const asCard = new Payment(card()).as("card")!;
+    // @ts-expect-error `routing` belongs to the bank variant
+    asCard.updateData({ routing: "0000" });
+    // deliberately unguarded at runtime: `toJSON` strips fields outside the active variant, which
+    // is what its `Value.Clean` is already there for
+    expect(asCard.toJSON()).toEqual(card());
+  });
+
+  test("`is` narrowing reveals the same fields as `as`", () => {
+    const p = new Payment(card());
+    if (p.is("card")) {
+      p.updateData({ digits: "9999" });
+      expect(p.digits).toBe("9999");
+    } else {
+      throw new Error("expected the card variant");
+    }
+  });
+
+  test("the discriminator is not patchable", () => {
+    const p = new Payment(card());
+    // @ts-expect-error changing variant is a whole-record replacement, not a patch
+    expect(() => p.updateData({ kind: "bank" })).toThrow(/identifies which record this is/);
+  });
+
+  test("fields of two variants cannot be mixed in one patch", () => {
+    const asCard = new Payment(card()).as("card")!;
+    // @ts-expect-error `routing` is not a field of the card variant
+    asCard.updateData({ digits: "1111", routing: "2" });
+    // the type is the guard; the stray field never reaches a payload
+    expect(asCard.toJSON()).toEqual({ ...card(), digits: "1111" });
+  });
+
+  test("the discriminator is guarded at runtime, since a bad one invalidates the payload", () => {
+    const p = new Payment(card());
+    // types cannot see inside a widened object, which is what this check is for: without it
+    // `toJSON` would emit `kind: "bank"` still carrying the card's fields
+    const patch = { kind: "bank" } as Record<string, unknown>;
+    expect(() => (p as any).updateData(patch)).toThrow(/identifies which record this is/);
+    expect(p.toJSON()).toEqual(card());
+  });
+
+  test("a record patched after a variant switch patches the new variant", () => {
+    const p = new Payment(card());
+    runInAction(() => p.setData({ kind: "bank", id: 1, routing: "0000", label: "Chase" }));
+
+    p.as("bank")!.updateData({ routing: "9999" });
+    expect(p.toJSON()).toEqual({ kind: "bank", id: 1, routing: "9999", label: "Chase" });
+  });
+
+  test("a patched union still serializes as its own variant only", () => {
+    const p = new Payment(card());
+    p.as("card")!.updateData({ digits: "1111" });
+    expect(p.toJSON()).toEqual({ kind: "card", id: 1, digits: "1111", label: "Visa" });
   });
 });

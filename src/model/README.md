@@ -13,7 +13,7 @@ import * as T from "typebox";
 
 ## Defining a model
 
-`makeModel(schema, config?)` returns a class whose constructor accepts raw data and an optional store reference. Every property defined in the schema becomes a `observable.ref` field.
+`makeModel(schema, config?)` returns a class whose constructor accepts raw data and an optional store reference. Every property defined in the schema becomes an `observable.ref` field, which `annotations` can override per field — see [Field observability](#field-observability).
 
 ```ts
 const UserSchema = T.Object({
@@ -266,6 +266,7 @@ through one does not show in the other without wiring
 | `update(body, ...rest)` | Calls the `update` fn with the body, then calls `setData`                             |
 | `delete(...rest)`       | Calls the `delete` fn, tells every listener, then gives up identity                   |
 | `setData(resource)`     | Replaces the model's data with a complete resource (full replace, not a merge)        |
+| `updateData(patch)`     | Applies a partial, purely local edit in one action — no endpoint, no event            |
 | `toJSON()`              | Returns a plain object with all schema-defined fields                                 |
 | `buildParams()`         | Returns `{ [key]: this[key] }` for each configured key, or `undefined` if no keys     |
 
@@ -285,18 +286,37 @@ await user.sendMessage({ text: "Hello" }); // fn({ id }, { text: "Hello" })
 
 ### Extending via subclass
 
-Subclass to add derived members, or to annotate extra observable fields:
+Subclass to add derived members and local state. The generated base constructor already ran
+`makeObservable`, so a subclass annotates **its own** new members by calling `makeObservable` again
+in its constructor — annotations only, no options object:
 
 ```ts
 class UserInstance extends UserModel {
+  note = "";
+
+  constructor(data: User) {
+    super(data);
+    // annotations only — mobx rejects an options object on an already-observable instance
+    makeObservable(this, { note: observable, label: true, setNote: true });
+  }
+
   get label() {
     return `${this.name} <${this.email}>`;
   }
-  getMobxAnnotations() {
-    return { role: observable }; // annotate extra fields
+
+  setNote(note: string): void {
+    this.note = note;
   }
 }
 ```
+
+A getter left unannotated still works, but recomputes on every read rather than memoizing — annotate
+it to get a real `computed`.
+
+This is the path for members the subclass _adds_. To change how an existing **schema field** is made
+observable, use [`annotations`](#field-observability) in the config instead: mobx forbids
+re-annotating, so `makeObservable(this, { tags: observable })` for a field the base already
+annotated throws.
 
 **`buildParams()` is not the place to rename params.** Its return type is `Pick<Resource, ...keys>`,
 so an override returning a different shape doesn't typecheck — and it wouldn't help anyway, since the
@@ -311,7 +331,38 @@ const UserModel = makeModel(UserSchema, {
 });
 ```
 
-`getMobxAnnotations()` is merged into the `makeObservable` call in the constructor, allowing subclasses to add their own observable fields without re-calling `makeObservable`.
+### Field observability
+
+Every schema field is annotated `observable.ref`. Reassigning a field is reactive; mutating the
+value _inside_ it is not:
+
+```ts
+user.tags.push("new"); // ← not reactive
+user.tags = [...user.tags, "new"]; // ← reactive
+```
+
+That default follows from what a model is: a projection of a server resource, replaced wholesale by
+`setData`. Deep observability would recursively convert every nested object on every `instantiate` —
+real cost when a collection lands hundreds of records — make `toJSON` do work instead of passing
+through, and invite in-place edits to nested data that the next load silently discards.
+
+When a field genuinely is edited in place — a draft, a locally-managed list — name it in
+`annotations`:
+
+```ts
+const UserModel = makeModel(UserSchema, {
+  keys: ["id"],
+  annotations: { tags: observable }, // deep; every other field keeps observable.ref
+});
+```
+
+`false` opts a field out of observability altogether. Only schema fields may be named — anything
+else is a typo and throws when the class is built, rather than surfacing as a mobx "Field not found"
+from inside a constructor. For a union, any variant's fields may be named, not just the shared ones.
+
+This is also the _only_ way to change a schema field's annotation. Mobx forbids re-annotating, so a
+subclass calling `makeObservable` for a field the base already annotated throws; a subclass
+annotates only the members it [adds itself](#extending-via-subclass).
 
 ### `setData` replaces, it does not merge
 
@@ -325,6 +376,92 @@ runInAction(() => user.setData({ id: 1, name: "Bob", email: "bob@example.com" })
 // ✅ single field
 runInAction(() => (user.name = "Bob"));
 ```
+
+### `updateData` — local edits
+
+`updateData` applies a partial patch and nothing else: no endpoint is called, no `updated` event is
+emitted, and the load stamp is not refreshed. It is the sugar for what you would otherwise write by
+hand under `enforceActions`:
+
+```ts
+// instead of
+runInAction(() => {
+  user.name = "Bob";
+  user.email = "bob@example.com";
+});
+// write
+user.updateData({ name: "Bob", email: "bob@example.com" });
+```
+
+Everything in one patch lands in a single action, so a reaction reading two of those fields runs
+once, on the finished state, rather than twice with a torn one in between.
+
+Three deliberate omissions, each of which would be a bug rather than a convenience:
+
+- **No `updated` event.** A store hearing one marks its lists stale and refetches — which would
+  discard the local edit that just triggered it. `update()` emits the event because there the server
+  really did change.
+- **No load-stamp refresh.** The record now disagrees with the server. Stamping it would let
+  [`cache`](#caching-a-record) hand out an edited record as freshly loaded.
+- **Identity keys are not patchable.** The identity map is keyed on them and `updateData` does not
+  re-register, so a key change would file the record under a key that no longer describes it. A
+  different key is a different record.
+
+To persist an edit, go through `update()` — or `updateData` first for an optimistic local change,
+then `update()`, then `reload()` if it fails. That composition is why the missing event rarely
+matters: `update()` emits `"updated"`, so lists reconcile a line later, once the server agrees.
+
+#### What a local edit leaves drifting
+
+`updateData` keeps the _record_ right everywhere — the instance is identity-mapped, so every
+observer of it re-renders — but it cannot keep _list-level_ facts right, because those are the
+server's to answer. Whether a record still matches a filtered list's query, or which page it belongs
+on, is exactly what a refetch is for, and a refetch would overwrite the local edit.
+
+In practice this is narrower than it sounds, because it depends on who owns ordering:
+
+- **A table owns it reactively.** `TableModel` derives `clientFilteredRows` and `displayRows` as
+  computeds over the rows, so a local edit re-sorts and re-filters immediately. This is the common
+  case and it needs nothing.
+- **A store's `sort` does not.** It is applied inside the fetch closure, so a collection sorted by
+  the store and rendered directly stays in its fetched order until something refetches.
+- **Server-side filtering and pagination cannot.** A collection fetching `search({ status:
+"active" })` keeps listing a record you locally set to `archived`.
+
+Where it does bite and you want lists to reconcile without persisting, say so explicitly with
+[`invalidateCollections()`](#store-methods-and-properties) — a local edit is precisely "a change no
+model event describes". Reach for it knowing it refetches, and so discards the edit.
+
+#### On a union, the patch is typed against the narrowed instance
+
+The patch type is derived from `this`, so it tracks whatever narrowing you have done. Un-narrowed,
+only the shared fields can be named; a variant's fields become reachable once you have proved the
+variant:
+
+```ts
+payment.updateData({ label: "Personal" }); // ✓ shared field
+payment.updateData({ digits: "4242" }); // ✗ not a shared field
+payment.as("card")?.updateData({ digits: "4242" }); // ✓
+payment.as("card")?.updateData({ routing: "0000" }); // ✗ belongs to the bank variant
+```
+
+That is what makes an invalid record unrepresentable rather than merely discouraged: you cannot
+graft one variant's fields onto another without first claiming to be that variant. The discriminator
+itself is never patchable — changing variant replaces the whole record, so it goes through `setData`.
+
+The types are the whole guard for variant fields. TypeScript's excess-property checking only
+reaches fresh object literals, so a widened `Record<string, unknown>` can smuggle a foreign
+variant's field through — and that is left unguarded on purpose, because nothing downstream is
+fooled: `toJSON` strips any field outside the active variant, which is what its `Value.Clean` call
+already exists to do.
+
+Two things _are_ re-checked at runtime, because they are the ones that survive to do damage: an
+identity key and the discriminator. Both say which record this is rather than what it holds, so
+patching either leaves a record that lies about its own identity. A patched key stays filed under
+the old one while `buildParams()` reports the new one, so `reload`/`update` would address a
+different record entirely; a patched discriminator makes the record match no variant, so `toJSON`
+emits a payload that is invalid against the schema. Neither is a no-op, and neither costs more than
+a comparison to catch.
 
 ## Discriminated unions — `makeUnionModel`
 
@@ -917,7 +1054,8 @@ import type {
   AnyModelClass, // a model class accepted as makeStore's first argument
   StoreConstructor, // the class returned by makeStore
   LazyArray, // the type of each collection
-  AnnotationsMap, // re-export from mobx, for getMobxAnnotations return type
+  AnnotationMapEntry, // re-export from mobx: what one entry of `annotations` may be
+  FieldAnnotations, // the shape of the `annotations` config option, keyed by schema field
 } from "@jayalfredprufrock/mobx-toolbox/model";
 ```
 
@@ -952,5 +1090,15 @@ import type {
 **`remove(model)` drops the model from every list on the store but keeps its identity.** Removing from a list is not the same as the record ceasing to exist, so a later payload for that key still updates the same instance. `model.delete()` forgets identity, because there the record really is gone.
 
 **A subclass may call `makeObservable(this, annotations)` but not pass an options object.** The generated base constructor already made the instance observable, and mobx rejects a second options argument with "Options can't be provided for already observable objects."
+
+**`updateData` is local-only by design, and its three omissions are load-bearing.** No `updated` event (a store would refetch and discard the edit), no load-stamp refresh (`cache` would treat an edited record as freshly loaded), and no patching identity keys (the identity map is keyed on them and `updateData` does not re-register). It is sugar for a hand-written `runInAction`, not a quieter `update()`.
+
+**`invalidateOn` is about lists, not records.** A mutated record needs no event to re-render, because the instance is identity-mapped and shared — the event exists for what a per-record change cannot express: membership, ordering, pagination. That is why `setData` and `updateData` stay silent while `update`/`create`/`delete` emit: the event belongs to the layer that talked to the server, not the layer that mutated the record. Loads never emit.
+
+**`updateData`'s union patch type is derived from `this`, not from the schema.** That is what makes narrowing flow into it: un-narrowed, `keyof this` exposes only the shared fields, and `is`/`as` widen `this` to a variant so its fields become patchable.
+
+**`updateData` re-checks only the identity keys and the discriminator at runtime, not every field.** Excess-property checking does not reach a widened patch object, so something has to hold underneath — but only where the failure survives. An unknown field is ignored by `toJSON` and a foreign variant's field is stripped by its `Value.Clean`, so guarding those would cost a lookup per key to prevent a no-op. A patched identity key desyncs the identity map from `buildParams`, and a patched discriminator serializes a payload invalid against the schema. Those two are guarded, and the check runs over the whole patch before any assignment, because a mobx action batches notifications but does not roll back.
+
+**A subclass can annotate only the members it adds, never a schema field.** Mobx forbids re-annotating, so `makeObservable(this, { tags: observable })` for a field the base already annotated throws "Cannot apply 'observable'". Changing a schema field's annotation is what the `annotations` config option is for. The reverse also holds: `annotations` reaches only schema fields, because it is applied by the base constructor — which runs before any subclass field initializer exists.
 
 **Request bodies are typed by what you supply.** `create` and `update` leave the body unconstrained so any shape attaches; the type callers see comes from the function you attach or annotate. A `Partial<Resource>` default was tried and reverted — TypeScript's weak-type rule rejects any body sharing no field names with the resource, and a rejected slot makes the whole config fall back to its constraint, silently removing every generated method.

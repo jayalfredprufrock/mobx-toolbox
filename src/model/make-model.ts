@@ -1,4 +1,11 @@
-import { action, makeObservable, observable, runInAction, toJS, type AnnotationsMap } from "mobx";
+import {
+  action,
+  makeObservable,
+  observable,
+  runInAction,
+  toJS,
+  type AnnotationMapEntry,
+} from "mobx";
 import { flattenVariants, type UnionSchema } from "../util/union-schema";
 import { WeakRefMap } from "../util/weak-ref-map";
 import * as T from "typebox";
@@ -82,6 +89,48 @@ type Resource<S extends ModelSchema> = T.Static<S>;
 export type KeySpec<S extends ModelSchema> = readonly (keyof Resource<S>)[] | false;
 
 /**
+ * Every field name across the schema. For a union this is the union of *all* variants' keys, not
+ * just the shared ones — `keyof` a union type resolves to the shared keys alone, but the
+ * constructor annotates every variant's fields, so a variant-specific field is a real field at
+ * runtime and must be nameable here.
+ */
+type FieldName<S extends ModelSchema> =
+  Resource<S> extends infer R ? (R extends unknown ? keyof R & string : never) : never;
+
+/**
+ * Per-field observability overrides, keyed by schema field. Anything left out keeps the default of
+ * `observable.ref`.
+ */
+export type FieldAnnotations<S extends ModelSchema> = Partial<
+  Record<FieldName<S>, AnnotationMapEntry>
+>;
+
+/** The identity-key names as a string union — `never` for a model that declared no identity. */
+type KeyName<K> = K extends readonly (infer Name)[] ? Name & string : never;
+
+/**
+ * What `updateData` accepts on a single-object model: any schema field except the identity keys.
+ *
+ * Keys are excluded because the identity map is keyed on them and `updateData` does not re-register
+ * — changing one locally would leave the instance filed under its old key, so `peek` and
+ * `instantiate` would hand back a record whose id disagrees with theirs.
+ */
+type ObjectPatch<S extends ModelSchema, K> = Partial<Omit<Resource<S>, KeyName<K>>>;
+
+/**
+ * What `updateData` accepts on a union model, resolved against the *narrowed* instance.
+ *
+ * `Self` is the polymorphic `this`, so an un-narrowed instance exposes only the shared fields and a
+ * patch can name only those. Passing through `is`/`as` first widens `this` to that variant, and its
+ * fields become patchable — which is what stops a patch from grafting one variant's fields onto
+ * another. The discriminator is excluded outright: changing it is a change of variant, which is a
+ * whole-record replacement and so belongs to `setData`.
+ */
+type UnionPatch<S extends ModelSchema, D extends PropertyKey, K, Self> = Partial<
+  Pick<Self, Exclude<Extract<FieldName<S>, keyof Self>, D | KeyName<K>>>
+>;
+
+/**
  * Whether the model's methods take a leading params argument. True for both `keys: false` and
  * `keys: []`, which leave nothing to build params from.
  *
@@ -155,6 +204,27 @@ export interface ModelConfig<S extends ModelSchema, K> {
    */
   keys: K;
   /**
+   * Override how individual schema fields are made observable. Every field defaults to
+   * `observable.ref`: a model is a projection of a server resource, replaced wholesale by
+   * `setData`, so reassigning a field is reactive but mutating the value inside it is not. That
+   * keeps `instantiate` cheap on a list of hundreds and stops in-place edits to nested data that
+   * the next load would silently discard.
+   *
+   * Name a field here when it really is edited in place — a draft, a locally-managed array:
+   *
+   * ```ts
+   * makeModel(UserSchema, { keys: ["id"], annotations: { tags: observable } })
+   * ```
+   *
+   * `false` opts a field out of observability altogether. This is the only way to change a schema
+   * field's annotation: mobx forbids re-annotating, so a subclass calling `makeObservable` for a
+   * field the base already annotated throws. Subclasses annotate their *own* new members that way
+   * — see the README.
+   *
+   * Only schema fields may be named; anything else is a typo and throws when the class is built.
+   */
+  annotations?: FieldAnnotations<S>;
+  /**
    * Fetch one record. Exposed as the static `Model.get(params)`, which returns the identity-mapped
    * instance, and used to derive the instance's `reload()` — so the endpoint is declared once.
    */
@@ -220,9 +290,20 @@ type ModelMethods<K, Cfg> = (Cfg extends { get: infer F }
 
 type ModelInstance<S extends ModelSchema, K, Cfg> = Resource<S> & {
   setData(data: Resource<S>): void;
+  /**
+   * Apply a partial, purely local edit — every field in one action, so reactions see one
+   * consistent change rather than a torn intermediate state.
+   *
+   * This is local only: no endpoint is called and no `updated` event is emitted, because a store
+   * hearing one would mark its lists stale and refetch, discarding the very edit just made. Nor is
+   * the load stamp refreshed — the record now disagrees with the server, and telling `cache`
+   * otherwise would let a stale record look fresh. To persist an edit, go through `update`.
+   *
+   * Identity keys are not patchable; a key change is a different record, not an edit to this one.
+   */
+  updateData(patch: ObjectPatch<S, K>): void;
   toJSON(): Resource<S>;
   buildParams(): KeyShape<S, K>;
-  getMobxAnnotations?(): AnnotationsMap<any, never>;
 } & ModelMethods<K, Cfg>;
 
 /**
@@ -333,6 +414,20 @@ function createModelClass(schema: ModelSchema, config?: ModelConfig<any, any>): 
   const isSingleton = hasIdentity && keys.length === 0;
   const isUnion = T.IsUnion(schema);
   const propertyNames = getPropertyNames(schema);
+
+  // Per-field observability overrides, resolved once here rather than per instance. A name that is
+  // not a schema field can only be a typo — mobx would report it as "Field not found" from inside a
+  // constructor, so catch it while the class is being built, where the config is in view.
+  const fieldAnnotations = (config?.annotations ?? {}) as Record<string, AnnotationMapEntry>;
+  for (const key of Object.keys(fieldAnnotations)) {
+    if (!propertyNames.includes(key)) {
+      throw new Error(
+        `[makeModel] annotations names "${key}", which is not a field of this schema. ` +
+          `Known fields: ${propertyNames.join(", ")}. ` +
+          `To annotate a member a subclass adds, call makeObservable in the subclass constructor.`,
+      );
+    }
+  }
 
   abstract class BaseModel {
     static readonly schema = schema;
@@ -445,7 +540,7 @@ function createModelClass(schema: ModelSchema, config?: ModelConfig<any, any>): 
           configurable: true,
           writable: true,
         });
-        annotations[key] = observable.ref;
+        annotations[key] = fieldAnnotations[key] ?? observable.ref;
       }
 
       // The constructor populates fields directly rather than through `setData`, so it carries its
@@ -458,11 +553,7 @@ function createModelClass(schema: ModelSchema, config?: ModelConfig<any, any>): 
         enumerable: false,
       });
 
-      makeObservable(this, {
-        ...annotations,
-        setData: action,
-        ...(this as any).getMobxAnnotations?.(),
-      });
+      makeObservable(this, { ...annotations, setData: action });
     }
 
     /**
@@ -478,6 +569,50 @@ function createModelClass(schema: ModelSchema, config?: ModelConfig<any, any>): 
       // Refresh the stamp: every load of an *existing* record lands here, as the constructor does
       // for a new one.
       (this as any)[LOADED_AT] = Date.now();
+    }
+
+    /**
+     * Apply a partial, purely local edit. One action, so several fields land as one change and no
+     * reaction ever observes a torn intermediate state.
+     *
+     * Deliberately not a mutation in the API sense: no endpoint, no `updated` event — a store
+     * hearing one would mark its lists stale and refetch, throwing away this very edit — and no
+     * load-stamp refresh, since the record now disagrees with the server and `cache` must not treat
+     * it as freshly loaded.
+     */
+    updateData(patch: any): void {
+      const data = this as any;
+      const discriminator = (this.constructor as { discriminator?: string }).discriminator;
+
+      // The types forbid four things here; only two of them are worth re-checking at runtime, and
+      // they are the two that say *which record this is* rather than what it holds:
+      //
+      // - an identity key: the record stays filed under its old key while `buildParams` starts
+      //   reporting the new one, so `reload`/`update`/`delete` would address a different record.
+      // - the discriminator: the record then matches no variant, and `toJSON` emits a payload that
+      //   is invalid against the schema.
+      //
+      // The other two need no guard, because nothing downstream is fooled: an unknown field is
+      // ignored by `toJSON`, and a foreign variant's field is stripped by its `Value.Clean` — which
+      // that call already exists to do. Checking either would cost a schema or variant lookup per
+      // key to prevent a no-op.
+      const identifying = (key: string): boolean => key === discriminator || keys.includes(key);
+
+      // Checked in full before anything is written: a mobx action batches notifications but does
+      // not roll back, so assigning as we go would leave a rejected patch half-applied *and* would
+      // notify observers of that torn state.
+      const patchKeys = Object.keys(patch);
+      for (const key of patchKeys) {
+        if (identifying(key)) {
+          throw new Error(
+            `[updateData] "${key}" identifies which record this is and cannot be patched. ` +
+              `To make this a different record, pass a whole resource to setData.`,
+          );
+        }
+      }
+      runInAction(() => {
+        for (const key of patchKeys) data[key] = patch[key];
+      });
     }
 
     /**
@@ -666,9 +801,25 @@ type VariantFields<S extends UnionSchema, D extends keyof Resource<S>, V> = Extr
 // the full instance, so the guard reveals the variant's fields on it.
 interface UnionModelMembers<S extends UnionSchema, D extends keyof Resource<S>, K> {
   setData(data: Resource<S>): void;
+  /**
+   * Apply a partial, purely local edit — every field in one action. Local only: no endpoint, no
+   * `updated` event, and no load-stamp refresh (see the note on the single-object form).
+   *
+   * On a union, the patch is typed against the *narrowed* instance. Un-narrowed, only the shared
+   * fields can be named; reach a variant's fields by narrowing first, which is what keeps a patch
+   * from grafting one variant's fields onto another:
+   *
+   * ```ts
+   * payment.updateData({ digits: ["4"] });        // ✗ not a shared field
+   * payment.as("card")?.updateData({ digits: ["4"] }); // ✓
+   * ```
+   *
+   * The discriminator is not patchable: changing variant replaces the whole record, so it goes
+   * through `setData`. Identity keys are not patchable either.
+   */
+  updateData(patch: UnionPatch<S, D, K, this>): void;
   toJSON(): Resource<S>;
   buildParams(): KeyShape<S, K>;
-  getMobxAnnotations?(): AnnotationsMap<any, never>;
   /** Type guard: true when the discriminator equals `value`, revealing that variant's fields on this same instance. */
   is<V extends Resource<S>[D]>(value: V): this is this & VariantFields<S, D, V>;
   /** This instance narrowed to the `value` variant (fields exposed directly), or `undefined` if it doesn't match. */
@@ -723,5 +874,5 @@ export function makeUnionModel(
   return ModelClass;
 }
 
-export type { AnnotationsMap };
+export type { AnnotationMapEntry };
 export { WeakRefMap };

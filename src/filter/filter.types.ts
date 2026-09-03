@@ -9,23 +9,40 @@
 export type SetFilterValue = string | number | boolean;
 
 /**
- * How multiple selections combine. `"any"` (the default) matches a value that is any of the
- * selections; `"all"` requires every selection to be present, which is only meaningful for
- * array-valued data — on a scalar, two selections under `"all"` match nothing.
+ * How multiple selections combine.
+ *
+ * | | matches a value that… | picking more |
+ * | ------- | ------------------------------------- | ------------ |
+ * | `"any"` | is any of the selections (the default) | widens |
+ * | `"all"` | carries every selection | narrows |
+ * | `"none"` | is none of the selections | narrows |
+ *
+ * `"all"` is only meaningful for array-valued data — on a scalar, two selections under it match
+ * nothing — which is what {@link SetFilterOptions.multiValue} exists to signal. `"none"` has no
+ * such restriction: excluding two statuses from a scalar column is an ordinary thing to want, so a
+ * UI can offer any/none unconditionally and gate only `"all"`.
+ *
+ * `"any"` and `"none"` ask the same question and differ only in the answer they want, which is why
+ * they share a branch in `matches` and why `intersecting` is simply `!== "any"`.
  */
-export type SetMatchMode = "any" | "all";
+export type SetMatchMode = "any" | "all" | "none";
 
 /** How a text filter compares its query against a value. */
 export type TextMatchMode = "contains" | "startsWith" | "equals";
 
 /**
- * What kind of comparison a serialized condition describes. The built-ins cover `"in"` / `"all"`
- * (set), `"range"`, `"contains"` / `"startsWith"` / `"equals"` (text) and `"search"` (a table's
- * cross-column search). Open to arbitrary strings so a custom filter can name its own, while the
- * built-in ops still autocomplete.
+ * What kind of comparison a serialized condition describes. The built-ins cover `"in"` / `"notIn"` /
+ * `"all"` (set), `"range"`, `"contains"` / `"startsWith"` / `"equals"` (text) and `"search"` (a
+ * table's cross-column search). Open to arbitrary strings so a custom filter can name its own,
+ * while the built-in ops still autocomplete.
+ *
+ * Negation is spelled as its own op rather than as a flag beside one. A `negate: boolean` on every
+ * condition would give two ways to say the same thing — `{ op: "eq", negate: true }` alongside the
+ * `"neq"` that already exists — and would put an orthogonal field on ops where it means nothing.
  */
 export type FilterOp =
   | "in"
+  | "notIn"
   | "all"
   | "range"
   | "contains"
@@ -133,8 +150,14 @@ export interface ValueFilter {
    *
    * Facet counts normally leave this filter out of their own tally, because the usual question is
    * "how many rows carry this value", which is the right one while picking widens. When picking
-   * narrows, the question becomes "how many rows would be left if I picked this too", so the count
-   * has to be taken against the current selection as well.
+   * narrows, that number promises rows the pick could never surface, so the count has to be taken
+   * against the current selection as well.
+   *
+   * What the resulting number *means* is then the filter's business rather than the counter's, and
+   * it differs by mode without the counting differing at all: for an intersecting pick it reads as
+   * "tick this too and you get that many", and for an excluding one — a set filter in `"none"` mode
+   * — the same tally is the rows currently admitted that carry the value, which is what ticking it
+   * would remove. Both are the predictive number for their mode.
    *
    * A boolean rather than the filter's own mode, so the rule for deciding it stays with the filter
    * that has the modes; whoever computes facets never has to interpret them.
@@ -185,7 +208,8 @@ export interface SetFilterOptions {
   counts?: boolean;
   /**
    * Declares that this filter's values are arrays, which is what makes `matchMode: "all"` mean
-   * anything — so a UI should only offer the any/all toggle when this is set.
+   * anything — so a UI should gate the "all" option on this. `"none"` needs no such gate: excluding
+   * values from a scalar column is ordinary, so any/none can always be offered.
    *
    * Advisory in the way `sortable` and `filterable` are: nothing is gated by it, and
    * `setMatchMode("all")` still works without it. It exists so the decision lives next to the

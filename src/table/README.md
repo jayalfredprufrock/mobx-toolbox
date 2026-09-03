@@ -883,10 +883,11 @@ previews what picking it gives you. Counts are cross-filtered by every other act
 the column's own; otherwise the list could never be widened again.
 
 One exception, and it is the filter that decides it: when picking **narrows** rather than widens
-(a `SetFilter` in `matchMode: "all"`), that number would describe a question the filter is no longer
-asking, promising more rows than ticking the box actually gives. There the count is the size of the
-intersection with what is already picked, so it stays exactly predictive — tick it and you get that
-many rows. A filter signals this with `intersecting`; the table never interprets match modes itself.
+(a `SetFilter` in `matchMode: "all"` or `"none"`), that number would describe a question the filter
+is no longer asking, promising more rows than ticking the box actually gives. There the count is
+taken against the current selection, so it stays exactly predictive — under `"all"` tick it and you
+get that many rows, under `"none"` tick it and you lose that many. A filter signals this with
+`intersecting`; the table never interprets match modes itself.
 
 A filter that groups values — a `BucketFilter` over score ranges, say — lists its **projected**
 domain here (grades, not every distinct score) while the column goes on showing and sorting the raw

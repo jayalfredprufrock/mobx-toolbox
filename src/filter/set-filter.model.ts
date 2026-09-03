@@ -26,8 +26,9 @@ export class SetFilter implements ValueFilter {
   selected = new Set<SetFilterValue>();
 
   /**
-   * How selections combine. Observable because it is *state*, not configuration — a UI can offer
-   * the toggle. Only meaningful for array-valued data; see {@link SetMatchMode}.
+   * How selections combine — any of, all of, or none of. Observable because it is *state*, not
+   * configuration: a UI can offer the toggle. See {@link SetMatchMode}; only `"all"` is restricted
+   * to array-valued data.
    */
   matchMode: SetMatchMode = "any";
 
@@ -50,8 +51,8 @@ export class SetFilter implements ValueFilter {
   readonly counts: boolean;
 
   /**
-   * Whether the values are arrays, and so whether a UI should offer the any/all toggle. Advisory
-   * only — see {@link SetFilterOptions.multiValue}.
+   * Whether the values are arrays, and so whether a UI should offer `"all"` as a match mode.
+   * `"none"` is not gated by it. Advisory only — see {@link SetFilterOptions.multiValue}.
    */
   readonly multiValue: boolean;
 
@@ -70,21 +71,29 @@ export class SetFilter implements ValueFilter {
   }
 
   /**
-   * True under `matchMode: "all"`, where each additional pick narrows the result instead of widening
-   * it — so facet counts have to be taken against the current selection rather than ignoring it.
-   * See {@link ValueFilter.intersecting}.
+   * True in every mode but `"any"` — under `"all"` and `"none"` alike each additional pick narrows
+   * the result instead of widening it, so facet counts have to be taken against the current
+   * selection rather than ignoring it. See {@link ValueFilter.intersecting}.
+   *
+   * The count that produces reads differently in the two modes, and both readings are the useful
+   * one. Under `"all"` it is "tick this too and you get that many rows". Under `"none"` the walk
+   * counts rows this filter currently *admits* that carry the value — which is exactly the rows
+   * ticking it would remove, so it reads as "excluding this drops that many". An already-excluded
+   * value therefore tallies zero, which is true: excluding it again removes nothing. Zero-count
+   * entries are kept in the facet list, so it can still be unticked.
    */
   get intersecting(): boolean {
-    return this.matchMode === "all";
+    return this.matchMode !== "any";
   }
 
   /**
-   * The selection as a server condition: `"in"` for the default match mode, `"all"` when every
-   * selection must be present. `undefined` while inactive.
+   * The selection as a server condition — `"in"`, `"all"` or `"notIn"`, following the match mode.
+   * `undefined` while inactive.
    */
   get condition(): FilterCondition | undefined {
     if (this.selected.size === 0) return undefined;
-    return { op: this.matchMode === "all" ? "all" : "in", value: [...this.selected] };
+    const op = this.matchMode === "all" ? "all" : this.matchMode === "none" ? "notIn" : "in";
+    return { op, value: [...this.selected] };
   }
 
   constructor(options?: SetFilterOptions) {
@@ -123,8 +132,10 @@ export class SetFilter implements ValueFilter {
       for (const s of this.selected) if (!values.has(s)) return false;
       return true;
     }
-    for (const v of values) if (this.selected.has(v)) return true;
-    return false;
+    // `"any"` and `"none"` ask the same question — is any selection present — and differ only in
+    // the answer they want, so they share the walk rather than inverting one another's result.
+    for (const v of values) if (this.selected.has(v)) return this.matchMode !== "none";
+    return this.matchMode === "none";
   }
 
   has(value: SetFilterValue): boolean {
@@ -160,7 +171,8 @@ export class SetFilter implements ValueFilter {
         )
       : undefined;
     this.select(selected);
-    this.matchMode = state.matchMode === "all" ? "all" : "any";
+    this.matchMode =
+      state.matchMode === "all" || state.matchMode === "none" ? state.matchMode : "any";
   }
 
   /**

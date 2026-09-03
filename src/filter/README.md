@@ -88,7 +88,7 @@ tags.matches(["urgent", "backlog"]); // true
 | ----------------- | ------------------------------------------- | ----------------------------------------------- |
 | `selected`        | `Set<SetFilterValue>`                       | Observable. Empty = inactive.                   |
 | `selectedCount`   | `number`                                    | What a filter chip shows.                       |
-| `matchMode`       | `"any" \| "all"`                            | Observable — see below.                         |
+| `matchMode`       | `"any" \| "all" \| "none"`                  | Observable — see below.                         |
 | `has(v)`          | `boolean`                                   |                                                 |
 | `toggle(v)`       |                                             |                                                 |
 | `select(vs?)`     |                                             | Replace the whole selection; no args clears it. |
@@ -96,7 +96,7 @@ tags.matches(["urgent", "backlog"]); // true
 | `options`         | `readonly SetFilterValue[] \| undefined`    | Declared domain. Config, not state.             |
 | `counts`          | `boolean`                                   | Opt into facet counts. Config, not state.       |
 | `multiValue`      | `boolean`                                   | Values are arrays. Config, not state.           |
-| `intersecting`    | `boolean`                                   | `matchMode === "all"`. Derived, not config.     |
+| `intersecting`    | `boolean`                                   | `matchMode !== "any"`. Derived, not config.     |
 | `value`           | `{ selected: SetFilterValue[]; matchMode }` |                                                 |
 
 `SetFilterValue` is `string | number | boolean` — primitives only, deliberately. The domain has to
@@ -106,18 +106,28 @@ one entry rather than two.
 
 ### `matchMode` is state, not config
 
-`"any"` (the default) matches a value that is _any_ of the selections; `"all"` requires every
-selection to be present. It is observable rather than constructor-only because a UI can reasonably
-offer the toggle.
+|          | matches a value that…                  | picking more |
+| -------- | -------------------------------------- | ------------ |
+| `"any"`  | is any of the selections (the default) | widens       |
+| `"all"`  | carries every selection                | narrows      |
+| `"none"` | is none of the selections              | narrows      |
 
-It is only meaningful for array-valued data. On a scalar, `"all"` with two selections matches
+Observable rather than constructor-only, because a UI can reasonably offer the toggle.
+
+`"none"` is exactly the negation of `"any"` over the same selection — "status is none of draft,
+archived" — and it is the reason there is no `negate` flag anywhere. A boolean beside the mode would
+have given two spellings for one thing (`negate` + `"any"` _is_ `"none"`), and on a condition it
+would have duplicated ops that already exist, like `"neq"`.
+
+**Only `"all"` is restricted to array-valued data.** On a scalar, `"all"` with two selections matches
 nothing and the list empties out — a dead end with no explanation for whoever clicked it. Declare
-`multiValue: true` and offer the toggle only where it does something:
+`multiValue: true` and gate that one option:
 
 ```tsx
-{
-  filter.multiValue && <MatchModeToggle filter={filter} />;
-}
+<MatchModeToggle
+  filter={filter}
+  modes={filter.multiValue ? ["any", "all", "none"] : ["any", "none"]}
+/>
 ```
 
 `multiValue` is advisory in the way a column's `sortable` and `filterable` are: nothing is gated by
@@ -127,9 +137,9 @@ declaration instead of as a `column.key === "tags"` switch inside a popover.
 
 The mode also changes what a facet count means, which is what `intersecting` exists to tell whoever
 is counting. Under `"any"` each pick **widens** the result, so a count answers "how many rows carry
-this value". Under `"all"` each pick **narrows** it, so that number would describe a question the
-filter is no longer asking — read literally, it promises more rows than ticking the box actually
-gives you. The count becomes the size of the intersection with what is already picked instead:
+this value". Under `"all"` and `"none"` each pick **narrows** it, so that number would describe a
+question the filter is no longer asking — read literally, it promises more rows than ticking the box
+actually gives you. The count is taken against the current selection instead:
 
 ```
 tags = ["urgent", "automated", ...]        matchMode: "all", "urgent" picked -> 16 rows
@@ -138,6 +148,20 @@ tags = ["urgent", "automated", ...]        matchMode: "all", "urgent" picked -> 
   automated    4   <- what you would have if you picked this too
                       (8 rows carry "automated"; only 4 of them also carry "urgent")
 ```
+
+Under `"none"` the very same tally reads the other way round, and is just as predictive — it counts
+the rows currently admitted that carry the value, which is what ticking it would **remove**:
+
+```
+status                                     matchMode: "none", "draft" excluded -> 4 rows
+
+  draft        0   <- already excluded; excluding it again removes nothing
+  live         3   <- exclude this too and you drop to 1
+  archived     1
+```
+
+A zero there is not a reason to hide the entry — zero-count facets are kept precisely so an
+over-narrowed filter can be undone.
 
 So under `"all"` a count is exactly predictive: tick the box and you get that many rows. Under
 `"any"` it stays the conventional facet number — rows carrying the value, among rows passing every
@@ -418,11 +442,11 @@ new TextFilter({ text: "ab", match: "startsWith" }).condition;
 // { op: "startsWith", value: "ab" }
 ```
 
-| Filter       | `op`                                     | `value`             |
-| ------------ | ---------------------------------------- | ------------------- |
-| `SetFilter`  | `"in"`, or `"all"` under that match mode | the selected values |
-| `DateFilter` | `"range"`                                | `{ min?, max? }`    |
-| `TextFilter` | its `match` — `"contains"` etc.          | the query text      |
+| Filter       | `op`                                                   | `value`             |
+| ------------ | ------------------------------------------------------ | ------------------- |
+| `SetFilter`  | `"in"`, `"all"` or `"notIn"`, following the match mode | the selected values |
+| `DateFilter` | `"range"`                                              | `{ min?, max? }`    |
+| `TextFilter` | its `match` — `"contains"` etc.                        | the query text      |
 
 It is deliberately **not** a query language. `FilterCondition` names the comparison and leaves the
 translation to you, so one filter works against a REST endpoint, a typed POST body, or SQL without

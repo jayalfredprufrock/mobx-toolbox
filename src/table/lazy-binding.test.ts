@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, test, vi } from "vite-plus/test";
 import { autorun, configure, observable, runInAction } from "mobx";
-import { lazyArray } from "../lazy/lazy";
+import { lazyArray, lazyPages } from "../lazy/lazy";
 import { SetFilter } from "../filter/set-filter.model";
 import { TableModel } from "./table.model";
 import type { RowData } from "./table.types";
@@ -654,5 +654,139 @@ describe('constructing under enforceActions: "always"', () => {
     expect(
       warningsWhileConstructing(() => new TableModel({ data: [{ id: 1, name: "alpha" }] })),
     ).toEqual([]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// lazyPages
+// ---------------------------------------------------------------------------
+
+/**
+ * A paged list is a `LazyArray` as far as the binding is concerned, so it needs nothing from the
+ * table: the rows reaction tracks `value` by identity, the source owns one array for its lifetime,
+ * and an appended page reaches the computeds through mobx rather than through `setData`. These pin
+ * that, so a change to either side that quietly breaks it fails here.
+ */
+describe("binding to a paged lazy", () => {
+  const pagedApi = (total: number) =>
+    vi.fn(({ cursor, limit }: { cursor?: string; limit: number }) => {
+      const start = cursor === undefined ? 0 : Number(cursor);
+      const items = Array.from({ length: Math.min(limit, total - start) }, (_, i) => ({
+        id: start + i,
+        name: `r${start + i}`,
+      }));
+      const next = start + items.length;
+      return Promise.resolve({ items, cursor: next < total ? String(next) : null, total });
+    });
+
+  test("derives loading, then follows every page with no re-application", async () => {
+    const fetch = pagedApi(100);
+    const feed = lazyPages(fetch, { pageSize: 2 });
+    const table = new TableModel({ data: feed, columns: ["id", "name"], sortMode: "manual" });
+    table.activate();
+    const dispose = autorun(() => void table.displayRows.length);
+
+    // nothing has arrived and nothing has failed
+    expect(table.loading).toBe(true);
+    expect(table.isEmpty).toBe(false);
+    expect(table.error).toBeUndefined();
+
+    await tick();
+
+    expect(table.loading).toBe(false);
+    expect(table.rows.length).toBe(2);
+    expect(table.lazy).toBe(feed);
+
+    const rowsArray = table.rows;
+    await feed.loadMore();
+
+    expect(table.rows.length).toBe(4);
+    expect(table.displayRows.length).toBe(4);
+    // the same array throughout: the page reached the computeds without a setData
+    expect(table.rows).toBe(rowsArray);
+
+    dispose();
+    table.dispose();
+  });
+
+  test("an appended page never costs a selection, with or without getRowId", async () => {
+    for (const getRowId of [undefined, (r: RowData) => r.id as number]) {
+      const feed = lazyPages(pagedApi(100), { pageSize: 2 });
+      const table = new TableModel({ data: feed, columns: ["id"], sortMode: "manual", getRowId });
+      table.activate();
+      const dispose = autorun(() => void table.displayRows.length);
+      await tick();
+
+      table.toggleRow(table.rows[0]!);
+      expect(table.selectedRows.map((r) => r.id)).toEqual([0]);
+
+      await feed.loadMore();
+      expect(table.rows.length).toBe(4);
+      expect(table.selectedRows.map((r) => r.id)).toEqual([0]);
+
+      dispose();
+      table.dispose();
+    }
+  });
+
+  test("a failed first page is fatal to the table; a failed append is not", async () => {
+    let fail = true;
+    const fetch = vi.fn(() =>
+      fail
+        ? Promise.reject(new Error("boom"))
+        : Promise.resolve({ items: [{ id: 1, name: "a" }], cursor: "1", total: 9 }),
+    );
+    const feed = lazyPages(fetch, { pageSize: 1 });
+    const table = new TableModel({ data: feed, columns: ["id"], sortMode: "manual" });
+    table.activate();
+    const dispose = autorun(() => void table.displayRows.length);
+    await tick();
+
+    expect(table.loading).toBe(false);
+    expect(table.error).toBeInstanceOf(Error);
+    expect(table.isEmpty).toBe(false); // never "no results" about a request that failed
+
+    fail = false;
+    await feed.reload();
+    expect(table.rows.length).toBe(1);
+    expect(table.error).toBeUndefined();
+
+    fail = true;
+    await feed.loadMore().catch(() => {});
+
+    // rows are still good rows: a failed append is the source's business, not the table's
+    expect(table.rows.length).toBe(1);
+    expect(table.error).toBeUndefined();
+    expect(feed.error).toBeInstanceOf(Error);
+
+    dispose();
+    table.dispose();
+  });
+
+  test("setQuery keeps the rows on screen until the new first page lands", async () => {
+    const fetch = vi.fn(({ cursor, query }: { cursor?: string; query?: { q: string } }) =>
+      Promise.resolve({
+        items: [{ id: 1, name: query?.q ?? "none" }],
+        cursor: cursor === undefined ? "1" : null,
+      }),
+    );
+    const feed = lazyPages(fetch, { pageSize: 1, query: { q: "a" } });
+    const table = new TableModel({ data: feed, columns: ["id", "name"], sortMode: "manual" });
+    table.activate();
+    const dispose = autorun(() => void table.displayRows.length);
+    await tick();
+
+    expect(table.rows[0]!.name).toBe("a");
+
+    feed.setQuery({ q: "b" });
+    // stale rows, deliberately: blanking a working table to refetch is what this avoids
+    expect(table.loading).toBe(false);
+    expect(table.rows[0]!.name).toBe("a");
+
+    await tick();
+    expect(table.rows[0]!.name).toBe("b");
+
+    dispose();
+    table.dispose();
   });
 });

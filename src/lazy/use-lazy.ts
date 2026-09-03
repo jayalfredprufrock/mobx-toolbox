@@ -2,12 +2,16 @@ import { useStable } from "../react-util/useStable";
 import {
   lazy,
   lazyArray,
+  lazyPages,
   type LazyFetch,
   type Lazy,
   type LazyArray,
   type LazyArrayOptions,
   type LazyOptions,
   type LazyOptionsWithInitialValue,
+  type LazyPages,
+  type LazyPagesFetch,
+  type LazyPagesOptions,
   type LoadedLazy,
   type LoadedLazyArray,
 } from "./lazy";
@@ -89,4 +93,38 @@ export function useLazyArray<T>(
   options?: LazyArrayOptions<T>,
 ): LazyArray<T> {
   return useStable(() => lazyArray(fetch, options), deps);
+}
+
+/**
+ * {@link useLazyArray} for a list that grows a page at a time — an infinite feed or a load-more
+ * list whose inputs are the component's own.
+ *
+ * ```tsx
+ * const feed = useLazyPages(
+ *   ({ cursor, limit, signal }) => api.listComments({ postId, cursor, limit, signal }),
+ *   [postId],
+ * );
+ * ```
+ *
+ * `deps` say *which* list this is, so changing them builds a new one from page one — the right
+ * answer for a different post, where continuing to show the previous one's comments while the next
+ * arrive would be a lie.
+ *
+ * For inputs that select *within* one list — a filter, a sort, a search box — reach for
+ * `setQuery` instead and leave `deps` alone. That keeps the same list and requeries it, so the rows
+ * stay readable while page one of the new query loads:
+ *
+ * ```tsx
+ * const feed = useLazyPages(fetchPage, [postId]);
+ * useEffect(() => feed.setQuery({ sort }), [feed, sort]);
+ * ```
+ *
+ * A structurally equal query is a no-op, which is what makes that effect safe to run every render.
+ */
+export function useLazyPages<T, Q = undefined>(
+  fetch: LazyPagesFetch<T, Q>,
+  deps: React.DependencyList,
+  options?: LazyPagesOptions<T, Q>,
+): LazyPages<T, Q> {
+  return useStable(() => lazyPages(fetch, options), deps);
 }

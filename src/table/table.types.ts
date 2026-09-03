@@ -118,10 +118,25 @@ export interface TableConfig<T> {
   /** Extra columns rendered on either side of the visible window. Default 1. */
   columnOverscan?: number;
   /**
-   * Stable row identity, used to key all row-scoped state (selection) and React row keys. Must be
-   * unique per row. Defaults to the row's index in the source array — stable across `appendRows`,
-   * reset (with the rest of row-keyed state) by `setData`. Provide a business key when row objects
-   * may be replaced by fresh instances that mean the same row.
+   * Stable row identity, used to key all row-scoped state (selection, expansion) and React row
+   * keys. Must be unique per row.
+   *
+   * Defaults to the row's own **object identity** — one id per distinct row object, held in a
+   * `WeakMap` for as long as that object is around. So this is dead config for rows that are
+   * identity-mapped model instances: the same record is the same object, and its state survives a
+   * reload, an append and a switch between keyed collections for free.
+   *
+   * Configure it when row objects are **replaced by fresh ones that mean the same row** — a
+   * plain-JSON refetch, or a `keys: false` model that is constructed per payload. Without it those
+   * rows are new objects with new ids, so `setData` finds none of the old ids and drops the
+   * selection with them.
+   *
+   * For an identity-mapped model, `getRowId: (r) => MyModel.identityKey(r)` is the right spelling
+   * rather than `r.id`, which is only there if the schema declared it.
+   *
+   * ⚠️ Uniqueness is yours to guarantee, and paginated sources are where it breaks: a record
+   * returned on two pages produces two rows sharing one id — one React key, and one selection
+   * toggle that hits both. Deduplicate at the source (`lazyPages`' `dedupeBy`).
    */
   getRowId?: (row: T, index: number) => RowId;
   /**

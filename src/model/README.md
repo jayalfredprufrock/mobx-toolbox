@@ -998,11 +998,15 @@ class SurveysWithCounts extends makeStore(SurveyModel) {
 
 ### What a store deliberately isn't
 
-- **Accumulating lists** ("load more") don't fit a lazy: its fetch returns the whole value, so
-  `reload()` and "next page" would be the same operation. Build those as a plain
-  `observable.array` plus a `loadMore()` action, and implement `ModelListener` to stay in step.
+- **Accumulating lists** ("load more"). A collection is a `lazyArray`, whose fetch returns the whole
+  value — so `reload()` and "next page" would be the same operation. The primitive for those is
+  [`lazyPages`](../lazy/README.md#lazypages), which splits them into three:
+  `loadMore()` appends, `reload()` starts over, `setQuery()` requeries. A store has no
+  `pagedCollection()` yet, so a paged list over a model means building one directly and
+  implementing `ModelListener` to stay in step with mutations.
 - **Paginated envelopes** — a collection's fetch must resolve to `R[]`, so a `{ items, total }`
-  response needs the extra fields written out of the fetch as a side effect.
+  response needs the extra fields written out of the fetch as a side effect. `lazyPages` takes the
+  envelope directly.
 
 ### Full example
 

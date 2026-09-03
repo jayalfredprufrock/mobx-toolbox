@@ -23,9 +23,9 @@ export interface TableBodyProps {
 /**
  * The virtualized body. Owns the scroll-sized spacer and the `translate3d` window offset, then maps
  * the rendered slice of rows through the `children` render-prop. Rows are keyed by their row id
- * (see `rowIds`): by default the original index in the source array — stable under sort/filter/
- * scroll and across `appendRows` — or the consumer's `getRowId`, which stays stable even when a
- * refetch replaces the row objects.
+ * (see `rowIds`): by default the row's own object identity — stable under sort, filter, scroll and
+ * `appendRows` — or the consumer's `getRowId`, which stays stable even when a refetch replaces the
+ * row objects with fresh ones.
  */
 export const TableBody: FC<TableBodyProps> = observer(({ className, style, children }) => {
   const table = useTableContext();

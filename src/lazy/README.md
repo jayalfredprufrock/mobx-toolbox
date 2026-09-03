@@ -4,8 +4,15 @@ Lazy-loading MobX observables that fetch their value on first observation and dr
 
 ## Naming
 
-The factories are `lazy` and `lazyArray`; the types are `Lazy`, `LazyArray`, `LazyApi`,
-`LazyOptions`, `LazyArrayOptions`, `LoadedLazy`, `LoadedLazyArray` and `InferLazy`.
+The factories are `lazy`, `lazyArray` and `lazyPages`; the types are `Lazy`, `LazyArray`,
+`LazyPages`, `LazyApi`, `LazyArrayApi`, `LazyPagesApi`, `LazyOptions`, `LazyArrayOptions`,
+`LazyPagesOptions`, `LoadedLazy`, `LoadedLazyArray` and `InferLazy`.
+
+All three are the same machine with a different answer to one question — where the value lives and
+what a new one does to it. `lazy` holds a box and replaces it, `lazyArray` owns an array and
+replaces its contents, `lazyPages` owns an array and _appends_ to it. Everything else — loading on
+observation, dropping when unobserved, aborting a superseded request, staleness, dependency
+tracking — is one implementation, so using all three costs barely more than using one.
 
 The old `lazyObservable*` / `LazyObservable*` spellings still export as deprecated aliases, and the
 old import path `mobx-toolbox/lazy-observable` still resolves, so a codebase can migrate a file at a
@@ -449,6 +456,208 @@ a seed it can't describe.
 Lists have none of this to worry about, since `undefined` is never a list. `{ initialValue:
 maybeRows }` is accepted and simply doesn't narrow.
 
+## `lazyPages`
+
+A list that grows a page at a time, for a dataset too large to hand over whole — an infinite feed,
+a load-more table, an activity log.
+
+```ts
+import { lazyPages } from "@jayalfredprufrock/mobx-toolbox/lazy";
+
+const feed = lazyPages(({ cursor, limit, signal }) => api.listSurveys({ cursor, limit, signal }));
+
+feed.value; // undefined until the first page lands, then every row loaded so far
+feed.loadMore(); // append the page after them
+feed.hasMore; // whether there is one
+```
+
+Everything about _when_ it loads is `lazy`'s, unchanged: the first page is fetched when something
+observes the list, a superseded request aborts, `keepOnUnobserved` decides how long the pages
+outlive their last observer, and `trackDependencies` makes an observable the fetch reads a reason to
+start the list over. `value` is one observable array for the lifetime of the lazy, exactly as
+[`lazyArray`](#lazyarray)'s is, so a page landing reaches everything watching the contents without
+the array being replaced.
+
+That makes it a `LazyArray` as far as anything reading rows can tell — **anything that accepts one
+accepts this**, the table's `data` included.
+
+### Three operations, not two
+
+A single-fetch lazy has room for two ideas: it has the value, or it needs it again. A paged list has
+three, and conflating any pair of them is the bug this type exists to prevent:
+
+|                   |                                            |                       |
+| ----------------- | ------------------------------------------ | --------------------- |
+| **`loadMore()`**  | the page after the ones held, appended     | reports `loadingMore` |
+| **`reload()`**    | the first page again, replacing everything | reports `refreshing`  |
+| **`setQuery(q)`** | a _different_ list — page one of it        | reports `refreshing`  |
+
+`refreshing` and `loadingMore` are mutually exclusive and both observe the list, so either is safe
+to gate a render on:
+
+```tsx
+const Feed = observer(() => {
+  if (!feed.loaded) return <Spinner />;
+  return (
+    <>
+      <List items={feed.value} />
+      {feed.loadingMore ? (
+        <Spinner />
+      ) : feed.hasMore ? (
+        <button onClick={() => void feed.loadMore()}>Load more</button>
+      ) : (
+        <EndOfResults total={feed.total} />
+      )}
+    </>
+  );
+});
+```
+
+`loadMore()` is written to be called speculatively, which is what makes it usable straight from a
+scroll handler: it resolves immediately when there is nothing more, and **joins** a request already
+in flight rather than starting a second — so a burst of scroll events costs one page, not one each.
+On a list holding nothing it fetches the first page, which is the same thing it always does: the
+page after the ones held.
+
+### Properties
+
+Beyond everything on a [`lazyArray`](#lazyarray):
+
+| Property      | Type                  | Description                                                        |
+| ------------- | --------------------- | ------------------------------------------------------------------ |
+| `loadingMore` | `boolean`             | A page request is running _behind rows already held_               |
+| `hasMore`     | `boolean`             | Whether another page exists — `true` before anything has loaded    |
+| `total`       | `number \| undefined` | Rows matching the query across every page, if a page said          |
+| `pages`       | `number`              | How many pages are held; `0` before the first, and after a restart |
+| `query`       | `Q`                   | Whatever `setQuery` was last given                                 |
+
+**Which of these observe the list matters.** `value`, `loaded`, `error` and `loadingMore` do, so a
+render gated on any of them keeps the list alive and triggers its first load. `hasMore`, `total`,
+`pages` and `fetching` do **not** — they describe the requests rather than the rows, so a footer
+rendering "1–100 of 4,382" cannot pin a list in memory or start a fetch just by being on screen.
+Same split, same reasoning, as [`fetching` versus
+`refreshing`](#what-you-read-is-what-keeps-a-lazy-alive).
+
+`pages` is the one that answers a question nothing else can: **did this list restart, or did it
+grow?** The array identity is stable by design, so it cannot say, and a row count only goes up
+either way. `pages` drops to `0` on a reload, a query change and a discard — which is what a view
+scrolled to page eight needs in order to go back to the top when the filters change.
+
+### The page a fetch is handed, and what it may return
+
+Every request carries both a `cursor` and an `offset`, so the same shape serves either kind of
+endpoint and you read whichever yours speaks:
+
+```ts
+lazyPages(({ cursor, offset, limit, page, query, signal }) => ...);
+```
+
+The result can be a bare array, or an envelope with whatever else the endpoint knows:
+
+```ts
+{ items, cursor: "eyJpZCI6NDJ9" }   // cursor pagination
+{ items, total: 4382 }               // offset pagination
+{ items, hasMore: false }            // an endpoint that just says
+[row, row, row]                      // an endpoint that returns rows and nothing else
+```
+
+`hasMore` is resolved from whichever of those arrived, in this order:
+
+1. **An empty page ends the list**, whatever else it claims. Trusting `hasMore: true` alongside zero
+   rows is what turns a server bug into a request loop, and anything driving `loadMore()` off a
+   scroll position would spin it as fast as the event loop allows.
+2. An explicit `hasMore`.
+3. A `cursor` field, if the envelope carried one — `null` means the end. The field being **present**
+   is what makes it authoritative; an absent `cursor` says nothing.
+4. A `total`, if one has been reported: whether the rows held reach it.
+5. Otherwise a short page is the last page. An endpoint whose final page happens to be exactly
+   `pageSize` long therefore costs one extra request, which comes back empty and ends it.
+
+### Options
+
+Every [`lazy` option](#options) except two, plus three of its own:
+
+```ts
+lazyPages(fetch, {
+  pageSize: 50, // rows per request, sent as `limit` — default 50
+  query: { status: "draft" }, // the query the first page is fetched with
+  dedupeBy: (row) => row.id, // identity, to drop a record a later page repeats
+  deep: false,
+  keepOnUnobserved: { for: 10_000 },
+  trackDependencies: { throttle: 300 },
+  debugName: "feed",
+});
+```
+
+**`dedupeBy` is worth setting** for anything served by cursor over a non-unique sort key, or by
+offset while rows are being inserted. Both hand back a record already held, and the duplicate is not
+harmless: a table keys its rows by identity, so two entries for one record render two rows sharing a
+React key and one selection toggle that hits both. For a model-backed list, `dedupeBy:
+SurveyModel.identityKey` is exactly this. Deduplication never shortens the list early — `hasMore` is
+resolved from the page's _own_ row count, so a page made entirely of records already held is still a
+page the server had.
+
+`pageSize` doubles as the fallback for `hasMore`, so it should match what the server actually
+returns.
+
+Two options are **missing**, and both are missing for a reason:
+
+- **`initialValue`** — a seed cannot say which cursor follows it, so it could be listed but never
+  continued. `set(rows)` says the same thing honestly: these rows, all of them, and no page after
+  them (`hasMore` goes `false`).
+- **`reloadEvery`** — a reload starts the list over at page one, so polling would yank a user who
+  had scrolled to page eight back to the top on a timer. Refresh a paged list on an event
+  (`invalidate()`), not on a clock.
+
+### `setQuery` — a different list, not a stale one
+
+The query decides which rows exist, so changing it is not a refresh of the rows on screen:
+
+```ts
+feed.setQuery({ status: "published", sort: "title" });
+```
+
+The list goes stale from page one and reloads now if anything is watching, or on the next
+observation if not — the same rule as `invalidate()`. The rows stay readable throughout, so a view
+keeps showing the previous results until the new first page lands rather than blanking. `pages`
+drops to `0` immediately, which is how a view can tell this apart from a page landing.
+
+A structurally equal query is a no-op, so this is safe to call from an effect that runs more often
+than the query actually changes:
+
+```tsx
+useEffect(() => feed.setQuery(query), [query]);
+```
+
+If you would rather drive it reactively, `trackDependencies` covers that instead — read your own
+observables inside the fetch and a change starts the list over, with `{ throttle: ms }` folding a
+burst of keystrokes into one request. `setQuery` exists for the parameters that are _pushed in_ from
+somewhere that has no observable to offer.
+
+### An append never settles staleness
+
+`invalidate()` followed by `loadMore()` in the same tick reloads: an append adds a page to rows that
+may already be stale, so it deliberately leaves the staleness flag alone. Without that, a scroll
+handler firing between a store event and its refetch would swallow the invalidation — the list would
+keep growing from a cursor into data it had been told to replace, with nothing to show anything was
+wrong.
+
+For the same reason, a `loadMore()` on an unobserved stale list leaves it stale, so the next
+`getOrLoad()` starts over rather than handing back what it has.
+
+### Failures leave the pages alone
+
+A failed append keeps every page already held, records the error, and keeps its cursor — so
+retrying asks for the page that failed rather than starting over:
+
+```ts
+await feed.loadMore().catch(() => toast.error("Couldn't load more"));
+```
+
+`loadMore()` rejects, like `getOrLoad()` and `reload()` do, because there is a caller to throw at. A
+first page that fails is the ordinary [failed-load](#what-it-throws-and-what-it-doesnt) case: nothing
+held, `error` set, and `<LazyObserver>` re-throws it to a boundary.
+
 ## `useLazy` / `useLazyArray`
 
 A lazy that belongs to one component, for an async read whose inputs are the component's own — a
@@ -574,6 +783,9 @@ import type {
   Lazy, // the object returned by lazy() and useLazy()
   LazyApi, // the half of it that doesn't depend on `loaded`
   LazyArray, // the object returned by lazyArray() and useLazyArray()
+  LazyArrayApi, // the half of that which doesn't depend on `loaded`
+  LazyPages, // the object returned by lazyPages()
+  LazyPagesApi, // the same, minus the `loaded` union
   LoadedLazy, // its `loaded: true` arm — what a seeded lazy() returns
   LoadedLazyArray, // the same for a seeded lazyArray()
   LazyOptions, // options for lazy()
@@ -581,6 +793,10 @@ import type {
   LazyInvalidateOptions, // options for invalidate()
   LazyFetch, // ({ signal }: LazyFetchOptions) => Promise<T>
   LazyFetchOptions, // what a fetch is handed — currently { signal }
+  LazyPagesOptions, // options for lazyPages()
+  LazyPagesFetch, // (request: LazyPageRequest) => Promise<LazyPageResult<T>>
+  LazyPageRequest, // LazyFetchOptions plus { cursor, offset, limit, page, query }
+  LazyPageResult, // T[], or { items, cursor?, total?, hasMore? }
   InferLazy, // InferLazy<typeof obs> → T
 } from "@jayalfredprufrock/mobx-toolbox/lazy";
 ```

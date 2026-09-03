@@ -55,11 +55,11 @@ useTable({ data: () => store.filteredRows });
 useTable({ data: store.activeUsers });
 ```
 
-| Shape          | Re-applied when                    | Gets it wrong by                                                                                                                                                              |
-| -------------- | ---------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `T[]`          | it's a different array than before | rebuilding the array inline each render — every parent render reads as a new dataset (harmless with `getRowId`, since state is intersected; without it, selection is cleared) |
-| `() => T[]`    | the observables it _read_ change   | reading something MobX isn't tracking — props, React state, a plain field — in which case it is never re-run and the table silently keeps the first dataset                   |
-| `LazyArray<T>` | its `value` changes                | nothing much — the table tracks the contents itself                                                                                                                           |
+| Shape          | Re-applied when                    | Gets it wrong by                                                                                                                                                                   |
+| -------------- | ---------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `T[]`          | it's a different array than before | rebuilding the array inline each render — every parent render reads as a new dataset (harmless as long as the row objects are the same ones, since state is intersected by row id) |
+| `() => T[]`    | the observables it _read_ change   | reading something MobX isn't tracking — props, React state, a plain field — in which case it is never re-run and the table silently keeps the first dataset                        |
+| `LazyArray<T>` | its `value` changes                | nothing much — the table tracks the contents itself                                                                                                                                |
 
 Two more things worth knowing about the getter form: it is captured once, so close over observables rather than render-scoped values, which would go stale; and it must be the _source_ of the rows, not a transform of a prop.
 
@@ -99,9 +99,19 @@ so neither behaviour is right. Keep `rows` as the dataset and filter through the
 
 ### Row-keyed state across a refresh
 
-With `getRowId`, `setData` **intersects** selection and expansion against the incoming rows instead of clearing them: ids that still resolve to a row stay, the rest drop. So a refetch, a poll, or a store invalidation arrives without costing the user their selection, while genuinely switching datasets still drops it, because none of the old ids resolve.
+`setData` **intersects** selection and expansion against the incoming rows rather than clearing them: ids that still resolve to a row stay, the rest drop. So a refetch, a poll, or a store invalidation arrives without costing the user their selection, while genuinely switching datasets drops it, because none of the old ids resolve.
 
-Without `getRowId` the ids are row _positions_, which must not silently attach to different rows, so state is cleared outright. **If your rows come from a source that refreshes, configure `getRowId`.**
+Which rows "still resolve" is the whole question, and it is decided by where the ids come from:
+
+| rows are…                            | id is                         | across a refetch                    |
+| ------------------------------------ | ----------------------------- | ----------------------------------- |
+| identity-mapped model instances      | the row's own object identity | survives — same record, same object |
+| plain JSON, or `keys: false` models  | the row's own object identity | drops — every row is a new object   |
+| anything, with `getRowId` configured | what you return               | survives if the key does            |
+
+So **`getRowId` is worth configuring, but it is not the difference between working and not** — see [row identity](#row-identity). Reach for it when row objects are replaced by fresh ones that mean the same row, which is the plain-JSON case. For an identity-mapped model it is dead config; if you want it written down anyway, `getRowId: (r) => MyModel.identityKey(r)` is the right spelling rather than `r.id`, which is only there if the schema declared it.
+
+⚠️ **Uniqueness is yours**, and a paginated source is where it breaks: a record served on two pages becomes two rows sharing one id — one React key, and one selection toggle that hits both. Deduplicate at the source ([`lazyPages`' `dedupeBy`](../lazy/README.md#options-2)).
 
 ### Binding to a lazy observable
 

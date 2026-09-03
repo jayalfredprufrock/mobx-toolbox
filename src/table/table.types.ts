@@ -1,4 +1,4 @@
-import type { LazyArray } from "../lazy/lazy";
+import type { LazyArray, LazyPages } from "../lazy/lazy";
 import type { FilterCondition, SetFilterValue } from "../filter/filter.types";
 
 // Re-exported so a consumer reading `table.filterQuery` gets the type from `/table` rather than
@@ -63,7 +63,30 @@ export interface TableConfig<T> {
    * With the first two, that same information is yours to supply — see
    * {@link UseTableConfig.loading} and {@link UseTableConfig.error}.
    */
-  data?: T[] | (() => T[]) | LazyArray<T>;
+  data?: T[] | (() => T[]) | LazyArray<T> | LazyPages<T, TableQuery>;
+  /**
+   * Who narrows and orders the rows: this table, or whatever produced them.
+   *
+   * `"client"` (the default) is the fully-loaded table — it sorts and filters the rows it holds.
+   * `"server"` says the rows arrive already narrowed and ordered, and flips three defaults at once:
+   *
+   * | | `"client"` | `"server"` |
+   * | --- | --- | --- |
+   * | `sortMode` | `"auto"` — sorted here | `"manual"` — `sorts` is state to send |
+   * | each column's `filterMode` | `"client"` | `"server"` — serialized into `filterQuery` |
+   * | `search.mode` | `"client"` | `"server"` |
+   *
+   * They are defaults, not a lock: a column may still say `filterMode: "client"` to narrow what
+   * came back, and `sortMode` / `search.mode` override individually.
+   *
+   * **Inferred when `data` is a paged lazy**, since a table holding one page of fifty thousand rows
+   * that sorts what it has is the failure this exists to prevent — it looks like it works. Set it
+   * explicitly for any other server-driven dataset: an array you refetch yourself, a query hook.
+   *
+   * Everything the server needs is then on {@link TableModel.query}, as one structurally-compared
+   * object.
+   */
+  mode?: "client" | "server";
   /** Fixed pixel height of every row (the virtualization contract). Default 40. */
   rowHeight?: number;
   /**
@@ -106,11 +129,15 @@ export interface TableConfig<T> {
   /** Whether expanding a row collapses all others. Default "multiple". */
   expandMode?: "single" | "multiple";
   /**
-   * How the sort list is applied. `"auto"` (default) sorts rows client-side through each
-   * column's value accessor / `compare`. `"manual"` treats `sorts` as pure reactive state and
-   * leaves row order untouched — react to `sorts`, refetch server-sorted rows, `setData`. The
-   * sort state APIs (`setSort`, `clearSort`, `sortDirection`, `sortIndex`) behave identically
-   * in both modes, so header sort UIs need no changes.
+   * How the sort list is applied. `"auto"` sorts rows client-side through each column's value
+   * accessor / `compare`. `"manual"` treats `sorts` as pure reactive state and leaves row order
+   * untouched — send them with the next request instead. The sort state APIs (`setSort`,
+   * `clearSort`, `sortDirection`, `sortIndex`) behave identically in both modes, so header sort
+   * UIs need no changes.
+   *
+   * Defaults to `"manual"` under {@link TableConfig.mode} `"server"` and `"auto"` otherwise, so
+   * this only needs setting to mix the two — a server-filtered table whose rows all fit, and which
+   * would rather sort them here than round-trip.
    */
   sortMode?: "auto" | "manual";
   /** Extra rows rendered above/below the visible window. Default 3. */
@@ -144,7 +171,8 @@ export interface TableConfig<T> {
    *
    * `mode: "server"` means the server does the searching: the query stops narrowing rows here and
    * becomes a `{ op: "search" }` entry in `filterQuery` instead. Per-column `searchable` is then
-   * irrelevant — the server decides what it searches.
+   * irrelevant — the server decides what it searches. Defaults to whichever
+   * {@link TableConfig.mode} resolves to.
    *
    * Debouncing is deliberately not offered. Like `onStateChange`, the cadence belongs to whoever
    * owns the input.
@@ -209,8 +237,38 @@ export interface TableStatus {
  * site, which is where the mistake is.
  */
 export type UseTableConfig<T> =
-  | (TableConfig<T> & { data?: LazyArray<T> } & { [K in keyof TableStatus]?: never })
+  | (TableConfig<T> & { data?: LazyArray<T> | LazyPages<T, TableQuery> } & {
+      [K in keyof TableStatus]?: never;
+    })
   | (TableConfig<T> & { data?: T[] | (() => T[]) } & TableStatus);
+
+/**
+ * Everything a server needs in order to answer for this table: which rows, in what order.
+ *
+ * Read it as *the work this table is deliberately not doing*. Both halves are already scoped that
+ * way, so nothing here duplicates what the table applied itself:
+ *
+ * - `filters` is {@link TableModel.filterQuery} — only the columns set to `filterMode: "server"`,
+ *   plus a server-mode search. A client-side filter narrows `rows` here and never appears.
+ * - `sorts` is empty unless `sortMode` is `"manual"`. Under `"auto"` the table has already sorted,
+ *   so sending them would ask for work that is done — and would make a client-side sort churn this
+ *   object and refetch for nothing.
+ *
+ * Compared structurally, which is the point of it being one object: its identity is stable while
+ * its contents are, so it works directly as a `useEffect` dependency or a query key and a column
+ * resize can't trigger a request.
+ *
+ * ```tsx
+ * const query = table.query;
+ * useEffect(() => void refetch(query), [query]);
+ * ```
+ */
+export interface TableQuery {
+  /** The server-side filter conditions, or `undefined` when none are active. */
+  filters: FilterCondition[] | undefined;
+  /** The sort list to apply server-side; empty when this table is sorting for itself. */
+  sorts: ColumnSort[];
+}
 
 /** Persisted per-column state (see TableState). `width` is the manual resize override; absent = automatic. */
 export interface ColumnState {
@@ -336,7 +394,7 @@ export interface ColumnConfig {
   hideable?: boolean;
   /** See BaseColumnDef.pinnable — advisory for header UIs, and proof against a snapshot. */
   pinnable?: boolean;
-  /** See BaseColumnDef.filterMode. Defaults to "client". */
+  /** See BaseColumnDef.filterMode. Defaults to the table's resolved `mode`. */
   filterMode?: FilterMode;
   /** See BaseColumnDef.field. Defaults to `key`. */
   field?: string;
@@ -473,8 +531,13 @@ export interface BaseColumnDef<T> {
    */
   searchable?: boolean | ((row: T) => string);
   /**
-   * Who applies this column's filter. `"client"` (the default) narrows rows here; `"server"` means
-   * whoever produced the rows already did.
+   * Who applies this column's filter. `"client"` narrows rows here; `"server"` means whoever
+   * produced the rows already did.
+   *
+   * Defaults to whichever {@link TableConfig.mode} resolves to, so a server-driven table needs no
+   * per-column annotation — and the default is *resolved through the table* rather than baked in
+   * when the column is built, so pointing an existing table at a paged source with `setData` flips
+   * its columns with it.
    *
    * The two sets are **disjoint**, which is what makes a mixed table cheap: a server-mode filter is
    * never evaluated client-side, so every filter is applied exactly once, in exactly one place. A

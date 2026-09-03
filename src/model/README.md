@@ -842,6 +842,93 @@ is an empty shell. When you know a key is finished with — an organization the 
 logout — `forget(key)` drops that list and unregisters it from the store, and `clear()` drops them
 all.
 
+### Accumulating lists — `pagedCollection`
+
+Some lists are too large to hand over whole. `pagedCollection` builds one that grows a page at a
+time, and it is a collection in every respect that matters — payloads become identity-mapped
+models, `invalidateCollections()` reaches it, a `created` event marks it stale, a deletion drops the
+record from it:
+
+```ts
+class Surveys extends makeStore(SurveyModel) {
+  all = this.collection(api.listSurveys);
+  feed = this.pagedCollection(({ cursor, limit, signal }) =>
+    api.listSurveys({ cursor, limit, signal }),
+  );
+}
+
+surveys.feed.loadMore();
+surveys.feed.hasMore;
+surveys.feed.total;
+```
+
+What comes back is a [`lazyPages`](../lazy/README.md#lazypages), so `loadMore()` appends,
+`reload()` starts over, and `setQuery()` requeries — the three operations a single-fetch collection
+has no room for. `createStore` declares them under their own key, since the fetch is a different
+shape:
+
+```ts
+export const surveys = createStore(SurveyModel, {
+  collections: { drafts: api.listDraftSurveys },
+  pagedCollections: { feed: { fetch: api.pageSurveys, pageSize: 25 } },
+});
+```
+
+**The fetch resolves a page, not the list** — a bare array, or an envelope carrying `cursor`,
+`total` or `hasMore`. The envelope is unwrapped, its items become models, and it is handed on
+intact, so `total` is readable off the list and the paging fields still decide `hasMore`. That is
+the whole of what a store had to add: `collection()` maps `R[] → M[]`, and this maps the `items`
+inside whatever shape they arrived in. The "paginated envelopes" caveat is gone with it.
+
+**Deduplication is on by default**, keyed on the model's `identityKey`. That is not a nicety. A
+record served on two pages — a cursor over a non-unique sort key, an offset while rows are being
+inserted — is _literally the same object_ under identity, so it would sit at two indices in one
+array. A table keys its rows by identity, so that means two rows sharing a React key and one
+selection toggle hitting both. Pass your own `dedupeBy` to override; a model with no identity gets
+none, since there is nothing to key on.
+
+**An invalidation restarts the list at page one.** That is what marking a _paged_ list stale has to
+mean: the membership and ordering of every page after the first depend on the first.
+
+Two options behave differently here, and both follow from pagination rather than being exceptions:
+
+| Option             | On a paged collection                                                                                                                                                                        |
+| ------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `sort`             | **Not available.** A comparator sees one page at a time, so ordering client-side would sort each page against itself and leave the list globally unordered. A store-level `sort` stops here. |
+| `optimisticCreate` | Prepends, since there is no comparator to place by. The `created` event restarts the list a moment later, and identity means the row moves rather than flickering.                           |
+
+### Component-scoped paged lists — `usePagedCollection`
+
+The same thing for a list whose parameters are the component's own, mirroring
+[`useCollection`](#component-scoped-collections--usecollection):
+
+```tsx
+const feed = usePagedCollection(
+  CommentModel,
+  ({ postId }, request) => api.listComments({ postId, ...request }),
+  { params: { postId }, pageSize: 25 },
+);
+```
+
+`params` restart the list when they change, leaving the rows readable while page one of the new one
+loads. Being component-scoped costs nothing global: identity and the event fan-out live on the model
+class, so an edit here shows up in the app-wide store and vice versa, and nothing needs disposing.
+
+**Driving a table with it is the whole of the consumer's code.** The table infers `mode: "server"`,
+pushes its query in, and asks for the next page as the render window nears the end — see
+[server-driven tables](../table/README.md#server-driven-tables):
+
+```tsx
+const feed = usePagedCollection<typeof SurveyModel, TableQuery>(SurveyModel, ({ query, ...page }) =>
+  api.listSurveys({ where: query.filters, sort: query.sorts, ...page }),
+);
+
+const table = useTable({ data: feed, columns });
+```
+
+Name the query type and it is typed inside the fetch. Reach for `params` alongside it for the inputs
+the _table_ doesn't own — a route param, a parent record.
+
 ### Component-scoped collections — `useCollection`
 
 When a list's parameters are the component's own — a filter, a search box, a route param — a shared
@@ -963,6 +1050,10 @@ const stats = useLazy((o) => api.getStudyStats({ id: studyId }, o), [studyId]);
 And for a value that is one record rather than a list, `useModel` in the component — see
 [above](#a-single-record-in-a-component--usemodel).
 
+Orthogonal to all of that: if the list is too large to arrive whole, reach for the **paged** form of
+whichever row applies — `pagedCollection` on a store, `usePagedCollection` in a component. Nothing
+else about where it lives changes.
+
 `collection()` has no `params` option on purpose. A store always has somewhere observable to read
 from — `this`, or module state — so reading it inside the fetch _is_ the feature. React state is the
 one place that isn't true, which is why `params` is a hook-only option.
@@ -973,6 +1064,7 @@ one place that isn't true, which is why `params` is a hook-only option.
 | --------------------------------------- | ----------------------------------------------------------------------- |
 | _your collection names_                 | `LazyArray<M>` — one per entry in `collections`, or per field           |
 | `collection(fetch, options?)`           | Build another list on this store                                        |
+| `pagedCollection(fetch, options?)`      | Build an accumulating list, fetched a page at a time                    |
 | `collectionMap(keys?, fetch, options?)` | Build a family of lists, one per key                                    |
 | `get(...args)`                          | Delegates to `Model.get`                                                |
 | `create(...args)`                       | Delegates to `Model.create`; inserts into lists with `optimisticCreate` |
@@ -998,15 +1090,11 @@ class SurveysWithCounts extends makeStore(SurveyModel) {
 
 ### What a store deliberately isn't
 
-- **Accumulating lists** ("load more"). A collection is a `lazyArray`, whose fetch returns the whole
-  value — so `reload()` and "next page" would be the same operation. The primitive for those is
-  [`lazyPages`](../lazy/README.md#lazypages), which splits them into three:
-  `loadMore()` appends, `reload()` starts over, `setQuery()` requeries. A store has no
-  `pagedCollection()` yet, so a paged list over a model means building one directly and
-  implementing `ModelListener` to stay in step with mutations.
-- **Paginated envelopes** — a collection's fetch must resolve to `R[]`, so a `{ items, total }`
-  response needs the extra fields written out of the fetch as a side effect. `lazyPages` takes the
-  envelope directly.
+- **Ordering a paged list.** A comparator only ever sees the page in front of it, so `sort` is not
+  among a [paged collection](#accumulating-lists--pagedcollection)'s options and a store-level
+  `sort` is not inherited by one. The order is the server's, for the same reason the filtering is.
+- **Jumping to a page.** Collections accumulate; they don't window. Discrete page-number
+  pagination is `collectionMap` keyed on the page number, which fetches each page as its own list.
 
 ### Full example
 
@@ -1063,6 +1151,9 @@ import type {
   CreateStoreConfig, // StoreConfig plus the `collections` createStore requires
   CollectionSpec, // a collections entry: a fetch, or a fetch plus that list's options
   CollectionOptions, // options for collection() — lazy options, invalidateOn, sort, optimisticCreate
+  PagedCollectionOptions, // options for pagedCollection() — lazyPages options, minus `sort`
+  PagedCollectionSpec, // a pagedCollections entry: a page fetch, or one plus that list's options
+  UsePagedCollectionOptions, // PagedCollectionOptions plus the params the hook feeds the fetch
   CollectionMap, // what collectionMap returns: call it with a key, plus forget/clear
   CollectionMapOptions, // CollectionOptions plus keyOf, for a free-form collectionMap key
   UseCollectionOptions, // CollectionOptions plus the params useCollection feeds the fetch
@@ -1070,6 +1161,7 @@ import type {
   AnyModelClass, // a model class accepted as makeStore's first argument
   StoreConstructor, // the class returned by makeStore
   LazyArray, // the type of each collection
+  LazyPages, // the type of each paged collection
   AnnotationMapEntry, // re-export from mobx: what one entry of `annotations` may be
   FieldAnnotations, // the shape of the `annotations` config option, keyed by schema field
 } from "@jayalfredprufrock/mobx-toolbox/model";
@@ -1108,6 +1200,12 @@ import type {
 **A subclass may call `makeObservable(this, annotations)` but not pass an options object.** The generated base constructor already made the instance observable, and mobx rejects a second options argument with "Options can't be provided for already observable objects."
 
 **`updateData` is local-only by design, and its three omissions are load-bearing.** No `updated` event (a store would refetch and discard the edit), no load-stamp refresh (`cache` would treat an edited record as freshly loaded), and no patching identity keys (the identity map is keyed on them and `updateData` does not re-register). It is sugar for a hand-written `runInAction`, not a quieter `update()`.
+
+**A paged collection registers exactly like any other, and that is what makes the event handling free.** `LazyPages` _is_ a `LazyArray`, so `remove`, `invalidateCollections` and `onModelEvent` reach it through the same `_collections` entry with no branching. The only field that differs is `sort`, which is forced to `undefined`: a comparator can only see one page, so a store-level sort must not reach it — which also means `optimisticCreate` prepends rather than placing.
+
+**`pagedCollection` spreads the envelope rather than rebuilding it.** `lazyPages` treats the _presence_ of a `cursor` key as authoritative for `hasMore`, so `{ ...page, items: mapped }` is load-bearing: rebuilding the object from named fields would drop a `cursor: null` and turn the last page into "a short page", which is a different rule.
+
+**Both collection hooks separate their overloads with `params?: never`.** Without it, options carrying `params` _and_ any other key resolved to neither overload — the no-params one is rejected only by an excess-property check, which TypeScript stops applying once another key matches, so the fetch's parameters lost their contextual type and read as implicit `any`. Nothing at runtime noticed. `collection-hooks.test-d.ts` pins it by leaving every fetch parameter un-annotated.
 
 **`invalidateOn` is about lists, not records.** A mutated record needs no event to re-render, because the instance is identity-mapped and shared — the event exists for what a per-record change cannot express: membership, ordering, pagination. That is why `setData` and `updateData` stay silent while `update`/`create`/`delete` emit: the event belongs to the layer that talked to the server, not the layer that mutated the record. Loads never emit.
 

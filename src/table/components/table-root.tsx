@@ -13,6 +13,26 @@ export interface TableRootProps {
   style?: React.CSSProperties;
   className?: string;
   /**
+   * Cap the table's height, in pixels, instead of letting it fill its parent.
+   *
+   * For putting something *below* the table — pagination, a caption, a second panel — without
+   * building a layout that reserves space for it. The table's own box ends at this height, so the
+   * next thing in flow follows it.
+   *
+   * It goes on the **viewport**, not the scroll container, and that distinction is the whole
+   * feature: the measured height is what drives the render window, the auto-fetch threshold and
+   * `<Table.Overlay>`'s size, so measuring an already-capped box is what keeps all of them
+   * consistent. Capping the scroll container instead — which is where a `style={{ maxHeight }}`
+   * lands — leaves `table.height` reporting the *uncapped* height, and every one of those goes
+   * wrong quietly: a 300px box that says it holds twenty rows renders twenty and fetches ahead as
+   * if it did.
+   *
+   * Fewer rows than the cap still leaves the box at the cap, with empty space below the last row —
+   * the table fills what it is given. For a bar that follows the rows on a short list, use
+   * `<Table.StatusBar>`, which sits inside the scroll container and needs none of this.
+   */
+  maxHeight?: number;
+  /**
    * Selection control used by `<Table.SelectionCell>` / `<Table.SelectAll>` when no render-prop is
    * given. Register it once here to capture your app's checkbox everywhere. Defaults to a native
    * `<input type="checkbox">`.
@@ -26,7 +46,7 @@ export interface TableRootProps {
  * the only structural piece consumers mount directly; header/body compose inside it.
  */
 export const TableRoot: FC<TableRootProps> = observer(
-  ({ table, children, style, className, checkbox }) => {
+  ({ table, children, style, className, maxHeight, checkbox }) => {
     const viewportRef = useRef<HTMLDivElement>(null);
     const scrollContainerRef = useRef<HTMLDivElement>(null);
 
@@ -67,6 +87,10 @@ export const TableRoot: FC<TableRootProps> = observer(
               {
                 width: "100%",
                 height: "100%",
+                // `height: 100%` with a `max-height` resolves to the smaller of the two, so the
+                // ResizeObserver below reports the capped height and everything derived from it
+                // follows. Nothing in the model needs to know about the cap.
+                maxHeight: maxHeight === undefined ? undefined : `${maxHeight}px`,
                 position: "relative",
                 "--table-row-height": `${table.rowHeight}px`,
               } as React.CSSProperties
@@ -76,8 +100,10 @@ export const TableRoot: FC<TableRootProps> = observer(
               ref={scrollContainerRef}
               role="table"
               // only a window of rows/columns is in the DOM, so assistive tech needs the true
-              // extent (+1 row for the header) and each row/cell carries its absolute index
-              aria-rowcount={table.displayRows.length + 1}
+              // extent (+1 row for the header) and each row/cell carries its absolute index.
+              // For a paged dataset that extent is the server's, not the count fetched so far —
+              // see `ariaRowCount`, which reports -1 when it is genuinely unknown.
+              aria-rowcount={table.ariaRowCount}
               aria-colcount={table.orderedColumns.length}
               aria-multiselectable={table.selectable || undefined}
               className={className}

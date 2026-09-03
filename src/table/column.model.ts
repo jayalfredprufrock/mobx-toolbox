@@ -169,9 +169,16 @@ export class ColumnModel {
     return this.config.filterable !== false && this.filter !== undefined && !this.selection;
   }
 
-  /** Who applies this column's filter. See {@link BaseColumnDef.filterMode}. */
+  /**
+   * Who applies this column's filter. See {@link BaseColumnDef.filterMode}.
+   *
+   * Falls back to the table's resolved mode rather than to a literal, and reads *through* the table
+   * rather than capturing it: columns are built before the data exists and `setData` can point an
+   * existing table at a paged source, so a default baked in at construction would leave those
+   * columns filtering client-side over one page of a server-driven dataset.
+   */
   get filterMode(): FilterMode {
-    return this.config.filterMode ?? "client";
+    return this.config.filterMode ?? this.table.filterMode;
   }
 
   /** The name this column's data goes by on the server. Defaults to `key`. */

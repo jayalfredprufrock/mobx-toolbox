@@ -3,7 +3,7 @@ import { autorun, configure, observable, runInAction } from "mobx";
 import { lazyArray, lazyPages } from "../lazy/lazy";
 import { SetFilter } from "../filter/set-filter.model";
 import { TableModel } from "./table.model";
-import type { RowData } from "./table.types";
+import type { RowData, TableConfig, TableQuery } from "./table.types";
 
 const tick = (ms = 0) => new Promise((r) => setTimeout(r, ms));
 
@@ -663,11 +663,24 @@ describe('constructing under enforceActions: "always"', () => {
 
 /**
  * A paged list is a `LazyArray` as far as the binding is concerned, so it needs nothing from the
- * table: the rows reaction tracks `value` by identity, the source owns one array for its lifetime,
- * and an appended page reaches the computeds through mobx rather than through `setData`. These pin
- * that, so a change to either side that quietly breaks it fails here.
+ * table to render: the rows reaction tracks `value` by identity, the source owns one array for its
+ * lifetime, and an appended page reaches the computeds through mobx rather than through `setData`.
+ *
+ * What the table *does* add is three reactions — push the query, fetch as the window nears the end,
+ * scroll back on a restart — and the mode defaults that keep it from sorting or filtering one page
+ * of a server-driven dataset. These pin all of it.
  */
 describe("binding to a paged lazy", () => {
+  /** A table with a measured viewport: the auto-fetch is gated on one. */
+  const measured = (config: TableConfig<any>) => {
+    const table = new TableModel(config);
+    table.setWidth(800);
+    table.setHeight(400); // 10 rows at the default 40px
+    table.activate();
+    const dispose = autorun(() => void table.displayRows.length);
+    return { table, dispose };
+  };
+
   const pagedApi = (total: number) =>
     vi.fn(({ cursor, limit }: { cursor?: string; limit: number }) => {
       const start = cursor === undefined ? 0 : Number(cursor);
@@ -680,11 +693,8 @@ describe("binding to a paged lazy", () => {
     });
 
   test("derives loading, then follows every page with no re-application", async () => {
-    const fetch = pagedApi(100);
-    const feed = lazyPages(fetch, { pageSize: 2 });
-    const table = new TableModel({ data: feed, columns: ["id", "name"], sortMode: "manual" });
-    table.activate();
-    const dispose = autorun(() => void table.displayRows.length);
+    const feed = lazyPages(pagedApi(500), { pageSize: 40 });
+    const { table, dispose } = measured({ data: feed, columns: ["id", "name"] });
 
     // nothing has arrived and nothing has failed
     expect(table.loading).toBe(true);
@@ -694,14 +704,15 @@ describe("binding to a paged lazy", () => {
     await tick();
 
     expect(table.loading).toBe(false);
-    expect(table.rows.length).toBe(2);
+    expect(table.rows.length).toBe(40);
     expect(table.lazy).toBe(feed);
+    expect(table.pages).toBe(feed);
 
     const rowsArray = table.rows;
     await feed.loadMore();
 
-    expect(table.rows.length).toBe(4);
-    expect(table.displayRows.length).toBe(4);
+    expect(table.rows.length).toBe(80);
+    expect(table.displayRows.length).toBe(80);
     // the same array throughout: the page reached the computeds without a setData
     expect(table.rows).toBe(rowsArray);
 
@@ -709,19 +720,253 @@ describe("binding to a paged lazy", () => {
     table.dispose();
   });
 
+  test("mode is inferred from the source, and flips sorting, filters and search with it", () => {
+    const feed = lazyPages(pagedApi(500), { pageSize: 40 });
+    const filter = new SetFilter();
+    const { table, dispose } = measured({
+      data: feed,
+      columns: [{ key: "name", filter }, "id"],
+    });
+
+    expect(table.mode).toBe("server");
+    expect(table.sortMode).toBe("manual");
+    expect(table.column("name")?.filterMode).toBe("server");
+    expect(table.searchFilter.mode).toBe("server");
+
+    dispose();
+    table.dispose();
+  });
+
+  test("an explicit mode wins, and so does a per-column override", () => {
+    const feed = lazyPages(pagedApi(500), { pageSize: 40 });
+    const { table, dispose } = measured({
+      data: feed,
+      mode: "client",
+      columns: [{ key: "name", filter: new SetFilter() }],
+    });
+
+    expect(table.sortMode).toBe("auto");
+    expect(table.column("name")?.filterMode).toBe("client");
+
+    const other = lazyPages(pagedApi(500), { pageSize: 40 });
+    const second = measured({
+      data: other,
+      columns: [{ key: "name", filter: new SetFilter(), filterMode: "client" }, "id"],
+    });
+    expect(second.table.mode).toBe("server");
+    expect(second.table.column("name")?.filterMode).toBe("client");
+
+    dispose();
+    table.dispose();
+    second.dispose();
+    second.table.dispose();
+  });
+
+  test("mode follows a setData that points an array-backed table at a paged source", async () => {
+    const { table, dispose } = measured({
+      data: [{ id: 1, name: "a" }],
+      columns: [{ key: "name", filter: new SetFilter() }],
+    });
+
+    expect(table.mode).toBe("client");
+    expect(table.column("name")?.filterMode).toBe("client");
+
+    table.setData(lazyPages(pagedApi(500), { pageSize: 40 }));
+    await tick();
+
+    // the default was resolved through the table, not baked in when the column was built
+    expect(table.mode).toBe("server");
+    expect(table.column("name")?.filterMode).toBe("server");
+    expect(table.sortMode).toBe("manual");
+
+    dispose();
+    table.dispose();
+  });
+
+  test("pushes the query into the source, and only when it changes", async () => {
+    const seen: unknown[] = [];
+    const fetch = vi.fn(({ cursor, query }: { cursor?: string; query: TableQuery }) => {
+      seen.push(query);
+      const start = cursor === undefined ? 0 : Number(cursor);
+      const items = Array.from({ length: 50 }, (_, i) => ({
+        id: start + i,
+        name: `r${start + i}`,
+        kind: "x",
+      }));
+      // one page satisfies the 10-row window, so each query change is exactly one request
+      return Promise.resolve({ items, cursor: null, total: 50 });
+    });
+    const filter = new SetFilter();
+    const feed = lazyPages(fetch, { pageSize: 50 });
+    const { table, dispose } = measured({
+      data: feed,
+      columns: [{ key: "kind", filter }, "id", "name"],
+    });
+    await tick();
+
+    expect(seen[0]).toEqual({ filters: undefined, sorts: [] });
+
+    const before = fetch.mock.calls.length;
+    // a column resize is not a query change
+    table.column("id")?.setManualWidth(300);
+    await tick();
+    expect(fetch.mock.calls.length).toBe(before);
+
+    // a server-mode filter is
+    filter.toggle("x");
+    await tick();
+    expect(seen.at(-1)).toEqual({
+      filters: [{ field: "kind", op: "in", value: ["x"] }],
+      sorts: [],
+    });
+
+    // so is a sort, because `sortMode` resolved to manual
+    table.setSort("id", "desc");
+    await tick();
+    expect(seen.at(-1)).toMatchObject({ sorts: [{ key: "id", direction: "desc" }] });
+
+    dispose();
+    table.dispose();
+  });
+
+  test("query omits sorts the table is applying itself", () => {
+    const rows = [{ id: 2 }, { id: 1 }];
+    const { table, dispose } = measured({ data: rows, columns: ["id"] });
+
+    table.setSort("id", "asc");
+    // client mode: the rows are already in this order, so there is nothing to ask a server for
+    expect(table.query).toEqual({ filters: undefined, sorts: [] });
+    expect(table.displayRows.map((r) => r.id)).toEqual([1, 2]);
+
+    dispose();
+    table.dispose();
+  });
+
+  test("query keeps its identity while its contents are unchanged", () => {
+    const { table, dispose } = measured({ data: [{ id: 1 }], columns: ["id"], mode: "server" });
+
+    const first = table.query;
+    table.setWidth(900);
+    table.setScroll(0, 120);
+    table.toggleRow(table.rows[0]!);
+    // nothing a server would be asked about changed, so this is still the same object — which is
+    // what makes it usable as a useEffect dependency or a query key
+    expect(table.query).toBe(first);
+
+    table.setSort("id", "asc");
+    expect(table.query).not.toBe(first);
+
+    dispose();
+    table.dispose();
+  });
+
+  test("query identity is stable with no reaction armed and nothing observing", () => {
+    // Deliberately not activated: this pins `keepAlive` as the mechanism rather than the query
+    // reaction happening to observe the computed. A consumer reading `table.query` from an effect
+    // or a query key is in exactly this position.
+    const table = new TableModel({ data: [{ id: 1 }], columns: ["id"], mode: "server" });
+    table.dispose();
+
+    const first = table.query;
+    table.setWidth(900);
+    table.setScroll(0, 120);
+    expect(table.query).toBe(first);
+
+    table.setSort("id", "asc");
+    expect(table.query).not.toBe(first);
+    expect(table.query.sorts).toEqual([{ key: "id", direction: "asc" }]);
+  });
+
+  test("fetches the next page as the window nears the end, and stops when it runs out", async () => {
+    const feed = lazyPages(pagedApi(25), { pageSize: 10 });
+    const { table, dispose } = measured({ data: feed, columns: ["id"] });
+    await tick();
+
+    // 10 rows, a 10-row viewport: nothing below the window, so it keeps going
+    expect(table.rows.length).toBeGreaterThanOrEqual(20);
+
+    // scrolling to the end pulls the last partial page and then stops
+    table.setScroll(0, table.virtualHeight);
+    await tick();
+
+    expect(table.rows.length).toBe(25);
+    expect(feed.hasMore).toBe(false);
+
+    const calls = (feed as any).pages as number;
+    table.setScroll(0, table.virtualHeight);
+    await tick();
+    expect((feed as any).pages).toBe(calls); // nothing left to ask for
+
+    dispose();
+    table.dispose();
+  });
+
+  test("keeps fetching when a client-side filter rejects an entire page", async () => {
+    // 200 rows in pages of 10, of which only the first 5 survive the filter. So after page one the
+    // display rows stop growing entirely and `rowsToEnd` never moves — the exact case a thresholded
+    // boolean gets wrong, and the reason the trigger carries the page count alongside the distance.
+    const TOTAL = 200;
+    const fetch = vi.fn(({ cursor }: { cursor?: string }) => {
+      const start = cursor === undefined ? 0 : Number(cursor);
+      const items = Array.from({ length: Math.min(10, TOTAL - start) }, (_, i) => ({
+        id: start + i,
+        kind: start + i < 5 ? "keep" : "drop",
+      }));
+      const next = start + items.length;
+      return Promise.resolve({ items, cursor: next < TOTAL ? String(next) : null, total: TOTAL });
+    });
+    const filter = new SetFilter();
+    const feed = lazyPages(fetch, { pageSize: 10 });
+    const { table, dispose } = measured({
+      data: feed,
+      columns: [{ key: "kind", filter, filterMode: "client" }, "id"],
+    });
+    await tick();
+    filter.toggle("keep");
+    await tick(50);
+
+    // it walked the whole dataset looking for matches rather than stalling one page in
+    expect(feed.hasMore).toBe(false);
+    expect(feed.pages).toBe(TOTAL / 10);
+    expect(table.rows.length).toBe(TOTAL);
+    expect(table.displayRows.map((r) => r.id)).toEqual([0, 1, 2, 3, 4]);
+
+    dispose();
+    table.dispose();
+  });
+
+  test("does not fetch before the viewport is measured", async () => {
+    const fetch = pagedApi(500);
+    const feed = lazyPages(fetch, { pageSize: 10 });
+    const table = new TableModel({ data: feed, columns: ["id"] });
+    table.activate();
+    const dispose = autorun(() => void table.displayRows.length);
+    await tick();
+
+    // the first page comes from observation; the auto-fetch stays out of it until there is a
+    // viewport to measure a threshold against
+    expect(fetch.mock.calls.length).toBe(1);
+
+    table.setHeight(400);
+    await tick();
+    expect(fetch.mock.calls.length).toBeGreaterThan(1);
+
+    dispose();
+    table.dispose();
+  });
+
   test("an appended page never costs a selection, with or without getRowId", async () => {
     for (const getRowId of [undefined, (r: RowData) => r.id as number]) {
-      const feed = lazyPages(pagedApi(100), { pageSize: 2 });
-      const table = new TableModel({ data: feed, columns: ["id"], sortMode: "manual", getRowId });
-      table.activate();
-      const dispose = autorun(() => void table.displayRows.length);
+      const feed = lazyPages(pagedApi(500), { pageSize: 40 });
+      const { table, dispose } = measured({ data: feed, columns: ["id"], getRowId });
       await tick();
 
       table.toggleRow(table.rows[0]!);
       expect(table.selectedRows.map((r) => r.id)).toEqual([0]);
 
+      const before = table.rows.length;
       await feed.loadMore();
-      expect(table.rows.length).toBe(4);
+      expect(table.rows.length).toBeGreaterThan(before);
       expect(table.selectedRows.map((r) => r.id)).toEqual([0]);
 
       dispose();
@@ -730,61 +975,164 @@ describe("binding to a paged lazy", () => {
   });
 
   test("a failed first page is fatal to the table; a failed append is not", async () => {
-    let fail = true;
-    const fetch = vi.fn(() =>
-      fail
-        ? Promise.reject(new Error("boom"))
-        : Promise.resolve({ items: [{ id: 1, name: "a" }], cursor: "1", total: 9 }),
-    );
-    const feed = lazyPages(fetch, { pageSize: 1 });
-    const table = new TableModel({ data: feed, columns: ["id"], sortMode: "manual" });
-    table.activate();
-    const dispose = autorun(() => void table.displayRows.length);
+    let firstPageFails = true;
+    const fetch = vi.fn(({ cursor }: { cursor?: string }) => {
+      // page one obeys the flag; every append fails, which is what the table's own fetch-ahead
+      // will run into
+      if (cursor === undefined && firstPageFails) return Promise.reject(new Error("first"));
+      if (cursor !== undefined) return Promise.reject(new Error("append"));
+      return Promise.resolve({
+        items: Array.from({ length: 20 }, (_, i) => ({ id: i, name: `r${i}` })),
+        cursor: "20",
+        total: 100,
+      });
+    });
+    const feed = lazyPages(fetch, { pageSize: 20 });
+    const { table, dispose } = measured({ data: feed, columns: ["id"] });
     await tick();
 
     expect(table.loading).toBe(false);
     expect(table.error).toBeInstanceOf(Error);
     expect(table.isEmpty).toBe(false); // never "no results" about a request that failed
 
-    fail = false;
+    firstPageFails = false;
     await feed.reload();
-    expect(table.rows.length).toBe(1);
-    expect(table.error).toBeUndefined();
+    await tick(20);
 
-    fail = true;
-    await feed.loadMore().catch(() => {});
-
-    // rows are still good rows: a failed append is the source's business, not the table's
-    expect(table.rows.length).toBe(1);
-    expect(table.error).toBeUndefined();
+    // 20 rows with a 10-row viewport leaves fewer than a screenful below the window, so the table
+    // asked for the next page on its own initiative — and it failed.
+    expect(table.rows.length).toBe(20);
     expect(feed.error).toBeInstanceOf(Error);
+    // the rows are still good rows: a failed append is the source's business, not the table's
+    expect(table.error).toBeUndefined();
+    expect(table.isEmpty).toBe(false);
 
     dispose();
     table.dispose();
   });
 
-  test("setQuery keeps the rows on screen until the new first page lands", async () => {
-    const fetch = vi.fn(({ cursor, query }: { cursor?: string; query?: { q: string } }) =>
-      Promise.resolve({
-        items: [{ id: 1, name: query?.q ?? "none" }],
-        cursor: cursor === undefined ? "1" : null,
-      }),
-    );
-    const feed = lazyPages(fetch, { pageSize: 1, query: { q: "a" } });
-    const table = new TableModel({ data: feed, columns: ["id", "name"], sortMode: "manual" });
-    table.activate();
-    const dispose = autorun(() => void table.displayRows.length);
+  test("stops fetching after a failed page, and scrolling does not retry it", async () => {
+    let calls = 0;
+    const fetch = vi.fn(({ cursor }: { cursor?: string }) => {
+      calls++;
+      if (cursor !== undefined) return Promise.reject(new Error("append"));
+      return Promise.resolve({
+        items: Array.from({ length: 20 }, (_, i) => ({ id: i })),
+        cursor: "20",
+        total: 1000,
+      });
+    });
+    const feed = lazyPages(fetch, { pageSize: 20 });
+    const { table, dispose } = measured({ data: feed, columns: ["id"] });
+    await tick(20);
+
+    expect(feed.error).toBeInstanceOf(Error);
+    const afterFailure = calls;
+
+    // a user nudging the scroll near a failing end must not mean a request per row
+    for (let y = 0; y < 200; y += 40) {
+      table.setScroll(0, y);
+      await tick(5);
+    }
+    expect(calls).toBe(afterFailure);
+
+    // an explicit retry is how it resumes — what a footer retry button does
+    await feed.loadMore().catch(() => {});
+    expect(calls).toBe(afterFailure + 1);
+
+    dispose();
+    table.dispose();
+  });
+
+  test("aria row count reports the dataset's extent, not the rows fetched so far", async () => {
+    const feed = lazyPages(pagedApi(4382), { pageSize: 20 });
+    const filter = new SetFilter();
+    const { table, dispose } = measured({
+      data: feed,
+      columns: [{ key: "name", filter, filterMode: "client" }, "id"],
+    });
+    await tick(20);
+
+    expect(table.displayRows.length).toBeLessThan(100);
+    expect(table.ariaRowCount).toBe(4383); // the server's total, plus the header row
+
+    // a client filter makes that total a claim about rows this table is hiding
+    filter.toggle("nothing-matches-this");
+    await tick(50);
+    expect(table.ariaRowCount).toBe(table.displayRows.length + 1);
+
+    dispose();
+    table.dispose();
+  });
+
+  test("aria row count is -1 while the extent is genuinely unknown", async () => {
+    const fetch = vi.fn(({ cursor }: { cursor?: string }) => {
+      const start = cursor === undefined ? 0 : Number(cursor);
+      // a cursor endpoint that reports no total: there is more, and nothing says how much
+      return Promise.resolve({
+        items: Array.from({ length: 20 }, (_, i) => ({ id: start + i })),
+        cursor: start < 200 ? String(start + 20) : null,
+      });
+    });
+    const feed = lazyPages(fetch, { pageSize: 20 });
+    const { table, dispose } = measured({ data: feed, columns: ["id"] });
+    await tick(50);
+
+    expect(feed.hasMore).toBe(true);
+    expect(table.ariaRowCount).toBe(-1);
+
+    // once it runs out, the loaded count *is* the extent
+    while (feed.hasMore) await feed.loadMore();
+    expect(table.ariaRowCount).toBe(table.displayRows.length + 1);
+
+    dispose();
+    table.dispose();
+  });
+
+  test("a restart scrolls back to the top", async () => {
+    const feed = lazyPages(pagedApi(500), { pageSize: 20 });
+    const { table, dispose } = measured({ data: feed, columns: ["id"] });
     await tick();
 
-    expect(table.rows[0]!.name).toBe("a");
+    table.setScroll(0, 600);
+    table.clearScrollRequest();
+    expect(table.scrollY).toBe(600);
 
-    feed.setQuery({ q: "b" });
-    // stale rows, deliberately: blanking a working table to refetch is what this avoids
-    expect(table.loading).toBe(false);
-    expect(table.rows[0]!.name).toBe("a");
-
+    await feed.reload();
     await tick();
-    expect(table.rows[0]!.name).toBe("b");
+
+    // parked past the end of one page would read as an empty table — and as "near the end", so the
+    // fetch-ahead would immediately refill everything a filter change had just removed
+    expect(table.scrollRequest).toEqual({ y: 0 });
+
+    dispose();
+    table.dispose();
+  });
+
+  test("rowsToEnd measures the distance below the render window", async () => {
+    const feed = lazyPages(pagedApi(500), { pageSize: 100 });
+    const { table, dispose } = measured({ data: feed, columns: ["id"] });
+    await tick();
+
+    expect(table.visibleRowCount).toBe(10);
+    expect(table.rowsToEnd).toBe(table.displayRows.length - 1 - table.lastRenderedIndex);
+    expect(table.rowsToEnd).toBeGreaterThan(0);
+
+    table.setScroll(0, table.virtualHeight);
+    expect(table.rowsToEnd).toBe(0);
+
+    dispose();
+    table.dispose();
+  });
+
+  test("an array-backed table drives nothing and reports no paged source", async () => {
+    const { table, dispose } = measured({ data: [{ id: 1 }], columns: ["id"], mode: "server" });
+    await tick();
+
+    expect(table.pages).toBeUndefined();
+    expect(table.lazy).toBeUndefined();
+    expect(table.mode).toBe("server"); // explicit, with no source to infer from
+    expect(table.rowsToEnd).toBe(0);
 
     dispose();
     table.dispose();

@@ -60,6 +60,7 @@ useTable({ data: store.activeUsers });
 | `T[]`          | it's a different array than before | rebuilding the array inline each render — every parent render reads as a new dataset (harmless as long as the row objects are the same ones, since state is intersected by row id) |
 | `() => T[]`    | the observables it _read_ change   | reading something MobX isn't tracking — props, React state, a plain field — in which case it is never re-run and the table silently keeps the first dataset                        |
 | `LazyArray<T>` | its `value` changes                | nothing much — the table tracks the contents itself                                                                                                                                |
+| `LazyPages<T>` | it appends a page                  | nothing much — and `mode: "server"` is inferred, so the table stops sorting and filtering rows it only partly holds                                                                |
 
 Two more things worth knowing about the getter form: it is captured once, so close over observables rather than render-scoped values, which would go stale; and it must be the _source_ of the rows, not a transform of a prop.
 
@@ -517,7 +518,7 @@ the smaller set and drops it permanently, because the table cannot tell "filtere
 
 `sortable: false` is advisory — it's for hiding header controls. The model's sort APIs are never gated, so `setSort` and `applyState` still work.
 
-For **server-side sorting**, set `sortMode: "manual"`. Sort state behaves identically (so header UIs need no changes) but row order is left untouched — react to `sorts`, refetch, and `setData`.
+For **server-side sorting**, set `sortMode: "manual"` — already the default under [`mode: "server"`](#server-driven-tables). Sort state behaves identically (so header UIs need no changes) but row order is left untouched — react to `sorts`, refetch, and `setData`.
 
 ## Selection
 
@@ -878,6 +879,10 @@ a client-side search over rows already in memory usually wants none.
 Set `filterMode: "server"` on a column and its filter stops narrowing rows here. Instead it
 serializes into `table.filterQuery` for you to send onward.
 
+It is already the default under [`mode: "server"`](#server-driven-tables), which also gives you
+`table.query` — `filterQuery` and the sort list as one structurally-compared object — so a whole
+server-driven table needs neither this annotation nor the reaction below.
+
 ```ts
 const table = useTable({
   data: rows,
@@ -945,6 +950,354 @@ useTable({ data: rows, search: { mode: "server" } });
 In server mode the query stops narrowing rows and becomes a `{ op: "search" }` condition instead.
 Per-column `searchable` then has no effect — the server decides what it searches.
 
+## Server-driven tables
+
+Most tables hold their whole dataset and narrow it here. For the few that can't, the table's job
+inverts: it stops sorting and filtering, and starts _describing_ what it wants so something else
+can. That is one option.
+
+```tsx
+const feed = usePagedCollection<typeof SurveyModel, TableQuery>(SurveyModel, ({ query, ...page }) =>
+  api.listSurveys({ where: query.filters, sort: query.sorts, ...page }),
+);
+
+const table = useTable({ data: feed, columns });
+```
+
+That is the whole of it — no reaction, effect, cursor, reset or mode flag. `data` accepts any
+[`lazyPages`](../lazy/README.md#lazypages); reach for
+[`usePagedCollection`](../model/README.md#component-scoped-paged-lists--usepagedcollection) (or
+`pagedCollection` on a store) when the rows are models, which additionally gets you identity,
+mutation reconciliation and cross-page deduplication.
+
+Binding `data` to a [`lazyPages`](../lazy/README.md#lazypages) is inferred as `mode: "server"`, and
+that inference is the point: a table holding one page of fifty thousand rows that sorts what it has
+**looks like it works**. Three defaults flip together:
+
+|                            | `"client"`             | `"server"`                                 |
+| -------------------------- | ---------------------- | ------------------------------------------ |
+| `sortMode`                 | `"auto"` — sorted here | `"manual"` — `sorts` becomes state to send |
+| each column's `filterMode` | `"client"`             | `"server"` — serialized into `filterQuery` |
+| `search.mode`              | `"client"`             | `"server"`                                 |
+
+Set `mode: "server"` yourself for any other server-driven dataset — an array you refetch, a query
+hook. Every default stays overridable: a column can say `filterMode: "client"` to narrow what came
+back, and `sortMode` / `search.mode` override individually.
+
+The defaults are resolved **through** the table rather than baked in when a column is built, so
+`setData` pointing an existing table at a paged source flips its columns with it.
+
+### `table.query` — what the server is being asked
+
+```ts
+table.query; // { filters: FilterCondition[] | undefined, sorts: ColumnSort[] }
+```
+
+Read it as _the work this table is deliberately not doing_. Both halves are already scoped that way,
+so nothing in it duplicates what the table applied itself:
+
+- `filters` is `filterQuery` — only the `filterMode: "server"` columns, plus a server-mode search. A
+  client-side filter narrows `rows` here and never appears.
+- `sorts` is empty unless `sortMode` is `"manual"`. Under `"auto"` the rows are already in that
+  order, so sending them would ask for work that's done — and would make every header click churn
+  this object and refetch for nothing.
+
+**Its identity is stable while its contents are.** That is the whole reason it is one object rather
+than two accessors: it works directly as a `useEffect` dependency or a query key, and a column
+resize, a scroll or a selection change can't trigger a request.
+
+```tsx
+const query = table.query;
+useEffect(() => void refetch(query), [query]);
+```
+
+(That takes structural equality _and_ mobx's `keepAlive` — an unobserved computed hands back a fresh
+object on every read, which would defeat it for exactly the callers this is for. `src/table/lazy-binding.test.ts`
+pins it against a model with nothing observing at all.)
+
+### `table.rowsToEnd` — the load-more trigger
+
+How many rows lie below the render window. A **magnitude, not a threshold**, and that is deliberate:
+a boolean (`nearEnd`) only changes on its edges, so the case that matters most stalls silently — a
+page lands, a client-side filter rejects most of it, the window is still near the end, the boolean
+never changed, and nothing asks for more. A number moves whenever rows arrive, so the same `if`
+fires again and the list keeps filling.
+
+```tsx
+useEffect(() => {
+  if (table.rowsToEnd < PAGE_SIZE) void loadMore();
+}, [table.rowsToEnd, table.rows.length]);
+```
+
+The second dependency covers the one gap a display-row count can't: a page whose rows are _entirely_
+filtered out doesn't move `rowsToEnd` at all, and `rows` is the dataset before filtering.
+
+Your comparison is the threshold, so there is no `endThreshold` option. It changes at row
+granularity rather than per frame (the window bounds are integers), so reading it in a render
+subscribes that component to about one update per row scrolled — the cadence `<Table.Body>` already
+re-renders at.
+
+### What the table does by itself with a paged source
+
+Nothing above is yours when `data` is a `lazyPages`. The table drives three things:
+
+1. **Pushes `query` into the source** on every change, via `setQuery`. The push runs immediately, so
+   the first request carries filters a restored snapshot already applied rather than going out bare.
+   Note the direction: the table owns the query — filters live on columns, sorts on the model,
+   search on the search filter — so the source is downstream of it and never needs a reference to
+   it.
+2. **Calls `loadMore()`** while fewer than a viewport's worth of rows remain below the window. Not
+   before the viewport is measured: with no height there is no answer to "how many rows fit", and
+   the guess over-fetches. Failures are caught, not rethrown — the table asked on its own
+   initiative, so there is no caller to reject at, and the error is on `pages.error`.
+3. **Scrolls back to the top when the source restarts** (`pages.pages` returning to `0`). A scroll
+   offset measured against fifty pages is meaningless against one, and leaving the user parked past
+   the end reads as "near the end" — so the fetch-ahead would immediately refill everything the
+   filter change just removed.
+
+**A failed page stops the automatic fetching.** Retrying on the table's own initiative would mean a
+request per row scrolled against an endpoint already answering with errors, and the user gets no say
+because nothing they can see is asking. Recovery is an explicit `loadMore()` — which is what a retry
+in the footer is:
+
+```tsx
+<Table.Gutter>
+  {pages.error ? (
+    <button onClick={() => void pages.loadMore().catch(() => {})}>Retry</button>
+  ) : pages.loadingMore ? (
+    <Spinner />
+  ) : (
+    !pages.hasMore && <EndOfResults total={pages.total} />
+  )}
+</Table.Gutter>
+```
+
+The cursor survives the failure, so a retry asks for the page that failed rather than starting over.
+
+**`aria-rowcount` reports the dataset's extent, not the rows fetched so far** — `pages.total` when
+one is known, and ARIA's `-1` ("unknown") when the list has more and nothing has said how much. A
+client-side filter falls back to the rows on screen, since the server's total counts rows this table
+is hiding.
+
+⚠️ **A client-side filter over a paged source will walk the whole dataset.** That follows from the
+fill-until-satisfied rule and is usually what you want — "keep fetching until you find me enough
+matches" — but it is unbounded: a filter matching five rows in fifty thousand fetches all fifty
+thousand, a page at a time. Use `filterMode: "server"` (the default here) for anything selective.
+
+### `<Table.Gutter>`
+
+One row's worth of space at the **end of the rows**, inside the scroll flow. You only see it by
+scrolling to the bottom of the list, which is exactly what it is for: the indicator for when you
+outrun the fetch.
+
+The table is already loading the next page as the window nears the end, so the only things left to
+say down there are "still coming" and "that was all":
+
+```tsx
+<Table.Gutter>
+  {feed.loadingMore ? <Spinner /> : !feed.hasMore && <EndOfResults total={feed.total} />}
+</Table.Gutter>
+```
+
+It claims `rowHeight` by default (`height` overrides), and rendering `null` children still occupies
+the strip — omit the element entirely for none at all. Sticky-left at the visible width like every
+other table-wide surface, so it stays put under horizontal scrolling; vertically it scrolls with the
+rows, because it is part of the list rather than part of the frame.
+
+It can't be built from `<Table.Overlay>`, which fills the viewport and stays centred in it — a
+message built on one would cover the rows instead of following them.
+
+**This is not a bar across the bottom of the table.** A persistent "Showing 1,000 of 2,000" should
+be on screen whether or not you have scrolled anywhere, and you generally want both: a count that
+is always visible _and_ a spinner at the tail. Nor is it a `<tfoot>`, which is a row — aligned to
+the columns, scrolling horizontally with them — where this is a strip that knows nothing about
+columns.
+
+Unlike `<Table.Empty>` / `<Table.Loading>` / `<Table.Error>` it is **ungated**: what goes here is
+what the _source_ knows, so the condition is yours. In practice the empty and error states need no
+guard, since both render an overlay across the viewport and there are no rows to scroll past to
+reach this.
+
+### `<Table.StatusBar>`
+
+A bar across the bottom of the table that stays on screen — "Showing 1,000 of 2,000", a Load all
+button, page controls. Render it after `<Table.Body>`, and after `<Table.Gutter>` if you have both
+(a normal pairing: a count that is always visible _and_ a spinner at the tail of the rows).
+
+```tsx
+<Table.StatusBar>
+  Showing {table.rows.length} of {table.pages?.total ?? table.rows.length}
+  {table.pages?.hasMore && <button onClick={() => void table.pages?.loadAll()}>Load all</button>}
+</Table.StatusBar>
+```
+
+It is sticky on **both** axes inside the scroll container, and one declaration covers every case —
+which is the reason it's a component rather than a sentence of docs. The strip flows at its natural
+position after the last row and is only _offset_ to the bottom edge when that position would be out
+of view:
+
+| rows                | where the bar lands                                      |
+| ------------------- | -------------------------------------------------------- |
+| fewer than fit      | directly under the last row — no overflow to displace it |
+| more than fit       | the bottom edge, visible while you scroll                |
+| scrolled to the end | settles into the flow space it reserved                  |
+
+The table still fills its container throughout; on a short list the leftover space is simply
+_below_ the bar. **That is what makes it work without reserving anything** — no flex column, no
+height arithmetic.
+
+The trade is the one every frozen bar makes: while displaced it paints over whichever row is at the
+bottom edge (hence its `z-index`). Nothing is permanently hidden — scroll to the end and it settles.
+
+Like `<Table.Gutter>` it is ungated, and unlike the gutter it is worth guarding: it carries a
+`z-index` and `<Table.Empty>` / `<Table.Loading>` / `<Table.Error>` do not, so "Showing 0 of 0"
+would paint over "Couldn't load".
+
+```tsx
+{
+  !table.error && !table.loading && <Table.StatusBar>…</Table.StatusBar>;
+}
+```
+
+**Not a `<tfoot>`.** That is a row — aligned to the columns, scrolling horizontally with them, one
+cell per column. This spans the table and knows nothing about columns, which is why it is sticky
+_left_ at the visible width rather than `virtualWidth` wide. `Table.Footer` is reserved for the row.
+
+### Reaching the source: `table.pages`
+
+The paged counterpart of [`table.lazy`](#reaching-the-lazy-tablelazy), for a component handed only a
+model — a footer rendered from context, a generic wrapper:
+
+```tsx
+const FooterStatus = observer(() => {
+  const { pages } = useTableContext();
+  if (!pages) return null;
+  if (pages.loadingMore) return <Spinner />;
+  return pages.hasMore ? null : <EndOfResults total={pages.total} />;
+});
+```
+
+`undefined` for any other dataset, which is also how a shared component tells a paged table from a
+fully-loaded one.
+
+### Doing it without `lazyPages`
+
+Every member above exists so the manual path is the same table with different plumbing — no parallel
+API. What you supply is what `lazyPages` would have owned: the cursor, `hasMore`, generation
+guarding, abort, and the two triggers.
+
+```tsx
+const SurveyTable = observer(({ orgId }: { orgId: string }) => {
+  const [rows, setRows] = useState<Survey[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [loadingMore, setLoadingMore] = useState(false);
+  const [error, setError] = useState<unknown>();
+  const [hasMore, setHasMore] = useState(true);
+
+  const cursor = useRef<string | undefined>(undefined);
+  const gen = useRef(0);
+  const inFlight = useRef(false);
+
+  const table = useTable({
+    columns,
+    mode: "server", // what detection would have inferred
+    data: rows,
+    loading,
+    error,
+    getRowId: (s) => s.id, // plain JSON: fresh objects per refetch, so identity ids won't do
+  });
+
+  const load = useCallback(
+    async (kind: "reset" | "more", query: TableQuery) => {
+      if (inFlight.current || (kind === "more" && !hasMore)) return;
+      const mine = kind === "reset" ? ++gen.current : gen.current;
+      inFlight.current = true;
+      if (kind === "reset") setLoading(true);
+      else setLoadingMore(true);
+      setError(undefined);
+      try {
+        const page = await api.listSurveys({
+          orgId,
+          where: query.filters,
+          sort: query.sorts,
+          cursor: kind === "reset" ? undefined : cursor.current,
+          limit: PAGE_SIZE,
+        });
+        if (mine !== gen.current) return; // a query change superseded this
+        cursor.current = page.nextCursor ?? undefined;
+        setHasMore(page.nextCursor != null && page.items.length > 0);
+        setRows((prev) => (kind === "reset" ? page.items : [...prev, ...page.items]));
+      } catch (e) {
+        if (mine === gen.current) setError(e);
+      } finally {
+        if (mine === gen.current) {
+          inFlight.current = false;
+          setLoading(false);
+          setLoadingMore(false);
+        }
+      }
+    },
+    [orgId, hasMore],
+  );
+
+  // filters, search and sorts all arrive through one dependency
+  const query = table.query;
+  useEffect(() => {
+    cursor.current = undefined;
+    setHasMore(true);
+    void load("reset", query);
+  }, [query, orgId]);
+
+  // the next page as the window nears the end
+  useEffect(() => {
+    if (table.rowsToEnd < PAGE_SIZE) void load("more", query);
+  }, [table.rowsToEnd, table.rows.length]);
+
+  return (
+    <Table.Root table={table}>
+      {/* header + body as usual */}
+      <Table.Gutter>{loadingMore ? <Spinner /> : !hasMore && <EndOfResults />}</Table.Gutter>
+    </Table.Root>
+  );
+});
+```
+
+With a query library it is shorter still, and the one wrinkle is ordering rather than API: the
+fetching hook needs `table.query`, so it has to run _after_ `useTable` — which means `data`,
+`loading` and `error` can't be passed inline. Hand them over afterwards instead; both are public
+actions, and they are exactly what `useTable` does with those props internally.
+
+```tsx
+const table = useTable({ columns, mode: "server", getRowId: (s) => s.id });
+const query = table.query;
+
+const { data, isPending, error, fetchNextPage, hasNextPage, isFetchingNextPage } = useInfiniteQuery(
+  {
+    queryKey: ["surveys", orgId, query], // stable identity, so this is a stable key
+    queryFn: ({ pageParam, signal }) =>
+      api.listSurveys({
+        orgId,
+        where: query.filters,
+        sort: query.sorts,
+        cursor: pageParam,
+        signal,
+      }),
+    initialPageParam: undefined as string | undefined,
+    getNextPageParam: (last) => last.nextCursor ?? undefined,
+  },
+);
+
+const rows = useMemo(() => data?.pages.flatMap((p) => p.items) ?? [], [data]);
+useEffect(() => table.setData(rows), [table, rows]);
+useEffect(() => table.setStatus(isPending, error), [table, isPending, error]);
+useEffect(() => {
+  if (table.rowsToEnd < PAGE_SIZE && hasNextPage && !isFetchingNextPage) void fetchNextPage();
+}, [table.rowsToEnd, table.rows.length, hasNextPage, isFetchingNextPage]);
+```
+
+`lazyPages` has no such ordering problem, which is the clearest illustration of why the query flows
+table → source: the source never needs the table, so nothing has to be sequenced.
+
 ## Columns exist before the data does
 
 Configured columns are built at construction, not when rows first arrive, so `column(key)`,
@@ -1006,14 +1359,44 @@ Restoring is tolerant of state that has been sitting in storage across app versi
 
 A filter can only be persisted if it exposes both `value` and `setValue` — the built-ins all do. A custom `ColumnFilter` offering neither is simply skipped; offering only one would be saveable but never restorable, so it's skipped too.
 
+## Height
+
+`<Table.Root>` fills its parent, which must therefore be sized — it measures itself and everything
+derived from that measurement (the render window, `visibleRowCount`, the fetch-ahead threshold,
+`<Table.Overlay>`'s size) follows from it.
+
+To cap it instead — for pagination, a caption, or a second panel _below_ the table, without
+building a layout that reserves space for them:
+
+```tsx
+<Table.Root table={table} maxHeight={480}>
+```
+
+The cap goes on the viewport, so the measurement is of the already-capped box and every derived
+value stays consistent. Fewer rows than the cap still leaves the box at the cap, with empty space
+below the last row; for a bar that follows the rows on a short list use
+[`<Table.StatusBar>`](#tablestatusbar), which lives inside the scroll container and needs none of
+this.
+
+⚠️ **`style={{ maxHeight }}` is not the same thing** and is worth knowing about, because it fails
+quietly. `style` lands on the _scroll container_, so the viewport goes on reporting its uncapped
+height: a 300px table then claims to hold twenty rows, renders twenty, fetches ahead as though it
+had them, and sizes its overlays for a box three times too tall. Use the prop.
+
 ## Scrolling
 
 ```ts
 table.scrollToRow(row); // row's block top to the viewport top
 table.scrollToRow(row, "bottom"); // its block end to the viewport bottom
+table.scrollToTop(); // back to the first row
 table.scrollToEnd(); // resolved at execution time — the live-tail follow position
 table.atEnd; // within one row of the end (e.g. to decide whether to keep following)
+table.rowsToEnd; // rows below the render window — the load-more trigger
+table.visibleRowCount; // how many rows one viewport holds
 ```
+
+`scrollToTop` is also what the model calls itself when a paged source restarts — see
+[server-driven tables](#what-the-table-does-by-itself-with-a-paged-source).
 
 The model records the intent; `<Table.Root>` executes it against the scroll container.
 
@@ -1021,22 +1404,28 @@ The model records the intent; `<Table.Root>` executes it against the scroll cont
 
 The library sets only structural CSS. Hook your styles onto:
 
-| Hook                                   | Where                | Meaning                                           |
-| -------------------------------------- | -------------------- | ------------------------------------------------- |
-| `[data-pinned="left"\|"right"]`        | header + body cells  | The cell is pinned to that side                   |
-| `[data-pinned-edge]`                   | header + body cells  | Innermost pinned cell — hang the seam shadow here |
-| `[data-pinned-corner="left"\|"right"]` | header + body cells  | Outermost pinned cell — round its outer corner    |
-| `[data-selected]` / `[data-expanded]`  | body rows            | Row is selected / expanded                        |
-| `[data-expansion]`                     | expansion row + cell | The detail panel                                  |
-| `[data-empty]`                         | empty surface        | The empty state                                   |
-| `[data-resizing]`                      | `.column-resizer`    | A resize drag is in progress                      |
-| `.table-header`, `.table-viewport`     | structure            | The sticky header group / outer wrapper           |
+| Hook                                   | Where                 | Meaning                                           |
+| -------------------------------------- | --------------------- | ------------------------------------------------- |
+| `[data-pinned="left"\|"right"]`        | header + body cells   | The cell is pinned to that side                   |
+| `[data-pinned-edge]`                   | header + body cells   | Innermost pinned cell — hang the seam shadow here |
+| `[data-pinned-corner="left"\|"right"]` | header + body cells   | Outermost pinned cell — round its outer corner    |
+| `[data-selected]` / `[data-expanded]`  | body rows             | Row is selected / expanded                        |
+| `[data-expansion]`                     | expansion row + cell  | The detail panel                                  |
+| `[data-empty]`                         | empty surface         | The empty state                                   |
+| `[data-resizing]`                      | `.column-resizer`     | A resize drag is in progress                      |
+| `.table-header`, `.table-viewport`     | structure             | The sticky header group / outer wrapper           |
+| `[data-table-gutter]`                  | the end-of-rows strip | Present on `<Table.Gutter>`                       |
+| `[data-table-status-bar]`              | the bottom bar        | Present on `<Table.StatusBar>`                    |
 
 Pinned cells must be opaque because they overlap scrolling ones. Set `--table-pinned-bg` to your surface color (it defaults to the system `Canvas`), and override it inside the header to match a header background.
 
 The library reads `--table-viewport-width` (set by `<Table.Root>`) for the pieces that pin horizontally, and exposes `--table-row-height`. `<Table.Empty>` also honors `--table-header-height` / `--table-header-gap` when computing its height.
 
 ## Empty, loading and error slots
+
+(For the strip _below_ the rows — "Loading more…", "Load more", "End of results" — see
+[`<Table.Gutter>`](#tablegutter), which is ungated because what goes there is what the source knows
+rather than something the table can work out.)
 
 All three gate themselves. Render them after `<Table.Body>` and they appear only when they should —
 and never two at once, since the states they read are mutually exclusive:
@@ -1128,7 +1517,7 @@ Drop a `<Table.Resizer>` inside a header cell. It handles the drag (on the corre
 | `search`                                      | the built-in cross-column search          |
 | `virtualWidth` / `virtualHeight`              | full scroll extent                        |
 
-Mutations all go through actions: `setData`, `appendRows`, `clearColumnFilters`, `setSort`/`setSorts`/`clearSort`, `toggleRow`/`selectAllRows`/`toggleAllRows`/`clearSelection`, `toggleRowExpanded`/`collapseAllRows`, `moveColumn`, `applyState`, `scrollToRow`/`scrollToEnd`.
+Mutations all go through actions: `setData`, `appendRows`, `clearColumnFilters`, `setSort`/`setSorts`/`clearSort`, `toggleRow`/`selectAllRows`/`toggleAllRows`/`clearSelection`, `toggleRowExpanded`/`collapseAllRows`, `moveColumn`, `applyState`, `scrollToRow`/`scrollToTop`/`scrollToEnd`.
 
 `ColumnModel`: `key`, `title`, `width`, `pinned`, `hidden`, `sortDirection`, `sortIndex`, `sortable`, `resizable`, `getValue(row)`, `setPinned`, `setHidden`, `setManualWidth`, `sortBy`, `clearSort`, `setConfig`, plus the filtering surface — `filter`, `filterable`, `facets`, `filterMode`, `field`, `filterCondition`, `searchable`, `searchValue(row)`, `clearFilter()`.
 

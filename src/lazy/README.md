@@ -519,6 +519,35 @@ in flight rather than starting a second — so a burst of scroll events costs on
 On a list holding nothing it fetches the first page, which is the same thing it always does: the
 page after the ones held.
 
+### `loadAll()` — the rest of it, in one go
+
+For "Load all 2,000" rather than "load more" — a status bar offering the remainder, or an export
+that needs the whole set in memory:
+
+```tsx
+<button onClick={() => void feed.loadAll()}>
+  Showing {feed.value?.length ?? 0} of {feed.total} — load all
+</button>
+```
+
+Pages arrive as they land, so that row count counts up while it runs, and `loadingMore` stays
+`true` throughout.
+
+A hand-written `while (list.hasMore) await list.loadMore()` does the same thing in the happy path.
+What this adds is **stopping**, in the two cases that loop cannot see — both of which run away
+without it:
+
+- **The list restarted underneath it.** A `setQuery`, a `reload`, a `created` event. The loop
+  carries on and walks the _new_ query to its end, which nobody asked for.
+- **Nothing is watching any more.** Unmount mid-walk and the loop keeps fetching into a list that
+  has already dropped its rows.
+
+A walk that _began_ with nothing observing runs to the end regardless — that is a caller asking on
+its own behalf, exactly as `getOrLoad()` fetches for one.
+
+A failed page rejects and leaves the pages already loaded in place, so a retry continues from where
+it stopped rather than starting over.
+
 ### Properties
 
 Beyond everything on a [`lazyArray`](#lazyarray):

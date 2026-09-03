@@ -1,11 +1,16 @@
 import * as T from "typebox";
 import {
   lazyArray,
+  lazyPages,
   type LazyFetch,
   type LazyFetchOptions,
   type LazyInvalidateOptions,
   type LazyArray,
   type LazyOptions,
+  type LazyPageRequest,
+  type LazyPageResult,
+  type LazyPages,
+  type LazyPagesOptions,
 } from "../lazy/lazy";
 import { action, makeObservable, runInAction } from "mobx";
 import { serializeKey, type ModelEventType, type ModelSchema } from "./make-model";
@@ -48,6 +53,29 @@ export interface CollectionOptions<M = any> extends LazyOptions {
    */
   discardOnInvalidate?: boolean;
 }
+
+/**
+ * Per-list options for a paged collection: every {@link LazyPagesOptions} option, plus the two
+ * store-level concerns that still apply.
+ *
+ * **`sort` is deliberately absent.** A comparator can only ever see the page in front of it, so
+ * ordering a paged list client-side would sort each page against itself and leave the list
+ * globally unordered — the order is the server's, and it is the server's for the same reason the
+ * filtering is. A store-level `sort` is therefore *not* inherited here; nothing silently applies it
+ * to one page at a time.
+ */
+export interface PagedCollectionOptions<M = any, Q = undefined>
+  extends LazyPagesOptions<M, Q>, Omit<CollectionOptions<M>, keyof LazyOptions | "sort"> {}
+
+/**
+ * How a paged collection is declared to `createStore`: its fetch alone, or its fetch plus that
+ * list's own options — the same two shapes as {@link CollectionSpec}.
+ */
+export type PagedCollectionSpec<R, M, Q = undefined> =
+  | ((request: LazyPageRequest<Q>) => Promise<LazyPageResult<R>>)
+  | ({
+      fetch: (request: LazyPageRequest<Q>) => Promise<LazyPageResult<R>>;
+    } & PagedCollectionOptions<M, Q>);
 
 export interface StoreConfig<M = any> {
   /**
@@ -132,6 +160,7 @@ export type ReservedCollectionName =
   | "remove"
   | "collection"
   | "collectionMap"
+  | "pagedCollection"
   | "invalidateCollections"
   | "onModelEvent"
   | "get"
@@ -144,6 +173,21 @@ export type ReservedCollectionName =
  */
 export interface CreateStoreConfig<R, M> extends StoreConfig<M> {
   collections: Record<string, CollectionSpec<R, M>> & {
+    [N in ReservedCollectionName]?: never;
+  };
+  /**
+   * Accumulating lists, declared alongside the ordinary ones and kept apart from them because they
+   * are a different shape of fetch: a page rather than the whole list. Each becomes a
+   * {@link LazyPages} on the instance, under its own name.
+   *
+   * ```ts
+   * createStore(SurveyModel, {
+   *   collections: { drafts: api.listDraftSurveys },
+   *   pagedCollections: { feed: ({ cursor, limit }) => api.listSurveys({ cursor, limit }) },
+   * });
+   * ```
+   */
+  pagedCollections?: Record<string, PagedCollectionSpec<R, M>> & {
     [N in ReservedCollectionName]?: never;
   };
 }
@@ -182,6 +226,34 @@ export type StoreInstance<M, MC, Cfg> = {
     fetch: LazyFetch<MC extends { schema: infer S extends ModelSchema } ? T.Static<S>[] : never[]>,
     options?: CollectionOptions<M>,
   ): LazyArray<M>;
+  /**
+   * Build an **accumulating** list on this store — one that grows a page at a time, for a dataset
+   * too large to hand over whole. Payloads become models and the list joins this store's mutation
+   * handling exactly as `collection()`'s does; what differs is that the fetch resolves one page:
+   *
+   * ```ts
+   * class Surveys extends makeStore(SurveyModel) {
+   *   feed = this.pagedCollection(({ cursor, limit, signal }) =>
+   *     api.listSurveys({ cursor, limit, signal }),
+   *   );
+   * }
+   *
+   * surveys.feed.loadMore();
+   * surveys.feed.total;
+   * ```
+   *
+   * `Q` is the query type the list is driven by — `TableQuery` when a table owns it. Deduplication
+   * defaults to the model's `identityKey`, and `sort` is not an option: see
+   * {@link PagedCollectionOptions}.
+   */
+  pagedCollection<Q = undefined>(
+    fetch: (
+      request: LazyPageRequest<Q>,
+    ) => Promise<
+      LazyPageResult<MC extends { schema: infer S extends ModelSchema } ? T.Static<S> : never>
+    >,
+    options?: PagedCollectionOptions<M, Q>,
+  ): LazyPages<M, Q>;
   /**
    * Build a *family* of lists on this store, one per key, for a resource that has to be fetched
    * separately per tenant, per parent record, or per page — keys you can't enumerate in advance.
@@ -231,6 +303,15 @@ export type StoreInstance<M, MC, Cfg> = {
   ): CollectionMap<K, M>;
 } & (MC extends { get: (...args: infer A) => any } ? { get(...args: A): Promise<M> } : {}) &
   (Cfg extends { collections: infer C } ? { [N in keyof C]: LazyArray<M> } : {}) &
+  // Each paged entry's query type is carried through from its own fetch, so a list a table drives
+  // types `query` inside that fetch rather than falling back to `undefined`.
+  (Cfg extends { pagedCollections: infer P }
+    ? {
+        [N in keyof P]: P[N] extends PagedCollectionSpec<any, any, infer Q>
+          ? LazyPages<M, Q>
+          : LazyPages<M>;
+      }
+    : {}) &
   (MC extends { create: (...args: infer A) => any } ? { create(...args: A): Promise<M> } : {});
 
 export type StoreConstructor<M, MC, Cfg> = {
@@ -259,7 +340,10 @@ export function makeStore<MC extends AnyModelClass, Cfg extends StoreConfig<Inst
 ): StoreConstructor<InstanceType<MC>, MC, Cfg>;
 export function makeStore(
   ModelClass: AnyModelClass,
-  config?: StoreConfig<any> & { collections?: Record<string, CollectionSpec<any, any>> },
+  config?: StoreConfig<any> & {
+    collections?: Record<string, CollectionSpec<any, any>>;
+    pagedCollections?: Record<string, PagedCollectionSpec<any, any>>;
+  },
 ): StoreConstructor<any, any, any> {
   type R = any;
 
@@ -300,6 +384,14 @@ export function makeStore(
         (this as any)[name] = this.collection(fetch, options);
       }
 
+      for (const [name, spec] of Object.entries(config?.pagedCollections ?? {})) {
+        if (name in this) {
+          throw new Error(`Collection "${name}" would shadow a member the store already has.`);
+        }
+        const { fetch, ...options } = typeof spec === "function" ? { fetch: spec } : spec;
+        (this as any)[name] = this.pagedCollection(fetch, options);
+      }
+
       // Held weakly, so registering never keeps this store alive.
       Model.addListener?.(this);
     }
@@ -330,6 +422,77 @@ export function makeStore(
         discardOnInvalidate: discardOnInvalidate ?? config?.discardOnInvalidate ?? false,
       });
       return lazy;
+    }
+
+    /**
+     * Build an **accumulating** list on this store: one that grows a page at a time rather than
+     * arriving whole. Payloads become models exactly as `collection()` does, and the list joins
+     * this store's mutation handling identically — `invalidateCollections()` reaches it, a
+     * `created` event marks it stale, a deletion drops the model from it.
+     *
+     * ```ts
+     * class Surveys extends makeStore(SurveyModel) {
+     *   feed = this.pagedCollection(({ cursor, limit, signal }) =>
+     *     api.listSurveys({ cursor, limit, signal }),
+     *   );
+     * }
+     * ```
+     *
+     * The fetch resolves a page rather than the list — a bare array, or an envelope carrying
+     * `cursor` / `total` / `hasMore`. The envelope is unwrapped, its items become models, and it is
+     * handed on intact, so the paging fields reach `lazyPages` and `total` is readable off the list.
+     * That is the whole of what a store had to add: `collection()` maps `R[] -> M[]`, and this maps
+     * the `items` inside whatever shape they arrived in.
+     *
+     * **Deduplication is on by default** for an identity-mapped model, keyed on `identityKey`.
+     * That is not a nicety: a record served on two pages — a cursor over a non-unique sort key, an
+     * offset while rows are being inserted — is *literally the same object* under identity, so it
+     * would appear twice in one array. A table keys its rows by identity, so that means two rows
+     * sharing a React key and one selection toggle hitting both. Pass your own `dedupeBy` to
+     * override, or a model with no identity gets none (there is nothing to key on).
+     *
+     * An invalidation restarts the list at page one, which is what marking a *paged* list stale has
+     * to mean: the membership and ordering of every page after the first depend on the first.
+     *
+     * See {@link PagedCollectionOptions} for why `sort` is not among the options.
+     */
+    pagedCollection(
+      fetch: (request: LazyPageRequest<any>) => Promise<LazyPageResult<R>>,
+      options?: PagedCollectionOptions<any, any>,
+    ): LazyPages<any, any> {
+      const { invalidateOn, optimisticCreate, discardOnInvalidate, dedupeBy, ...pagesOptions } =
+        options ?? {};
+
+      const list = lazyPages(
+        async (request) => {
+          const page = await fetch(request);
+          if (Array.isArray(page)) return page.map((item) => buildModel(item));
+          // Spread rather than rebuild: `lazyPages` treats the *presence* of `cursor` as
+          // authoritative for `hasMore`, so a key that arrived has to survive the trip even when
+          // its value is null.
+          return { ...page, items: page.items.map((item) => buildModel(item)) };
+        },
+        {
+          // deep: false — models are observable in their own right, so nothing needs converting.
+          deep: false,
+          // Identity is exactly the right key, and the failure it prevents is invisible otherwise.
+          ...(Array.isArray(Model.keys) ? { dedupeBy: (m: any) => Model.identityKey(m) } : {}),
+          ...pagesOptions,
+          ...(dedupeBy ? { dedupeBy } : {}),
+        },
+      );
+
+      this._collections.push({
+        lazy: list,
+        invalidateOn: invalidateOn ?? config?.invalidateOn ?? ["created"],
+        // Never a comparator: see `PagedCollectionOptions`. A store-level `sort` stops here rather
+        // than being applied to one page at a time — which also means `create()` prepends an
+        // optimistic row instead of placing it.
+        sort: undefined,
+        optimisticCreate: optimisticCreate ?? config?.optimisticCreate ?? false,
+        discardOnInvalidate: discardOnInvalidate ?? config?.discardOnInvalidate ?? false,
+      });
+      return list;
     }
 
     /**

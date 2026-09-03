@@ -569,9 +569,15 @@ function createLazy<T>(
       // The previous failure is cleared here: a request is running, so it is no longer the
       // current state of affairs.
       error.set(undefined);
-      // Inside the batch, so recording the kind and reading the cursor happen with everything
-      // else this request changes — `refreshing` and `loadingMore` must never disagree with
-      // `fetching` for even one derivation.
+      // Inside the batch for two reasons, and the second one is easy to lose in a refactor.
+      //
+      // Recording the kind and reading the cursor happen with everything else this request changes,
+      // so `refreshing` and `loadingMore` can never disagree with `fetching` for even one
+      // derivation. *And* a mobx action runs untracked — which is what keeps every paging box the
+      // pager touches here out of the dependency set when `trackDependencies` is on. Hoist this
+      // call out of the batch and the tracking reaction starts observing `cursor`, `pages` and
+      // `hasMore`, so every landed page invalidates it and refetches: an unbounded loop with no
+      // obvious cause. `lazy-pages.test.ts` pins it.
       paging = pager?.request(kind);
     });
 
@@ -1069,6 +1075,29 @@ export interface LazyPagesApi<T, Q = undefined> extends LazyArrayApi<T> {
    */
   loadMore(): Promise<IObservableArray<T>>;
   /**
+   * Fetch every remaining page, one after another, and resolve with the whole list.
+   *
+   * For "Load all 2,000" rather than "load more" — a bar that offers the rest of the dataset in one
+   * click, or an export that needs it in memory. Pages arrive as they land, so a row count bound to
+   * `value.length` and `total` counts up throughout, and `loadingMore` stays `true` for the
+   * duration.
+   *
+   * A hand-written `while (list.hasMore) await list.loadMore()` does the same thing in the happy
+   * path. What this adds is **stopping**, in the two cases that loop cannot see:
+   *
+   * - **The list restarted underneath it.** A `setQuery`, a `reload`, a `created` event: the loop
+   *   would carry on and walk the *new* query to its end, which nobody asked for. This stops as
+   *   soon as a page fails to extend the list.
+   * - **Nothing is watching any more.** If something was observing when the walk began — a mounted
+   *   table — and has stopped by the time a page lands, the view it was for is gone and the rest of
+   *   the walk is pure waste. A walk that began with nothing observing keeps going, because that is
+   *   a script asking on its own behalf, exactly as `getOrLoad()` fetches for one.
+   *
+   * Rejects if a page does, leaving the pages already loaded in place — so a retry continues from
+   * where it stopped rather than starting over.
+   */
+  loadAll(): Promise<IObservableArray<T>>;
+  /**
    * A page request is in flight *behind rows already held* — the append counterpart of
    * {@link LazyApi.refreshing}, and mutually exclusive with it.
    *
@@ -1333,6 +1362,33 @@ export function lazyPages<T, Q = undefined>(
       enumerable: true,
       value: (): Promise<IObservableArray<T>> =>
         state.hasMore ? request("more").then(() => items) : Promise.resolve(items),
+    },
+
+    loadAll: {
+      enumerable: true,
+      value: async (): Promise<IObservableArray<T>> => {
+        // Whether this walk is serving something on screen. Captured once: a walk that began
+        // unobserved is a caller asking on its own behalf and runs to the end, the same way
+        // `getOrLoad()` fetches for one.
+        const startedObserved = base.observed;
+
+        while (state.hasMore) {
+          const before = state.pages;
+          await request("more");
+
+          // Nothing was added. Either the list restarted under us — a `setQuery`, a `reload`, a
+          // discard, whose reset put `pages` back and whose generation bump discarded this page —
+          // or the page was empty. Both mean this walk is finished; carrying on would work through
+          // a list nobody asked about.
+          if (state.pages <= before) break;
+
+          // The view this was for has gone. Everything still held stays held; only the rest of the
+          // walk is abandoned.
+          if (startedObserved && !base.observed) break;
+        }
+
+        return items;
+      },
     },
 
     setQuery: {

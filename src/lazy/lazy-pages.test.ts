@@ -36,6 +36,16 @@ describe("lazyPages", () => {
     return fetch;
   };
 
+  /** The same, but each page takes a few ms — so a walk can be interrupted mid-flight. */
+  const pacedApi = (total: number, size: number, ms = 4) =>
+    vi.fn(async ({ cursor, limit }: LazyPageRequest<any>): Promise<LazyPageResult<Row>> => {
+      await new Promise((r) => setTimeout(r, ms));
+      const start = cursor === undefined ? 0 : Number(cursor);
+      const items = rows(start, Math.min(limit ?? size, total - start));
+      const next = start + items.length;
+      return { items, cursor: next < total ? String(next) : null, total };
+    });
+
   // -------------------------------------------------------------------------
   // it is a lazy first
   // -------------------------------------------------------------------------
@@ -184,6 +194,114 @@ describe("lazyPages", () => {
       page: 0,
     });
     expect(fetch.mock.calls[1]![0]).toMatchObject({ cursor: "3", offset: 3, limit: 3, page: 1 });
+  });
+
+  // -------------------------------------------------------------------------
+  // loadAll
+  // -------------------------------------------------------------------------
+
+  test("loadAll fetches every remaining page", async () => {
+    const fetch = cursorApi(50, 10);
+    const feed = lazyPages(fetch, { pageSize: 10 });
+
+    const value = await feed.loadAll();
+
+    expect(value.length).toBe(50);
+    expect(feed.pages).toBe(5);
+    expect(feed.hasMore).toBe(false);
+    expect(fetch).toHaveBeenCalledTimes(5);
+    expect(value).toBe(feed.value);
+  });
+
+  test("loadAll continues from the pages already held", async () => {
+    const fetch = cursorApi(50, 10);
+    const feed = lazyPages(fetch, { pageSize: 10 });
+
+    await feed.getOrLoad();
+    await feed.loadMore();
+    expect(feed.pages).toBe(2);
+    fetch.mockClear();
+
+    await feed.loadAll();
+    expect(feed.value?.length).toBe(50);
+    expect(fetch).toHaveBeenCalledTimes(3); // the three that were left
+  });
+
+  test("loadAll on an exhausted list is a no-op", async () => {
+    const fetch = cursorApi(10, 10);
+    const feed = lazyPages(fetch, { pageSize: 10 });
+    await feed.loadAll();
+    fetch.mockClear();
+
+    await feed.loadAll();
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  test("loadAll stops when the list restarts underneath it", async () => {
+    const fetch = pacedApi(500, 10);
+    const feed = lazyPages(fetch, { pageSize: 10 });
+    observe(() => void feed.value);
+    await new Promise((r) => setTimeout(r, 20));
+
+    const walk = feed.loadAll();
+    await new Promise((r) => setTimeout(r, 12));
+    const during = fetch.mock.calls.length;
+    // a filter change lands mid-walk
+    feed.setQuery({ q: "changed" } as never);
+    await walk;
+
+    // it stopped rather than going on to walk the whole of the *new* query, which nobody asked for
+    expect(fetch.mock.calls.length).toBeLessThanOrEqual(during + 2);
+    expect(fetch.mock.calls.length).toBeLessThan(50);
+    expect(feed.hasMore).toBe(true);
+  });
+
+  test("loadAll stops when the thing it was fetching for stops watching", async () => {
+    const fetch = pacedApi(1000, 10);
+    const feed = lazyPages(fetch, { pageSize: 10 });
+    const dispose = observe(() => void feed.value);
+    await new Promise((r) => setTimeout(r, 20));
+
+    const walk = feed.loadAll();
+    await new Promise((r) => setTimeout(r, 12));
+    const during = fetch.mock.calls.length;
+    dispose(); // the component unmounts
+    disposeList = disposeList.filter((d) => d !== dispose);
+    await walk;
+
+    // 100 pages were available; the walk abandoned the rest rather than fetching into a list
+    // nothing is looking at
+    expect(fetch.mock.calls.length).toBeLessThanOrEqual(during + 2);
+    expect(fetch.mock.calls.length).toBeLessThan(50);
+  });
+
+  test("loadAll started with nothing observing runs to the end", async () => {
+    const fetch = cursorApi(50, 10);
+    const feed = lazyPages(fetch, { pageSize: 10 });
+
+    // no observer at all: this is a caller asking on its own behalf, like getOrLoad()
+    await feed.loadAll();
+
+    expect(feed.value?.length).toBe(50);
+    expect(feed.hasMore).toBe(false);
+  });
+
+  test("loadAll rejects on a failed page and keeps what it had", async () => {
+    let calls = 0;
+    const fetch = vi.fn(({ cursor, limit }: LazyPageRequest<undefined>) => {
+      if (++calls === 3) return Promise.reject(new Error("boom"));
+      const start = cursor === undefined ? 0 : Number(cursor);
+      return Promise.resolve({ items: rows(start, limit), cursor: String(start + limit) });
+    });
+    const feed = lazyPages(fetch, { pageSize: 10 });
+
+    await expect(feed.loadAll()).rejects.toThrow("boom");
+
+    expect(feed.value?.length).toBe(20);
+    expect(feed.pages).toBe(2);
+    // the cursor survives, so a retry continues rather than starting over
+    await feed.loadMore();
+    expect(feed.value?.length).toBe(30);
   });
 
   // -------------------------------------------------------------------------
@@ -569,6 +687,58 @@ describe("lazyPages", () => {
     await Promise.resolve();
 
     expect(fetch).toHaveBeenCalledOnce();
+    expect(feed.pages).toBe(1);
+  });
+
+  test("a landed page does not re-trigger dependency tracking", async () => {
+    // The pager reads and writes `cursor`/`pages`/`hasMore` while a request starts. Those reads
+    // happen inside a mobx action, which is untracked — so they stay out of the tracking
+    // reaction's dependency set. If they ever leak in, every page that lands invalidates the
+    // reaction and refetches, forever.
+    const status = observable.box("draft");
+    const fetch = vi.fn(({ cursor, limit }: LazyPageRequest<undefined>) => {
+      void status.get();
+      const start = cursor === undefined ? 0 : Number(cursor);
+      return Promise.resolve({
+        items: rows(start, limit),
+        cursor: String(start + limit),
+        total: 1000,
+      });
+    });
+    const feed = lazyPages(fetch, { pageSize: 2, trackDependencies: true });
+
+    observe(() => void feed.value);
+    await new Promise((r) => setTimeout(r, 30));
+    expect(fetch).toHaveBeenCalledOnce();
+
+    await feed.loadMore();
+    await new Promise((r) => setTimeout(r, 30));
+    expect(fetch).toHaveBeenCalledTimes(2);
+    expect(feed.pages).toBe(2);
+
+    runInAction(() => status.set("live"));
+    await new Promise((r) => setTimeout(r, 30));
+
+    // exactly one refetch for the dependency change, and the list started over
+    expect(fetch).toHaveBeenCalledTimes(3);
+    expect(feed.pages).toBe(1);
+  });
+
+  test("setQuery costs exactly one request under dependency tracking", async () => {
+    const fetch = vi.fn(({ cursor, limit }: LazyPageRequest<{ a: number }>) => {
+      const start = cursor === undefined ? 0 : Number(cursor);
+      return Promise.resolve({ items: rows(start, limit), cursor: String(start + limit) });
+    });
+    const feed = lazyPages(fetch, { pageSize: 2, trackDependencies: true });
+
+    observe(() => void feed.value);
+    await new Promise((r) => setTimeout(r, 30));
+    expect(fetch).toHaveBeenCalledOnce();
+
+    feed.setQuery({ a: 1 });
+    await new Promise((r) => setTimeout(r, 30));
+
+    expect(fetch).toHaveBeenCalledTimes(2);
     expect(feed.pages).toBe(1);
   });
 

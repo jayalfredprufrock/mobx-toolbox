@@ -36,7 +36,9 @@ export class TableSearchFilter {
 
   /** Who does the searching. See {@link TableConfig.search}. */
   get mode(): FilterMode {
-    return this.table.config?.search?.mode ?? "client";
+    // Same fallback as a column's, and read through the table for the same reason: a server-driven
+    // dataset must not be searched over the one page of it that happens to be here.
+    return this.table.config?.search?.mode ?? this.table.filterMode;
   }
 
   /**

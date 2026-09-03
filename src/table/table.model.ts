@@ -9,7 +9,7 @@ import {
 } from "mobx";
 import { ColumnModel } from "./column.model";
 import { TableSearchFilter } from "./search-filter.model";
-import type { LazyArray } from "../lazy/lazy";
+import type { LazyArray, LazyPages } from "../lazy/lazy";
 import type {
   ColumnDef,
   ColumnSort,
@@ -21,9 +21,10 @@ import type {
   RowId,
   SortDirection,
   TableConfig,
+  TableQuery,
   TableState,
 } from "./table.types";
-import { isLazy } from "./is-lazy";
+import { isLazy, isPaged } from "./is-lazy";
 
 export class TableModel {
   readonly config?: TableConfig<any>;
@@ -94,7 +95,11 @@ export class TableModel {
    * out a *different* lazy per key, so `store.byOrg({ orgId })` is a new lazy whenever `orgId`
    * changes. See {@link setData}.
    */
-  private binding: LazyArray<RowData> | (() => RowData[]) | undefined;
+  private binding:
+    | LazyArray<RowData>
+    | LazyPages<RowData, TableQuery>
+    | (() => RowData[])
+    | undefined;
 
   /**
    * The status a caller supplies for a dataset that cannot describe its own — see
@@ -105,6 +110,11 @@ export class TableModel {
 
   // Re-derives factory columns once data exists; see activate().
   private columnsReactionDisposer: IReactionDisposer | undefined;
+
+  // Only doing anything while `data` is a paged lazy; see activate().
+  private queryReactionDisposer: IReactionDisposer | undefined;
+  private loadMoreReactionDisposer: IReactionDisposer | undefined;
+  private restartReactionDisposer: IReactionDisposer | undefined;
 
   get rowHeight(): number {
     return this.config?.rowHeight ?? 40;
@@ -429,6 +439,125 @@ export class TableModel {
   }
 
   /**
+   * The paged lazy driving the table, or `undefined` — the narrower counterpart of {@link lazy}.
+   *
+   * Exposed for the same reason `lazy` is: a component handed only a `TableModel` — a generic
+   * wrapper, a footer rendered from context — can ask whether this dataset has more to fetch and
+   * get the real source if it does. `loadingMore`, `hasMore` and `total` are all on it.
+   *
+   * A paged source is also what {@link mode} infers from, and the only shape the table drives by
+   * itself: it pushes {@link query} into it and asks for the next page as the window nears the end.
+   */
+  get pages(): LazyPages<RowData, TableQuery> | undefined {
+    return isPaged(this.binding) ? this.binding : undefined;
+  }
+
+  /**
+   * Who narrows and orders the rows — see {@link TableConfig.mode}. Explicit config wins;
+   * otherwise a paged source means `"server"` and anything else means `"client"`.
+   *
+   * A getter rather than a constructor-time decision, so `setData` pointing an existing table at a
+   * paged source flips its sorting and its columns' filter modes with it.
+   */
+  get mode(): "client" | "server" {
+    return this.config?.mode ?? (this.pages ? "server" : "client");
+  }
+
+  /** Resolved {@link TableConfig.sortMode}: `"manual"` under `mode: "server"` unless overridden. */
+  get sortMode(): "auto" | "manual" {
+    return this.config?.sortMode ?? (this.mode === "server" ? "manual" : "auto");
+  }
+
+  /**
+   * What a column's `filterMode` falls back to, and what the built-in search's does. Read through
+   * by `ColumnModel.filterMode` rather than copied into each column, so it tracks `mode`.
+   */
+  get filterMode(): FilterMode {
+    return this.mode === "server" ? "server" : "client";
+  }
+
+  /**
+   * Everything a server needs in order to answer for this table — see {@link TableQuery}.
+   *
+   * **The identity is stable while the contents are**, which is load-bearing rather than an
+   * optimization: it is what lets this be a `useEffect` dependency or a query key without a column
+   * resize, a scroll, or a selection change issuing a request. That takes structural equality
+   * *and* `keepAlive` — mobx applies `equals` only on its cached path, so an unobserved computed
+   * would hand back a new object on every read and defeat the whole point.
+   *
+   * ```tsx
+   * const query = table.query;
+   * useEffect(() => void refetch(query), [query]);
+   * ```
+   */
+  get query(): TableQuery {
+    return {
+      filters: this.filterQuery,
+      // Only when the table isn't sorting for itself. Under `"auto"` the rows are already in this
+      // order, so sending them would ask for work that's done — and would churn this object on
+      // every header click for a request that changes nothing.
+      sorts: this.sortMode === "manual" ? this.sorts.slice() : [],
+    };
+  }
+
+  /**
+   * What `aria-rowcount` should report: the extent of the dataset, not of what happens to be
+   * loaded, plus one for the header row.
+   *
+   * It matters most for exactly the tables this is about. A virtualized table already tells
+   * assistive tech the true extent because only a window is in the DOM — but a paged one had been
+   * reporting the rows *fetched so far*, so a screen reader announced "row 30 of 30" about a
+   * dataset of four thousand, and the number grew under the user as they scrolled.
+   *
+   * `-1` is ARIA's own answer for an unknown total, and a cursor-paginated list genuinely has one:
+   * there is more, and nothing has said how much. A client-side filter puts us in the same
+   * position from the other direction — the server's `total` counts rows this table is hiding — so
+   * it falls back rather than reporting a number it knows is wrong.
+   */
+  get ariaRowCount(): number {
+    const source = this.pages;
+    if (!source) return this.displayRows.length + 1;
+    if (this.filterPredicate === undefined && source.total !== undefined) return source.total + 1;
+    return source.hasMore ? -1 : this.displayRows.length + 1;
+  }
+
+  /** How many rows one viewport holds, at the fixed row height. */
+  get visibleRowCount(): number {
+    return Math.max(1, Math.ceil(this.height / this.rowHeight));
+  }
+
+  /**
+   * How many rows lie below the render window — the distance to the end of the content, in rows.
+   *
+   * This is the load-more trigger, and it is a **magnitude rather than a threshold** on purpose. A
+   * boolean (`nearEnd`) only changes on its edges, so the case that matters most silently stalls:
+   * a page lands, a client-side filter rejects most of it, the window is still near the end, the
+   * boolean never changed, and nothing asks for the next page. A number moves every time rows
+   * arrive, so the same `if` fires again and the list keeps filling until it can't:
+   *
+   * ```tsx
+   * useEffect(() => {
+   *   if (table.rowsToEnd < PAGE_SIZE) void loadMore();
+   * }, [table.rowsToEnd, table.rows.length]);
+   * ```
+   *
+   * The second dependency covers the one gap a display-row count can't: a page whose rows are
+   * *entirely* filtered out doesn't move this at all, and `rows` is the dataset before filtering.
+   * Bind `data` to a paged lazy and none of this is yours — the table drives `loadMore()` itself.
+   *
+   * Measured from the end of the **rendered** window, overscan included, so it is the distance to
+   * the end of what has been committed to the DOM. `0` on an empty table, which reads correctly as
+   * "nothing below here".
+   *
+   * Changes at row granularity rather than per scroll frame (the window bounds are integers), so
+   * reading it in a render subscribes that component to roughly one update per row scrolled — the
+   * cadence `<Table.Body>` already re-renders at.
+   */
+  get rowsToEnd(): number {
+    return this.displayRows.length - 1 - this.lastRenderedIndex;
+  }
+
+  /**
    * Nothing has arrived yet and nothing has gone wrong — the state a first-load treatment belongs
    * to, and the one where the empty slot would be a lie.
    *
@@ -505,7 +634,7 @@ export class TableModel {
   get displayRows(): RowData[] {
     const rows = this.clientFilteredRows;
     // manual mode: sorts is reactive state for the consumer to serialize; rows arrive pre-sorted
-    if (this.config?.sortMode === "manual") return rows;
+    if (this.sortMode === "manual") return rows;
     const active = this.sorts.flatMap(({ key, direction }) => {
       const col = this.columns.get(key);
       return col ? [{ col, dir: direction === "desc" ? -1 : 1 }] : [];
@@ -712,6 +841,20 @@ export class TableModel {
       activeColumnFiltersIn: false,
       filterQuery: computed,
       lazy: computed,
+      pages: computed,
+      mode: computed,
+      sortMode: computed,
+      filterMode: computed,
+      // Structural *and* kept alive, which together are what make the identity stable — see the
+      // getter. `computed.struct` alone is not enough: mobx only applies `equals` on the cached
+      // path, and an unobserved computed recomputes on every read and assigns the result
+      // unconditionally. So a consumer reading `table.query` outside a reactive context — in an
+      // effect, in a query key, in a plain callback — would get a fresh object every time and
+      // refetch on every render, which is precisely the case this exists to serve.
+      query: computed({ equals: comparer.structural, keepAlive: true }),
+      ariaRowCount: computed,
+      visibleRowCount: computed,
+      rowsToEnd: computed,
       loading: computed,
       error: computed,
       isEmpty: computed,
@@ -744,6 +887,7 @@ export class TableModel {
       appendRows: action.bound,
       setScroll: action.bound,
       scrollToRow: action.bound,
+      scrollToTop: action.bound,
       scrollToEnd: action.bound,
       clearScrollRequest: action.bound,
       setWidth: action.bound,
@@ -832,6 +976,85 @@ export class TableModel {
       );
     }
 
+    // The three reactions below are what "the table drives a paged source itself" is. Each reads
+    // *through* `this.pages` rather than closing over a source, exactly as the rows reaction reads
+    // through `binding` — so `setData` pointing at a different paged lazy re-targets them, and
+    // pointing at an array leaves them inert rather than needing to be torn down.
+
+    // The table owns the query — filters live on columns, sorts on the model, search on the search
+    // filter — so the source is downstream of it and this is a push, not a subscription. Immediate,
+    // because the first page must go out with the filters a restored snapshot already applied
+    // rather than fetching twice.
+    if (!this.queryReactionDisposer) {
+      this.queryReactionDisposer = reaction(
+        () => this.query,
+        (query) => {
+          // `setQuery` ignores a structurally equal query, so re-targeting at a source that happens
+          // to carry the same one costs nothing, and a table with no paged source does nothing at
+          // all here.
+          this.pages?.setQuery(query);
+        },
+        { fireImmediately: true },
+      );
+    }
+
+    // Fetch the next page while fewer than a viewport's worth of rows remain below the window.
+    //
+    // `pages` is in the tracked expression alongside the distance, and it is the whole reason this
+    // keeps working in the case a boolean gets wrong: a page whose rows are all rejected by a
+    // client-side filter doesn't move `rowsToEnd` at all, so without a second term the chain would
+    // stall one page in. With it, every landed page re-asks the question and the list fills until
+    // it reaches the window or runs out.
+    //
+    // No guard against re-entry is needed: `loadMore()` resolves immediately when there is nothing
+    // more and joins a request already in flight rather than starting a second.
+    if (!this.loadMoreReactionDisposer) {
+      this.loadMoreReactionDisposer = reaction(
+        () => {
+          const source = this.pages;
+          if (!source?.hasMore) return undefined;
+          // Not while the last request failed. Retrying on the table's own initiative would mean a
+          // request per row scrolled against an endpoint that is already answering with errors —
+          // and the user gets no say, because nothing they can see is asking. Recovery is an
+          // explicit `loadMore()` from a footer retry, which clears the error and lets this resume.
+          if (source.error !== undefined) return undefined;
+          // Not until the viewport has been measured. With `height` still 0 there is no answer to
+          // "how many rows fit", so every threshold is a guess — and the guess over-fetches,
+          // because an unmeasured window looks like it reaches the end of the content. Mirrors
+          // `<Table.Root>`, which renders nothing until it has a non-zero size.
+          if (!this.height) return undefined;
+          return { distance: this.rowsToEnd, pages: source.pages };
+        },
+        (probe) => {
+          if (!probe || probe.distance >= this.visibleRowCount) return;
+          // Caught, not `void`ed. The table asked for this page on its own initiative, so there is
+          // no caller to reject at — the same reason a lazy's observation-triggered load reports
+          // through `error` rather than throwing. The source records the failure on itself
+          // (`pages.error`), which is where a footer reads it; leaving the promise unhandled would
+          // turn a failed page into an unhandled rejection and, under a strict test runner or a
+          // window-level handler, into a crash.
+          this.pages?.loadMore().catch(() => {});
+        },
+        { equals: comparer.structural, fireImmediately: true },
+      );
+    }
+
+    // A restart is not a growth, and the scroll position belongs to the run that produced the rows
+    // it was measured against: a filter change that drops fifty pages to one leaves the user
+    // parked past the end, which reads as an empty table and — worse — as "near the end", so the
+    // fetch-ahead above would immediately refill everything they just filtered away.
+    //
+    // `pages` returning to 0 is the source's own restart signal; the array identity is stable by
+    // design and so cannot say.
+    if (!this.restartReactionDisposer) {
+      this.restartReactionDisposer = reaction(
+        () => this.pages?.pages === 0,
+        (restarted) => {
+          if (restarted && this.scrollY > 0) this.scrollToTop();
+        },
+      );
+    }
+
     const onStateChange = this.config?.onStateChange;
     if (onStateChange && !this.stateReactionDisposer) {
       this.stateReactionDisposer = reaction(() => this.getState(), onStateChange, {
@@ -851,7 +1074,9 @@ export class TableModel {
    * Row-keyed state is not cleared: rows are intersected, so with `getRowId` configured a row
    * present in both datasets keeps its selection and expansion.
    */
-  setData(data: RowData[] | (() => RowData[]) | LazyArray<RowData>): void {
+  setData(
+    data: RowData[] | (() => RowData[]) | LazyArray<RowData> | LazyPages<RowData, TableQuery>,
+  ): void {
     // Nothing to arm or disarm: the rows reaction reads through `binding`, so assigning it is the
     // whole operation. An array clears the binding — there is nothing to read through — and is
     // applied outright.
@@ -866,6 +1091,12 @@ export class TableModel {
 
   /** Drop the model's reactions. Pairs with `activate`. */
   dispose(): void {
+    this.queryReactionDisposer?.();
+    this.queryReactionDisposer = undefined;
+    this.loadMoreReactionDisposer?.();
+    this.loadMoreReactionDisposer = undefined;
+    this.restartReactionDisposer?.();
+    this.restartReactionDisposer = undefined;
     this.stateReactionDisposer?.();
     this.stateReactionDisposer = undefined;
     this.rowsReactionDisposer?.();
@@ -1144,6 +1375,17 @@ export class TableModel {
     const blockEnd =
       this.blockOffset(index) + this.rowHeight + (expanded ? this.expansionHeight : 0);
     this.scrollRequest = { y: Math.max(0, blockEnd - this.height) };
+  }
+
+  /**
+   * Scroll back to the first row.
+   *
+   * Called by the model itself when a paged source restarts — a query change, a reload — because
+   * a scroll offset measured against fifty pages is meaningless against one, and leaves the user
+   * parked past the end of the new results.
+   */
+  scrollToTop(): void {
+    this.scrollRequest = { y: 0 };
   }
 
   /** Scroll to the very end of the content. */

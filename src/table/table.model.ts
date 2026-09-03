@@ -1584,11 +1584,27 @@ export class TableModel {
     const firstSync = this.columns.size === 0;
     for (const def of syncedDefs) {
       const key = ColumnModel.keyOf(def);
-      if (!this.columns.has(key)) {
+      const existing = this.columns.get(key);
+      if (!existing) {
         const column = ColumnModel.fromDef(this, def);
         this.columns.set(key, column);
         this.applyColumnState(column);
+        continue;
       }
+
+      // `meta` is the one thing a new def for an existing key is allowed to change, and it is the
+      // *opposite* of how `filter` behaves on purpose. A filter holds the user's live selection, so
+      // re-reading it would throw that away. `meta` is structure the def supplies, and what a
+      // column represents can legitimately change while its key stays the same — a republished
+      // survey rewording a question whose id, and therefore whose column key, is unchanged.
+      //
+      // Shallow rather than by identity: this runs on every `setData` and `appendRows` too, and a
+      // factory def rebuilds its `meta` object each time it is called. Comparing identity would
+      // replace `config` on every appended page and re-render every header cell for no change,
+      // while a shallow compare over a handful of keys costs nothing and is right for the shape
+      // `meta` actually has — a wrapper around values the app already holds.
+      const meta = ColumnModel.metaOf(def);
+      if (!comparer.shallow(existing.config.meta, meta)) existing.setConfig({ meta });
     }
 
     const orderOf = (key: string) => this.columns.get(key)?.config.order ?? 0;

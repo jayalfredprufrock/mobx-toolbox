@@ -8,6 +8,7 @@ import type { TableModel } from "./table.model";
 import type {
   BaseColumnDef,
   ColumnConfig,
+  ColumnMeta,
   ColumnPin,
   ColumnConfigPatch,
   ColumnDef,
@@ -159,6 +160,17 @@ export class ColumnModel {
    */
   get filter(): ColumnFilter | undefined {
     return this.config.filter;
+  }
+
+  /**
+   * Whatever the def said this column represents — see {@link ColumnMeta}.
+   *
+   * A plain getter over `config`, which is an `observable.ref` replaced wholesale, so this is
+   * reactive with no state of its own. Every render-prop the table has already receives the
+   * `ColumnModel`: header cells through `<Table.Header>`, body cells through `<Table.Row>`.
+   */
+  get meta(): ColumnMeta | undefined {
+    return this.config.meta;
   }
 
   /**
@@ -437,6 +449,16 @@ export class ColumnModel {
    * (`removeColumn`) and checks for collisions with. Mirrors `fromDef`: a string def is its own
    * key, and a selection def may omit one.
    */
+  /**
+   * The `meta` a def carries, or `undefined`. Narrowing lives here rather than at the call site
+   * because a string def and a selection def have no place for one — a selection column is a
+   * checkbox, not a column *about* something.
+   */
+  static metaOf(def: ColumnDef<any>): ColumnMeta | undefined {
+    if (typeof def === "string") return undefined;
+    return (def as BaseColumnDef<any>).meta;
+  }
+
   static keyOf(def: ColumnDef<any>): string {
     if (typeof def === "string") return def;
     const { key, selection } = def as { key?: string; selection?: boolean };

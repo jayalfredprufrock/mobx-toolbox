@@ -284,6 +284,9 @@ Everything else (`columns`, `getRowId`, `onStateChange`) is captured at construc
 
 ## Columns
 
+Every field on a def describes how a column _behaves_; [`meta`](#what-a-column-represents--meta) is
+where what it _represents_ goes, for headers, cells and filter controls that need to know.
+
 `columns` accepts four shapes, mixed freely:
 
 ```ts
@@ -447,6 +450,88 @@ Both pinned arrays are ordered **outward-edge first**, which means `rightPinnedR
 right-to-left. That is what lets one `offset` calculation serve both sides — it measures from each
 group's own edge, spent as `left: offset` or `right: offset`. If you want plain left-to-right, use
 `visualColumns`, which is also what `aria-colindex` is derived from.
+
+### What a column _represents_ — `meta`
+
+Every field on a column def describes how the column behaves. `meta` is where you put what it means:
+
+```ts
+const columns = questions.map((q) => ({
+  key: `resp:${q.id}`,
+  title: q.name,
+  value: (row) => answers.get(row.panelistId, q.id),
+  meta: { question: q },
+}));
+```
+
+```tsx
+<Table.Header>
+  {(column) => (
+    <Table.ColumnHeader column={column}>
+      {column.title}
+      {column.meta?.question && <QuestionPreview question={column.meta.question} />}
+    </Table.ColumnHeader>
+  )}
+</Table.Header>
+```
+
+This is for anything rendered **about a column** rather than about a row, which dynamically
+generated column sets always end up needing — a pivot table, a metric picker, columns derived from
+a schema. Without it the header renderer holds a `ColumnModel` and the thing it describes lives in
+app state, with no supported way to connect the two. The workarounds both re-derive something the
+def already knew: parsing the column key duplicates a format that
+[persisted view state](#persisting-the-view) depends on, and a `Map<key, thing>` threaded alongside
+the defs is a parallel structure that can fall out of step after a `setColumns`.
+
+**It reaches every render-prop already**, because they all receive the `ColumnModel` — body cells
+through `<Table.Row>` as well as header cells through `<Table.Header>`, and a filter popover
+rendered from a header has `column.filter` and `column.meta` side by side.
+
+#### Typing: augment `ColumnMeta`
+
+Declare once what your columns carry, and every def and every read is checked:
+
+```ts
+declare module "@jayalfredprufrock/mobx-toolbox/table" {
+  interface ColumnMeta {
+    question?: SurveyQuestion;
+    unit?: string;
+  }
+}
+```
+
+Empty until you do, so it stays effectively unusable for consumers who never reach for it — the
+same shape as [`SetFilterProps`](../filter/README.md#view-props), and for the same reason. A generic
+`TMeta` parameter was the alternative and would have threaded through `ColumnDef`, `ColumnsDef`,
+`AutoColumnFn`, `TableConfig`, `UseTableConfig` and `useTable` for one field, forcing call sites
+that don't care to write it out. The trade is that augmentation is global per module, so one app
+cannot have two meta shapes — which is what the optional keys are for.
+
+#### It refreshes on `setColumns`, unlike `filter`
+
+This is the one contrast worth knowing, because it cuts the other way from everything else about a
+surviving column:
+
+| a new def for an existing key            |                                          |
+| ---------------------------------------- | ---------------------------------------- |
+| `meta`                                   | **re-read**                              |
+| `filter`, and every other config field   | ignored — the `ColumnModel` is preserved |
+| order, visibility, pinning, manual width | preserved                                |
+
+A filter holds the user's live selection, so re-reading it would throw that away. `meta` is
+structure the def supplies, and what a column represents can legitimately change while its key stays
+the same — a republished survey rewording a question whose id, and so whose column key, is
+unchanged.
+
+Compared **shallowly**, so a def rebuilt around the same values is not a change. That matters for
+factory defs, which are re-invoked on every `setData` and `appendRows`: pass the values by reference
+(`meta: { question: q }`) and nothing churns, build them inline (`meta: { question: { ...q } }`) and
+every appended page replaces the config and re-renders that header cell.
+
+`meta` is **excluded from `getState()`** — it is structure from the def rather than state the user
+produced, and it can hold functions, class instances or React nodes that would not survive a round
+trip. `setConfig({ meta })` is allowed, for the rare case where you want to change it without going
+through the defs.
 
 ## Sorting
 

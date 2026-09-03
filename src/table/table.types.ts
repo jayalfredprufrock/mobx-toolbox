@@ -365,6 +365,8 @@ export type FilterMode = "client" | "server";
 
 export interface ColumnConfig {
   key: string;
+  /** See {@link BaseColumnDef.meta}. */
+  meta?: ColumnMeta;
   /** Raw cell value — feeds sorting and the default render. Resolved dot-path for field columns, the `value` fn for computed ones. */
   value: (row: RowData) => unknown;
   render: (row: RowData) => any;
@@ -425,8 +427,54 @@ export interface ColumnSort {
   direction: SortDirection;
 }
 
+/**
+ * Whatever your app knows about a column that the table itself has no use for — the schema field a
+ * column was generated from, a unit, a question, a metric definition.
+ *
+ * Empty by design, and **open for augmentation**: declare what your columns carry and it becomes
+ * type-checked at every def and every read of `column.meta`.
+ *
+ * ```ts
+ * declare module "@jayalfredprufrock/mobx-toolbox/table" {
+ *   interface ColumnMeta {
+ *     question?: SurveyQuestion;
+ *   }
+ * }
+ * ```
+ *
+ * This exists because a column def could previously say everything about how a column *behaves* and
+ * nothing about what it *represents* — so anything rendered about a column rather than about a row
+ * had to reconstruct the column's identity from its key, or carry a `Map<key, thing>` alongside the
+ * defs. Both re-derive something the def already knew, and the first duplicates the key format,
+ * which persisted view state depends on.
+ *
+ * Spelled `meta` rather than `props` (which is what the equivalent on a filter is called) for two
+ * reasons: `column.props` reads as React props on something that is not a component, and this is
+ * wider than view concerns — a cell formatting itself from a unit, or a filter reading a choice
+ * list, wants the same field.
+ *
+ * The same rule governs when the library declares a named option instead: only when it *reads* the
+ * value, supplies a non-trivial default, or the concept is universal and precisely typable. See
+ * {@link SetFilterProps}, which this mirrors.
+ */
+// biome-ignore lint/suspicious/noEmptyInterface: augmentation point — see above
+export interface ColumnMeta {}
+
 export interface BaseColumnDef<T> {
   title?: string;
+  /**
+   * Application data about this column — see {@link ColumnMeta}. Read through
+   * `ColumnModel.meta`, which every render-prop already receives.
+   *
+   * Unlike `filter`, this **is** re-read from a new def on `setColumns`: what a column represents
+   * can legitimately change while its key stays the same (a republished survey rewording a question
+   * whose id, and so whose column key, is unchanged). Compared shallowly, so a def rebuilt around
+   * the same values is not a change.
+   *
+   * Excluded from `getState()`: it is structure supplied by the def, not state the user produced,
+   * and it may hold things that do not serialize.
+   */
+  meta?: ColumnMeta;
   render?: (row: T) => any;
   /**
    * Custom sort comparator. Receives the two rows' *extracted* values (the dot-path lookup for

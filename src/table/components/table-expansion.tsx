@@ -1,6 +1,6 @@
 import { observer } from "mobx-react-lite";
 import { type CSSProperties, type FC, memo, type ReactNode } from "react";
-import { useTableContext } from "../table.context";
+import { useScrollportGuard, useTableContext } from "../table.context";
 import type { RowData } from "../table.types";
 
 export interface TableExpansionProps {
@@ -21,6 +21,7 @@ export interface TableExpansionProps {
  */
 const TableExpansionInner: FC<TableExpansionProps> = observer(({ className, style, children }) => {
   const table = useTableContext();
+  useScrollportGuard("Expansion");
   return (
     <div
       role="row"
@@ -34,7 +35,7 @@ const TableExpansionInner: FC<TableExpansionProps> = observer(({ className, styl
         style={{
           position: "sticky",
           left: 0,
-          width: "var(--table-viewport-width)",
+          width: "var(--table-scroll-width)",
           height: "100%",
           overflowY: "auto",
           ...style,

@@ -53,17 +53,19 @@ const deferred = <T,>() => {
 /** A table wired the way a consumer would: both slots rendered unconditionally after the body. */
 const Grid = ({ table }: { table: TableModel }) => (
   <Table.Root table={table}>
-    <Table.Header>{(column) => <Table.ColumnHeader column={column} />}</Table.Header>
-    <Table.Body>
-      {(row) => (
-        <Table.Row row={row}>
-          {(column) => <Table.Cell column={column}>{String(column.getValue(row))}</Table.Cell>}
-        </Table.Row>
-      )}
-    </Table.Body>
-    <Table.Empty>NOTHING HERE</Table.Empty>
-    <Table.Loading>LOADING</Table.Loading>
-    <Table.Error>FAILED</Table.Error>
+    <Table.Scroll>
+      <Table.Header>{(column) => <Table.ColumnHeader column={column} />}</Table.Header>
+      <Table.Body>
+        {(row) => (
+          <Table.Row row={row}>
+            {(column) => <Table.Cell column={column}>{String(column.getValue(row))}</Table.Cell>}
+          </Table.Row>
+        )}
+      </Table.Body>
+      <Table.Empty>NOTHING HERE</Table.Empty>
+      <Table.Loading>LOADING</Table.Loading>
+      <Table.Error>FAILED</Table.Error>
+    </Table.Scroll>
   </Table.Root>
 );
 
@@ -170,7 +172,9 @@ describe("Table.Empty and Table.Loading gate themselves", () => {
     const lazy = lazyArray(() => gate.promise);
     const container = await mount(
       <Table.Root table={sized({ data: lazy })}>
-        <Table.Loading sustain={false}>LOADING</Table.Loading>
+        <Table.Scroll>
+          <Table.Loading sustain={false}>LOADING</Table.Loading>
+        </Table.Scroll>
       </Table.Root>,
     );
 
@@ -192,7 +196,9 @@ describe("Table.Empty and Table.Loading gate themselves", () => {
 
     const container = await mount(
       <Table.Root table={table}>
-        <Table.Empty>{table.rows.length > 0 ? "NO MATCHES" : "NOTHING HERE"}</Table.Empty>
+        <Table.Scroll>
+          <Table.Empty>{table.rows.length > 0 ? "NO MATCHES" : "NOTHING HERE"}</Table.Empty>
+        </Table.Scroll>
       </Table.Root>,
     );
 
@@ -255,7 +261,9 @@ describe("Table.Error gates on a failure with nothing to show", () => {
     const lazy = lazyArray(() => Promise.reject(new Error("teapot")));
     const container = await mount(
       <Table.Root table={sized({ data: lazy })}>
-        <Table.Error>{(error) => `FAILED: ${(error as Error).message}`}</Table.Error>
+        <Table.Scroll>
+          <Table.Error>{(error) => `FAILED: ${(error as Error).message}`}</Table.Error>
+        </Table.Scroll>
       </Table.Root>,
     );
     await act(async () => {});
@@ -275,8 +283,10 @@ describe("Table.Overlay is the placement primitive with no gate", () => {
   test("it renders whenever the consumer says so, over a perfectly healthy table", async () => {
     const container = await mount(
       <Table.Root table={sized({ data: [{ id: 1, name: "alpha" }] })}>
-        <Table.Body>{(row) => <Table.Row row={row}>{() => null}</Table.Row>}</Table.Body>
-        <Table.Overlay>SAVE FAILED</Table.Overlay>
+        <Table.Scroll>
+          <Table.Body>{(row) => <Table.Row row={row}>{() => null}</Table.Row>}</Table.Body>
+          <Table.Overlay>SAVE FAILED</Table.Overlay>
+        </Table.Scroll>
       </Table.Root>,
     );
 
@@ -286,7 +296,9 @@ describe("Table.Overlay is the placement primitive with no gate", () => {
   test("it claims none of the table's own markers", async () => {
     const container = await mount(
       <Table.Root table={sized({ data: [{ id: 1, name: "alpha" }] })}>
-        <Table.Overlay>SAVE FAILED</Table.Overlay>
+        <Table.Scroll>
+          <Table.Overlay>SAVE FAILED</Table.Overlay>
+        </Table.Scroll>
       </Table.Root>,
     );
 
@@ -348,5 +360,231 @@ describe("the slots gate off the controlled props too", () => {
     expect(container.textContent).toContain("NOTHING HERE");
     expect(container.textContent).not.toContain("LOADING");
     expect(container.textContent).not.toContain("FAILED");
+  });
+});
+
+describe("the header's measured height drives overlay placement", () => {
+  // the overlay is a zero-height sticky wrapper — kept out of the scrollport's content height so a
+  // hugging root can't size itself from it — with the sized box as its absolutely positioned child
+  const overlayBox = (container: HTMLElement) =>
+    container.querySelector("[role=table] > div:last-child > div") as HTMLElement;
+
+  const withOverlay = (table: TableModel) => (
+    <Table.Root table={table}>
+      <Table.Scroll>
+        <Table.Header>{(column) => <Table.ColumnHeader column={column} />}</Table.Header>
+        <Table.Overlay>SAVE FAILED</Table.Overlay>
+      </Table.Scroll>
+    </Table.Root>
+  );
+
+  test("the overlay starts below the header, using the measured border box", async () => {
+    // happy-dom lays nothing out, so stand in for the header's ResizeObserver the same way the
+    // other tests stand in for the root's. 44 is a 40px row plus 4px of consumer header padding —
+    // the padding being exactly what a border-box measurement adds over a content-box one.
+    const table = sized({ data: [{ id: 1, name: "alpha" }] });
+    table.setHeaderHeight(44);
+
+    const container = await mount(withOverlay(table));
+    const overlay = overlayBox(container);
+
+    expect(overlay.style.height).toBe("76px"); // 120 - 44
+  });
+
+  test("with no header mounted it takes the full height, reserving nothing", async () => {
+    const table = sized({ data: [{ id: 1, name: "alpha" }] });
+    const container = await mount(
+      <Table.Root table={table}>
+        <Table.Scroll>
+          <Table.Overlay>SAVE FAILED</Table.Overlay>
+        </Table.Scroll>
+      </Table.Root>,
+    );
+    const overlay = overlayBox(container);
+
+    expect(table.headerHeight).toBe(0);
+    expect(overlay.style.height).toBe("120px");
+  });
+
+  test("it clamps at zero rather than going negative in a box shorter than its header", async () => {
+    const table = sized({ data: [{ id: 1, name: "alpha" }] });
+    table.setHeight(30);
+    table.setHeaderHeight(44);
+
+    const container = await mount(withOverlay(table));
+    const overlay = overlayBox(container);
+
+    expect(overlay.style.height).toBe("0px");
+  });
+
+  test("dropping the header clears the reservation", async () => {
+    const table = sized({ data: [{ id: 1, name: "alpha" }] });
+    table.setHeaderHeight(44);
+
+    const container = document.createElement("div");
+    document.body.appendChild(container);
+    containers.push(container);
+    const root = createRoot(container);
+    await act(async () => {
+      root.render(withOverlay(table));
+    });
+
+    // the model outlives the markup, so a stale 44 would leave every later overlay short by a
+    // header the table no longer has
+    await act(async () => {
+      root.render(
+        <Table.Root table={table}>
+          <Table.Scroll>
+            <Table.Overlay>SAVE FAILED</Table.Overlay>
+          </Table.Scroll>
+        </Table.Root>,
+      );
+    });
+
+    expect(table.headerHeight).toBe(0);
+    const overlay = overlayBox(container);
+    expect(overlay.style.height).toBe("120px");
+  });
+
+  test("Table.Root publishes the measured height for consumer CSS", async () => {
+    const table = sized({ data: [{ id: 1, name: "alpha" }] });
+    table.setHeaderHeight(44);
+
+    const container = await mount(withOverlay(table));
+    const viewport = container.querySelector(".table-viewport") as HTMLElement;
+
+    expect(viewport.style.getPropertyValue("--table-header-height")).toBe("44px");
+  });
+});
+
+describe("Table.Scroll is the scrollport, and the parts know which box they belong in", () => {
+  const rows = [{ id: 1, name: "alpha" }];
+
+  test("it owns the scroll role, the aria extent and the measured width", async () => {
+    const table = sized({ data: rows });
+    const container = await mount(
+      <Table.Root table={table}>
+        <Table.Scroll>
+          <Table.Body>{(row) => <Table.Row row={row}>{() => null}</Table.Row>}</Table.Body>
+        </Table.Scroll>
+      </Table.Root>,
+    );
+
+    const viewport = container.querySelector(".table-viewport") as HTMLElement;
+    const scroller = container.querySelector('[role="table"]') as HTMLElement;
+
+    expect(scroller.parentElement).toBe(viewport);
+    expect(scroller.style.overflow).toBe("auto");
+    expect(scroller.style.getPropertyValue("--table-scroll-width")).toBe("600px");
+    // the root is a flex column and measures nothing itself
+    expect(viewport.style.display).toBe("flex");
+    expect(viewport.style.flexDirection).toBe("column");
+  });
+
+  test("a part that needs the scrollport says so instead of rendering blank", async () => {
+    // without <Table.Scroll> no width is ever measured, so the gate never opens and the table is
+    // simply empty — no message, nothing in the DOM, every symptom pointing at the data
+    const table = sized({ data: rows });
+    await expect(
+      mount(
+        <Table.Root table={table}>
+          <Table.Body>{(row) => <Table.Row row={row}>{() => null}</Table.Row>}</Table.Body>
+        </Table.Root>,
+      ),
+    ).rejects.toThrow(/must be rendered inside <Table.Scroll>/);
+  });
+
+  test("and chrome that belongs outside says so too", async () => {
+    const table = sized({ data: rows });
+    await expect(
+      mount(
+        <Table.Root table={table}>
+          <Table.Scroll>
+            <Table.StatusBar>Showing 1</Table.StatusBar>
+          </Table.Scroll>
+        </Table.Root>,
+      ),
+    ).rejects.toThrow(/must be rendered outside <Table.Scroll>/);
+  });
+
+  test("the render gate waits on width but not on height", async () => {
+    // height is the one thing that can't be a precondition: when the root hugs its content, the
+    // scrollport's height comes *from* what renders here, so requiring it first would deadlock.
+    // The spacer is `virtualHeight`, which depends on the row count, so height bootstraps itself.
+    const table = new TableModel({ data: rows });
+    table.setWidth(600);
+    table.setHeight(0);
+
+    const container = await mount(
+      <Table.Root table={table}>
+        <Table.Scroll>
+          <Table.Header>{(column) => <Table.ColumnHeader column={column} />}</Table.Header>
+          <Table.Body>{(row) => <Table.Row row={row}>{() => null}</Table.Row>}</Table.Body>
+        </Table.Scroll>
+      </Table.Root>,
+    );
+
+    expect(container.querySelector("[role=rowgroup]")).not.toBeNull();
+    expect(table.virtualHeight).toBeGreaterThan(0);
+  });
+
+  test("nothing renders until a width is known", async () => {
+    const table = new TableModel({ data: rows });
+    table.setHeight(120);
+
+    const container = await mount(
+      <Table.Root table={table}>
+        <Table.Scroll>
+          <Table.Body>{(row) => <Table.Row row={row}>{() => null}</Table.Row>}</Table.Body>
+        </Table.Scroll>
+      </Table.Root>,
+    );
+
+    expect(container.querySelector("[role=rowgroup]")).toBeNull();
+  });
+
+  test("chrome renders immediately, without waiting to be measured", async () => {
+    // the bar's content doesn't depend on measurement, and gating it would make it pop in a frame
+    // late — it is outside the gated box entirely
+    const table = new TableModel({ data: rows });
+
+    const container = await mount(
+      <Table.Root table={table}>
+        <Table.Scroll>
+          <Table.Body>{(row) => <Table.Row row={row}>{() => null}</Table.Row>}</Table.Body>
+        </Table.Scroll>
+        <Table.StatusBar>Showing 1</Table.StatusBar>
+      </Table.Root>,
+    );
+
+    expect(table.width).toBe(0);
+    expect(container.querySelector("[data-table-status-bar]")?.textContent).toBe("Showing 1");
+  });
+
+  test("it merges an incoming ref with its own, so a scroll-area can compose onto it", async () => {
+    const table = sized({ data: rows });
+    let captured: HTMLElement | null = null;
+
+    const container = await mount(
+      <Table.Root table={table}>
+        <Table.Scroll
+          ref={(node: HTMLDivElement | null) => {
+            captured = node;
+          }}
+          data-composed=""
+        >
+          <Table.Body>{(row) => <Table.Row row={row}>{() => null}</Table.Row>}</Table.Body>
+        </Table.Scroll>
+      </Table.Root>,
+    );
+
+    const scroller = container.querySelector('[role="table"]') as HTMLElement;
+    // the caller gets the element, and the component keeps its own hold on it — `setScroll` still
+    // being wired is what proves the internal ref survived the merge
+    expect(captured).toBe(scroller);
+    expect(scroller.dataset.composed).toBe("");
+    scroller.scrollTop = 40;
+    scroller.dispatchEvent(new Event("scroll"));
+    expect(table.scrollY).toBe(40);
   });
 });

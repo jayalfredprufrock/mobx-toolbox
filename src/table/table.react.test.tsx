@@ -39,28 +39,30 @@ const mount = async (el: React.ReactNode) => {
 // The minimal consumer composition: Root wraps Header + Body, each using its render-prop.
 const BasicTable = ({ table }: { table: TableModel }) => (
   <Table.Root table={table}>
-    <Table.Header>
-      {(column) =>
-        column.selection ? (
-          <Table.SelectionHeaderCell column={column} />
-        ) : (
-          <Table.ColumnHeader column={column}>{column.title}</Table.ColumnHeader>
-        )
-      }
-    </Table.Header>
-    <Table.Body className="body">
-      {(row) => (
-        <Table.Row row={row}>
-          {(column) =>
-            column.selection ? (
-              <Table.SelectionCell column={column} row={row} />
-            ) : (
-              <Table.Cell column={column}>{String(column.getValue(row))}</Table.Cell>
-            )
-          }
-        </Table.Row>
-      )}
-    </Table.Body>
+    <Table.Scroll>
+      <Table.Header>
+        {(column) =>
+          column.selection ? (
+            <Table.SelectionHeaderCell column={column} />
+          ) : (
+            <Table.ColumnHeader column={column}>{column.title}</Table.ColumnHeader>
+          )
+        }
+      </Table.Header>
+      <Table.Body className="body">
+        {(row) => (
+          <Table.Row row={row}>
+            {(column) =>
+              column.selection ? (
+                <Table.SelectionCell column={column} row={row} />
+              ) : (
+                <Table.Cell column={column}>{String(column.getValue(row))}</Table.Cell>
+              )
+            }
+          </Table.Row>
+        )}
+      </Table.Body>
+    </Table.Scroll>
   </Table.Root>
 );
 
@@ -175,28 +177,30 @@ describe("selection", () => {
           </button>
         )}
       >
-        <Table.Header>
-          {(column) =>
-            column.selection ? (
-              <Table.SelectionHeaderCell column={column} />
-            ) : (
-              <Table.ColumnHeader column={column}>{column.title}</Table.ColumnHeader>
-            )
-          }
-        </Table.Header>
-        <Table.Body>
-          {(row) => (
-            <Table.Row row={row}>
-              {(column) =>
-                column.selection ? (
-                  <Table.SelectionCell column={column} row={row} />
-                ) : (
-                  <Table.Cell column={column}>{String(column.getValue(row))}</Table.Cell>
-                )
-              }
-            </Table.Row>
-          )}
-        </Table.Body>
+        <Table.Scroll>
+          <Table.Header>
+            {(column) =>
+              column.selection ? (
+                <Table.SelectionHeaderCell column={column} />
+              ) : (
+                <Table.ColumnHeader column={column}>{column.title}</Table.ColumnHeader>
+              )
+            }
+          </Table.Header>
+          <Table.Body>
+            {(row) => (
+              <Table.Row row={row}>
+                {(column) =>
+                  column.selection ? (
+                    <Table.SelectionCell column={column} row={row} />
+                  ) : (
+                    <Table.Cell column={column}>{String(column.getValue(row))}</Table.Cell>
+                  )
+                }
+              </Table.Row>
+            )}
+          </Table.Body>
+        </Table.Scroll>
       </Table.Root>,
     );
 
@@ -231,20 +235,22 @@ describe("pinning and expansion", () => {
 
     const ExpandableTable = () => (
       <Table.Root table={table}>
-        <Table.Body>
-          {(row) => (
-            <>
-              <Table.Row row={row}>
-                {(column) => (
-                  <Table.Cell column={column}>{String(column.getValue(row))}</Table.Cell>
+        <Table.Scroll>
+          <Table.Body>
+            {(row) => (
+              <>
+                <Table.Row row={row}>
+                  {(column) => (
+                    <Table.Cell column={column}>{String(column.getValue(row))}</Table.Cell>
+                  )}
+                </Table.Row>
+                {table.isRowExpanded(row) && (
+                  <Table.Expansion row={row}>detail-{row.id}</Table.Expansion>
                 )}
-              </Table.Row>
-              {table.isRowExpanded(row) && (
-                <Table.Expansion row={row}>detail-{row.id}</Table.Expansion>
-              )}
-            </>
-          )}
-        </Table.Body>
+              </>
+            )}
+          </Table.Body>
+        </Table.Scroll>
       </Table.Root>
     );
 
@@ -265,8 +271,10 @@ describe("<Table.Empty>", () => {
     const table = makeTable([], ["id"]);
     const EmptyAware = () => (
       <Table.Root table={table}>
-        <Table.Body>{() => null}</Table.Body>
-        {table.displayRows.length === 0 && <Table.Empty>No results</Table.Empty>}
+        <Table.Scroll>
+          <Table.Body>{() => null}</Table.Body>
+          {table.displayRows.length === 0 && <Table.Empty>No results</Table.Empty>}
+        </Table.Scroll>
       </Table.Root>
     );
 

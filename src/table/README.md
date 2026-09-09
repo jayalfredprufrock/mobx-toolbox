@@ -16,16 +16,18 @@ function UserTable({ users }) {
 
   return (
     <Table.Root table={table}>
-      <Table.Header>
-        {(column) => <Table.ColumnHeader column={column}>{column.title}</Table.ColumnHeader>}
-      </Table.Header>
-      <Table.Body>
-        {(row) => (
-          <Table.Row row={row}>
-            {(column) => <Table.Cell column={column}>{String(column.getValue(row))}</Table.Cell>}
-          </Table.Row>
-        )}
-      </Table.Body>
+      <Table.Scroll>
+        <Table.Header>
+          {(column) => <Table.ColumnHeader column={column}>{column.title}</Table.ColumnHeader>}
+        </Table.Header>
+        <Table.Body>
+          {(row) => (
+            <Table.Row row={row}>
+              {(column) => <Table.Cell column={column}>{String(column.getValue(row))}</Table.Cell>}
+            </Table.Row>
+          )}
+        </Table.Body>
+      </Table.Scroll>
     </Table.Root>
   );
 }
@@ -33,7 +35,19 @@ function UserTable({ users }) {
 
 `useTable` creates a `TableModel` once and keeps it across renders. Construct `new TableModel(config)` directly when the table's lifetime is longer than the component's (e.g. a store field).
 
-`<Table.Root>` must be sized by its parent — it fills 100% of it and measures itself. Children render only once a non-zero size is measured.
+### Two boxes
+
+`<Table.Root>` is the outer frame; `<Table.Scroll>` is the box that overflows. Which one a part goes in is the whole structure:
+
+| goes inside `<Table.Scroll>`                                                                   | goes directly in `<Table.Root>`         |
+| ---------------------------------------------------------------------------------------------- | --------------------------------------- |
+| `Header`, `Body`, `Row`, `Cell`, `Gutter`, `Expansion`, `Overlay`, `Empty`, `Loading`, `Error` | `StatusBar`, and any chrome of your own |
+
+Chrome sits outside the scrollbars, which is the point: a bar rendered _inside_ the scrolling box is inside the box the scrollbars measure, so the vertical scrollbar always runs past it and the bar stops short of the gutter. As a sibling it spans the full width and the scrollbar terminates at its top edge. Getting it wrong throws in development rather than rendering something subtly wrong.
+
+`<Table.Root>` must be sized by its parent — it fills 100% of it, and `<Table.Scroll>` takes what is left after the chrome. `<Table.Scroll>` measures itself, and children render only once a non-zero **width** is known. Height is deliberately not a precondition: when the root hugs its content the scrolling box's height comes _from_ what renders inside it, so requiring it first would deadlock.
+
+To hug the rows instead of filling the parent — no dead space under a short list, and the status bar following the last row — take the height off: `style={{ height: "auto" }}`. Add a `minHeight` if the table can be empty, since an empty box hugs to just its header.
 
 ## The dataset
 
@@ -1206,38 +1220,36 @@ reach this.
 
 ### `<Table.StatusBar>`
 
-A bar across the bottom of the table that stays on screen — "Showing 1,000 of 2,000", a Load all
-button, page controls. Render it after `<Table.Body>`, and after `<Table.Gutter>` if you have both
-(a normal pairing: a count that is always visible _and_ a spinner at the tail of the rows).
+A bar across the bottom of the table — "Showing 1,000 of 2,000", a Load all button, page controls.
+Render it as a direct child of `<Table.Root>`, **after** `<Table.Scroll>`:
 
 ```tsx
-<Table.StatusBar>
-  Showing {table.rows.length} of {table.pages?.total ?? table.rows.length}
-  {table.pages?.hasMore && <button onClick={() => void table.pages?.loadAll()}>Load all</button>}
-</Table.StatusBar>
+<Table.Root table={table}>
+  <Table.Scroll>…</Table.Scroll>
+  <Table.StatusBar>
+    Showing {table.rows.length} of {table.pages?.total ?? table.rows.length}
+    {table.pages?.hasMore && <button onClick={() => void table.pages?.loadAll()}>Load all</button>}
+  </Table.StatusBar>
+</Table.Root>
 ```
 
-It is sticky on **both** axes inside the scroll container, and one declaration covers every case —
-which is the reason it's a component rather than a sentence of docs. The strip flows at its natural
-position after the last row and is only _offset_ to the bottom edge when that position would be out
-of view:
+**Outside the scrolling box**, which is the whole design — and what makes it free of arithmetic. As
+an ordinary flex child of the root, the space it takes is subtracted from `<Table.Scroll>` by the
+browser, so `table.height` — and with it the render window, the fetch-ahead threshold and
+`<Table.Overlay>` — is already right. Nothing has to be told how tall the bar is.
 
-| rows                | where the bar lands                                      |
-| ------------------- | -------------------------------------------------------- |
-| fewer than fit      | directly under the last row — no overflow to displace it |
-| more than fit       | the bottom edge, visible while you scroll                |
-| scrolled to the end | settles into the flow space it reserved                  |
+It is a plain block: no `position`, no `z-index`, no background, because nothing scrolls behind it.
+Pairing it with `<Table.Gutter>` is normal — a count that is always visible _and_ a spinner at the
+tail of the rows — and they now live in different boxes: the gutter is part of the list, the bar is
+part of the frame.
 
-The table still fills its container throughout; on a short list the leftover space is simply
-_below_ the bar. **That is what makes it work without reserving anything** — no flex column, no
-height arithmetic.
+By default the table fills its parent and the bar sits at the bottom with the dead space above it.
+For a bar that follows the last row on a short list, hug the content: `style={{ height: "auto" }}`
+on `<Table.Root>`.
 
-The trade is the one every frozen bar makes: while displaced it paints over whichever row is at the
-bottom edge (hence its `z-index`). Nothing is permanently hidden — scroll to the end and it settles.
-
-Like `<Table.Gutter>` it is ungated, and unlike the gutter it is worth guarding: it carries a
-`z-index` and `<Table.Empty>` / `<Table.Loading>` / `<Table.Error>` do not, so "Showing 0 of 0"
-would paint over "Couldn't load".
+Like `<Table.Gutter>` it is ungated. It no longer overlaps the overlay surfaces, so "Showing 0 of 0"
+sits _below_ "Couldn't load" rather than painting over it — gate it yourself if showing both at once
+reads badly:
 
 ```tsx
 {
@@ -1246,8 +1258,8 @@ would paint over "Couldn't load".
 ```
 
 **Not a `<tfoot>`.** That is a row — aligned to the columns, scrolling horizontally with them, one
-cell per column. This spans the table and knows nothing about columns, which is why it is sticky
-_left_ at the visible width rather than `virtualWidth` wide. `Table.Footer` is reserved for the row.
+cell per column, and therefore something that must live _inside_ the scrollport. This spans the
+table and knows nothing about columns. `Table.Footer` is reserved for the row.
 
 ### Reaching the source: `table.pages`
 
@@ -1341,8 +1353,10 @@ const SurveyTable = observer(({ orgId }: { orgId: string }) => {
 
   return (
     <Table.Root table={table}>
-      {/* header + body as usual */}
-      <Table.Gutter>{loadingMore ? <Spinner /> : !hasMore && <EndOfResults />}</Table.Gutter>
+      <Table.Scroll>
+        {/* header + body as usual */}
+        <Table.Gutter>{loadingMore ? <Spinner /> : !hasMore && <EndOfResults />}</Table.Gutter>
+      </Table.Scroll>
     </Table.Root>
   );
 });
@@ -1447,27 +1461,35 @@ A filter can only be persisted if it exposes both `value` and `setValue` — the
 
 ## Height
 
-`<Table.Root>` fills its parent, which must therefore be sized — it measures itself and everything
-derived from that measurement (the render window, `visibleRowCount`, the fetch-ahead threshold,
-`<Table.Overlay>`'s size) follows from it.
+`<Table.Root>` fills its parent, which must therefore be sized. `<Table.Scroll>` takes what is left
+of it after the chrome and measures itself, and everything derived from that measurement (the render
+window, `visibleRowCount`, the fetch-ahead threshold, `<Table.Overlay>`'s size) follows.
+`<Table.Header>` measures itself too, into `table.headerHeight`, which is what lets the overlay
+start exactly where the rows do.
 
-To cap it instead — for pagination, a caption, or a second panel _below_ the table, without
-building a layout that reserves space for them:
+The root is a **flex column**, so all of this is the browser's arithmetic rather than the library's.
+Chrome takes its natural height, `<Table.Scroll>` absorbs the rest, and `table.height` is read off
+the result. That is why a status bar needs no height reserved for it, and why there is no
+`fitContent` prop: the three shapes are three CSS values on the root.
 
 ```tsx
-<Table.Root table={table} maxHeight={480}>
+<Table.Root table={table}>                                            {/* fill the parent (default) */}
+<Table.Root table={table} style={{ maxHeight: 480 }}>                 {/* cap it                    */}
+<Table.Root table={table} style={{ height: "auto", minHeight: 240 }}> {/* hug the rows              */}
 ```
 
-The cap goes on the viewport, so the measurement is of the already-capped box and every derived
-value stays consistent. Fewer rows than the cap still leaves the box at the cap, with empty space
-below the last row; for a bar that follows the rows on a short list use
-[`<Table.StatusBar>`](#tablestatusbar), which lives inside the scroll container and needs none of
-this.
+There is no prop for any of these. `style` reaches the box that matters, so a prop would only be a
+second way to say the same thing — and the shape of the table is genuinely a CSS question, not a
+configuration one.
 
-⚠️ **`style={{ maxHeight }}` is not the same thing** and is worth knowing about, because it fails
-quietly. `style` lands on the _scroll container_, so the viewport goes on reporting its uncapped
-height: a 300px table then claims to hold twenty rows, renders twenty, fetches ahead as though it
-had them, and sizes its overlays for a box three times too tall. Use the prop.
+Capping `<Table.Scroll>` instead works too, and means something slightly different: the scrolling
+box is capped while the root still fills its parent, leaving the chrome at the bottom.
+
+**Filling is the default**, which is the classic table shape: fewer rows than the cap leaves the box
+at the cap, with empty space below the last row. **Hugging** (`height: "auto"`) sizes the box to the
+rows, so a short list leaves no dead space and `<Table.StatusBar>` follows the last row. Pair it
+with a `minHeight` if the table can be empty — an empty box hugs to just its header, leaving
+`<Table.Overlay>` nowhere to put the message.
 
 ## Scrolling
 
@@ -1484,7 +1506,7 @@ table.visibleRowCount; // how many rows one viewport holds
 `scrollToTop` is also what the model calls itself when a paged source restarts — see
 [server-driven tables](#what-the-table-does-by-itself-with-a-paged-source).
 
-The model records the intent; `<Table.Root>` executes it against the scroll container.
+The model records the intent; `<Table.Scroll>` executes it against the scroll container.
 
 ## Styling
 
@@ -1499,13 +1521,30 @@ The library sets only structural CSS. Hook your styles onto:
 | `[data-expansion]`                     | expansion row + cell  | The detail panel                                  |
 | `[data-empty]`                         | empty surface         | The empty state                                   |
 | `[data-resizing]`                      | `.column-resizer`     | A resize drag is in progress                      |
-| `.table-header`, `.table-viewport`     | structure             | The sticky header group / outer wrapper           |
+| `.table-viewport`, `.table-scroll`     | structure             | The outer frame / the scrolling box               |
+| `.table-header`                        | structure             | The sticky header row group                       |
 | `[data-table-gutter]`                  | the end-of-rows strip | Present on `<Table.Gutter>`                       |
 | `[data-table-status-bar]`              | the bottom bar        | Present on `<Table.StatusBar>`                    |
 
 Pinned cells must be opaque because they overlap scrolling ones. Set `--table-pinned-bg` to your surface color (it defaults to the system `Canvas`), and override it inside the header to match a header background.
 
-The library reads `--table-viewport-width` (set by `<Table.Root>`) for the pieces that pin horizontally, and exposes `--table-row-height`. `<Table.Empty>` also honors `--table-header-height` / `--table-header-gap` when computing its height.
+### CSS variables
+
+Every variable the library touches is an **output**. There is nothing here for you to declare, and nothing that has to agree with a number you keep somewhere else.
+
+| Variable                | Set on            | Is                                                                     |
+| ----------------------- | ----------------- | ---------------------------------------------------------------------- |
+| `--table-row-height`    | `.table-viewport` | The configured row height                                              |
+| `--table-header-height` | `.table-viewport` | The header's measured border box — its own height plus your padding    |
+| `--table-scroll-width`  | `.table-scroll`   | The scrolling box's visible content width, vertical scrollbar excluded |
+
+The library reads `--table-scroll-width` itself for the pieces that pin horizontally — `<Table.Gutter>`, `<Table.Expansion>`, `<Table.Overlay>` and the rounded header background layer. The other two exist for you.
+
+`--table-pinned-bg` is the one variable you may want to **set**, and it is a colour rather than a measurement — see above. It has a working default, so nothing breaks if you leave it alone.
+
+`--table-header-height` is what you want for anything that has to line up with where the rows start — insetting a custom scrollbar so it doesn't run up behind the header, for instance. It is `0px` until a `<Table.Header>` mounts, and `0px` for a table that has none.
+
+Because it is measured, express the space between the header and the rows as **padding on `.table-header`**. A bottom `margin` falls outside the border box and won't be counted, which will leave `<Table.Overlay>` and anything else keyed to this number short by that much.
 
 ## Empty, loading and error slots
 

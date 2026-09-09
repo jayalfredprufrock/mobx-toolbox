@@ -13,4 +13,5 @@ export * from "./table-expansion";
 export * from "./table-loading";
 export * from "./table-overlay";
 export * from "./table-root";
+export * from "./table-scroll";
 export * from "./table-status-bar";

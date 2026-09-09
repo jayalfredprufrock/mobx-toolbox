@@ -8,7 +8,7 @@ import {
   type ReactNode,
 } from "react";
 import type { ColumnModel } from "../column.model";
-import { useTableContext } from "../table.context";
+import { useScrollportGuard, useTableContext } from "../table.context";
 import type { RowData } from "../table.types";
 import { CellSlot, type RenderColumn } from "./cell-slot";
 import { pinnedCellStyle } from "./cell-style";
@@ -29,6 +29,7 @@ export interface TableBodyProps {
  */
 export const TableBody: FC<TableBodyProps> = observer(({ className, style, children }) => {
   const table = useTableContext();
+  useScrollportGuard("Body");
 
   return (
     <div style={{ width: `${table.virtualWidth}px`, height: `${table.virtualHeight}px` }}>

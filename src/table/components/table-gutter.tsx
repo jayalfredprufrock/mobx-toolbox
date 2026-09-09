@@ -1,6 +1,6 @@
 import { observer } from "mobx-react-lite";
 import type { FC, HTMLAttributes, ReactNode } from "react";
-import { useTableContext } from "../table.context";
+import { useScrollportGuard, useTableContext } from "../table.context";
 
 export interface TableGutterProps extends HTMLAttributes<HTMLDivElement> {
   children?: ReactNode;
@@ -72,6 +72,7 @@ export interface TableGutterProps extends HTMLAttributes<HTMLDivElement> {
 export const TableGutter: FC<TableGutterProps> = observer(
   ({ children, className, style, height, ...rest }) => {
     const table = useTableContext();
+    useScrollportGuard("Gutter");
     return (
       <div
         {...rest}
@@ -81,7 +82,7 @@ export const TableGutter: FC<TableGutterProps> = observer(
         style={{
           position: "sticky",
           left: 0,
-          width: "var(--table-viewport-width)",
+          width: "var(--table-scroll-width)",
           height: `${height ?? table.rowHeight}px`,
           display: "flex",
           alignItems: "center",

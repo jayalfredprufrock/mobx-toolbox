@@ -1,7 +1,8 @@
 import { observer } from "mobx-react-lite";
-import type { CSSProperties, FC, HTMLAttributes } from "react";
+import { type CSSProperties, type FC, type HTMLAttributes, useEffect, useRef } from "react";
+import { useResize } from "../../react-util/useResize";
 import type { ColumnModel } from "../column.model";
-import { useTableContext } from "../table.context";
+import { useScrollportGuard, useTableContext } from "../table.context";
 import { CellSlot, type RenderColumn } from "./cell-slot";
 import { pinnedCellStyle } from "./cell-style";
 
@@ -20,12 +21,27 @@ export interface TableHeaderProps {
  * The sticky header row group. Owns layout — the grid track template, the left-pinned / spacer /
  * unpinned / right-pinned ordering — and defers each cell's content to the `children` render-prop
  * via a per-cell `CellSlot`.
+ *
+ * Also reports its own **border-box** height into `table.headerHeight`, so the space it occupies —
+ * including any padding the consumer adds to separate it from the rows — is measured rather than
+ * restated. `<Table.Overlay>` needs that number to start below the header, and `<Table.Root>`
+ * republishes it as `--table-header-height`. Express the gap as padding here; a bottom *margin*
+ * falls outside the border box and won't be seen.
  */
 export const TableHeader: FC<TableHeaderProps> = observer(({ className, style, children }) => {
   const table = useTableContext();
+  useScrollportGuard("Header");
+  const headerRef = useRef<HTMLDivElement>(null);
+
+  useResize(headerRef, (_width, height) => table.setHeaderHeight(height), { box: "border" });
+
+  // A table can lose its header without losing its model — leave a stale reservation behind and
+  // every overlay stays short by one header.
+  useEffect(() => () => table.setHeaderHeight(0), [table]);
 
   return (
     <div
+      ref={headerRef}
       role="rowgroup"
       className={["table-header", className].filter(Boolean).join(" ")}
       style={{

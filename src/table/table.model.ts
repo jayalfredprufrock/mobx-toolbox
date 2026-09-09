@@ -60,6 +60,20 @@ export class TableModel {
   height = 0;
   width = 0;
 
+  /**
+   * The header's measured **border-box** height — its own height plus whatever padding the consumer
+   * put on it to space the rows away from it. `<Table.Header>` reports this; it is `0` when no
+   * header is mounted, which is the right answer for a table that doesn't have one.
+   *
+   * Measured rather than declared so nothing has to restate it. The one thing the measurement can't
+   * see is a bottom *margin* on the header, which sits outside the border box — express that gap as
+   * padding on `.table-header` instead.
+   *
+   * `<Table.Overlay>` uses it to start below the header, and `<Table.Root>` publishes it as
+   * `--table-header-height` for consumer CSS that needs the same number.
+   */
+  headerHeight = 0;
+
   // active column sorts in priority order — earlier entries win, later ones break ties
   // (empty = original row order)
   sorts: ColumnSort[] = [];
@@ -796,6 +810,7 @@ export class TableModel {
       scrollY: observable,
       height: observable,
       width: observable,
+      headerHeight: observable,
       sorts: observable.ref,
       selectedIds: observable.shallow,
       expandedIds: observable.shallow,
@@ -892,6 +907,7 @@ export class TableModel {
       clearScrollRequest: action.bound,
       setWidth: action.bound,
       setHeight: action.bound,
+      setHeaderHeight: action.bound,
       setSort: action.bound,
       setSorts: action.bound,
       clearSort: action.bound,
@@ -1403,6 +1419,10 @@ export class TableModel {
 
   setHeight(height: number): void {
     this.height = height;
+  }
+
+  setHeaderHeight(headerHeight: number): void {
+    this.headerHeight = headerHeight;
   }
 
   /**

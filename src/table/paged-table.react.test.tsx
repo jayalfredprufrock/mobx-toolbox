@@ -78,27 +78,29 @@ describe("a paged table, end to end", () => {
 
       return (
         <Table.Root table={table}>
-          <Table.Header>
-            {(column) => <Table.ColumnHeader column={column}>{column.title}</Table.ColumnHeader>}
-          </Table.Header>
-          <Table.Body>
-            {(row) => (
-              <Table.Row row={row}>
-                {(column) => (
-                  <Table.Cell column={column}>{String(column.getValue(row))}</Table.Cell>
-                )}
-              </Table.Row>
-            )}
-          </Table.Body>
-          <Table.Gutter>
-            {table.pages?.loadingMore
-              ? "loading more"
-              : table.pages?.hasMore
-                ? null
-                : `all ${table.pages?.total ?? 0}`}
-          </Table.Gutter>
-          <Table.Loading>loading</Table.Loading>
-          <Table.Empty>no surveys</Table.Empty>
+          <Table.Scroll>
+            <Table.Header>
+              {(column) => <Table.ColumnHeader column={column}>{column.title}</Table.ColumnHeader>}
+            </Table.Header>
+            <Table.Body>
+              {(row) => (
+                <Table.Row row={row}>
+                  {(column) => (
+                    <Table.Cell column={column}>{String(column.getValue(row))}</Table.Cell>
+                  )}
+                </Table.Row>
+              )}
+            </Table.Body>
+            <Table.Gutter>
+              {table.pages?.loadingMore
+                ? "loading more"
+                : table.pages?.hasMore
+                  ? null
+                  : `all ${table.pages?.total ?? 0}`}
+            </Table.Gutter>
+            <Table.Loading>loading</Table.Loading>
+            <Table.Empty>no surveys</Table.Empty>
+          </Table.Scroll>
         </Table.Root>
       );
     },
@@ -141,10 +143,10 @@ describe("a paged table, end to end", () => {
     expect(gutter.style.left).toBe("0px");
     expect(gutter.style.top).toBe("");
     expect(gutter.style.bottom).toBe("");
-    expect(gutter.style.width).toBe("var(--table-viewport-width)");
+    expect(gutter.style.width).toBe("var(--table-scroll-width)");
   });
 
-  test("the status bar is sticky on both axes and paints above the rows", async () => {
+  test("the status bar sits outside the scrolling box, full width", async () => {
     const feed = lazyPages(api(30), { pageSize: 10 });
 
     const WithBar = observer(() => {
@@ -153,8 +155,10 @@ describe("a paged table, end to end", () => {
       table.setHeight(400);
       return (
         <Table.Root table={table}>
-          <Table.Body>{(row) => <Table.Row row={row}>{() => null}</Table.Row>}</Table.Body>
-          <Table.Gutter>{table.pages?.loadingMore ? "more…" : "end"}</Table.Gutter>
+          <Table.Scroll>
+            <Table.Body>{(row) => <Table.Row row={row}>{() => null}</Table.Row>}</Table.Body>
+            <Table.Gutter>{table.pages?.loadingMore ? "more…" : "end"}</Table.Gutter>
+          </Table.Scroll>
           <Table.StatusBar height={28}>
             Showing {table.rows.length} of {table.pages?.total}
           </Table.StatusBar>
@@ -166,24 +170,31 @@ describe("a paged table, end to end", () => {
     await settle();
 
     const bar = container.querySelector("[data-table-status-bar]") as HTMLElement;
-    expect(bar.style.position).toBe("sticky");
-    expect(bar.style.left).toBe("0px");
-    expect(bar.style.bottom).toBe("0px");
-    expect(bar.style.zIndex).toBe("20");
+    // a plain flex child of the root, outside the scrolling box: nothing scrolls behind it, so it
+    // needs no sticky positioning, no z-index and no opaque fill to sit above the rows
+    expect(bar.style.position).toBe("");
+    expect(bar.style.zIndex).toBe("");
+    expect(bar.style.flex).toBe("0 0 auto");
     expect(bar.style.height).toBe("28px");
-    expect(bar.style.width).toBe("var(--table-viewport-width)");
+    // full width, scrollbar gutter included — not clipped to the scrollport's visible width
+    expect(bar.style.width).toBe("100%");
+    expect(bar.closest("[role=table]")).toBeNull();
     expect(bar.textContent).toBe("Showing 30 of 30");
 
-    // both together is the normal pairing, and the bar comes last so it paints over the rows it
-    // overlays while displaced
+    // both together is the normal pairing — a spinner at the tail of the rows *and* a count that
+    // is always visible — and they now live in different boxes: the gutter is part of the list, the
+    // bar is part of the frame
+    const viewport = container.querySelector(".table-viewport")!;
     const scroller = container.querySelector('[role="table"]')!;
     const gutter = container.querySelector("[data-table-gutter]")!;
-    const children = [...scroller.children];
-    expect(children.indexOf(gutter)).toBeLessThan(children.indexOf(bar));
-    expect(bar.parentElement).toBe(scroller);
+    expect(gutter.closest('[role="table"]')).toBe(scroller);
+    expect(bar.parentElement).toBe(viewport);
+    // and the bar follows the scrolling box in flow, so the scrollbar terminates at its top edge
+    const children = [...viewport.children];
+    expect(children.indexOf(scroller)).toBeLessThan(children.indexOf(bar));
   });
 
-  test("maxHeight caps the viewport, so the measured height stays consistent", async () => {
+  test("a cap on the root sizes the table, and the scrolling box carries no height of its own", async () => {
     const rows = Array.from({ length: 200 }, (_, i) => ({
       id: i,
       title: `s${i}`,
@@ -194,8 +205,10 @@ describe("a paged table, end to end", () => {
     const Capped = observer(() => {
       table = useTable<Survey>({ data: rows, columns, rowHeight: 40, rowOverscan: 0 });
       return (
-        <Table.Root table={table} maxHeight={300}>
-          <Table.Body>{(row) => <Table.Row row={row}>{() => null}</Table.Row>}</Table.Body>
+        <Table.Root table={table} style={{ maxHeight: 300 }}>
+          <Table.Scroll>
+            <Table.Body>{(row) => <Table.Row row={row}>{() => null}</Table.Row>}</Table.Body>
+          </Table.Scroll>
         </Table.Root>
       );
     });
@@ -205,24 +218,31 @@ describe("a paged table, end to end", () => {
     const viewport = container.querySelector(".table-viewport") as HTMLElement;
     const scroller = container.querySelector('[role="table"]') as HTMLElement;
 
-    // the cap lands on the viewport — the box that gets measured — so `table.height` picks it up
-    // through the ordinary ResizeObserver path and everything derived from it follows
+    // `style` reaches the root, which is the box a border and a border-radius belong on — and the
+    // box worth capping. There is no `maxHeight` prop: the table's three shapes (fill, cap, hug)
+    // are three CSS values on this element, so a prop would only be a second way to say one of them.
     expect(viewport.style.maxHeight).toBe("300px");
-    // and *not* on the scroll container, which is where `style={{ maxHeight }}` goes: that leaves
-    // `table.height` reporting the uncapped height, so the render window, the fetch-ahead
-    // threshold and the overlay's size are all computed for a viewport three times too tall
-    expect(scroller.style.maxHeight).not.toBe("300px");
-    expect(scroller.style.maxHeight).toBe(`${table.height}px`);
+    // and the scrolling box carries no height of its own at all. It used to be pinned to
+    // `table.height`, which is what forced that height to be *computed* — and therefore what
+    // forced the header, the horizontal scrollbar and every piece of chrome to be accounted for
+    // in JS. Flex resolves it now, so `table.height` is measured off the result instead.
+    expect(scroller.style.maxHeight).toBe("");
+    expect(scroller.style.flex).toBe("1 1 auto");
+    // load-bearing: flex items default to `min-height: auto` and refuse to shrink below their
+    // content, which would leave the box uncapped no matter what the root says
+    expect(scroller.style.minHeight).toBe("0");
 
-    // what the trap looks like, for contrast
-    const { container: trap } = await mount(
-      <Table.Root table={table} style={{ maxHeight: 300 }}>
-        <Table.Body>{(row) => <Table.Row row={row}>{() => null}</Table.Row>}</Table.Body>
+    // hugging is the same mechanism with a different value, and needs no opt-in flag either
+    const { container: hugged } = await mount(
+      <Table.Root table={table} style={{ height: "auto", minHeight: 240 }}>
+        <Table.Scroll>
+          <Table.Body>{(row) => <Table.Row row={row}>{() => null}</Table.Row>}</Table.Body>
+        </Table.Scroll>
       </Table.Root>,
     );
-    const trapped = trap.querySelector('[role="table"]') as HTMLElement;
-    expect(trapped.style.maxHeight).toBe("300px");
-    expect((trap.querySelector(".table-viewport") as HTMLElement).style.maxHeight).toBe("");
+    const hug = hugged.querySelector(".table-viewport") as HTMLElement;
+    expect(hug.style.height).toBe("auto");
+    expect(hug.style.minHeight).toBe("240px");
   });
 
   test("the gutter's own style overrides the positioning it ships with", async () => {
@@ -234,8 +254,10 @@ describe("a paged table, end to end", () => {
       table.setHeight(400);
       return (
         <Table.Root table={table}>
-          <Table.Body>{(row) => <Table.Row row={row}>{() => null}</Table.Row>}</Table.Body>
-          <Table.Gutter style={{ bottom: 0, height: 24 }}>x</Table.Gutter>
+          <Table.Scroll>
+            <Table.Body>{(row) => <Table.Row row={row}>{() => null}</Table.Row>}</Table.Body>
+            <Table.Gutter style={{ bottom: 0, height: 24 }}>x</Table.Gutter>
+          </Table.Scroll>
         </Table.Root>
       );
     });
@@ -303,7 +325,9 @@ describe("a paged table, end to end", () => {
       table.applyState({ columnFilters: { status: { selected: ["live"], matchMode: "any" } } });
       return (
         <Table.Root table={table}>
-          <Table.Body>{(row) => <Table.Row row={row}>{() => null}</Table.Row>}</Table.Body>
+          <Table.Scroll>
+            <Table.Body>{(row) => <Table.Row row={row}>{() => null}</Table.Row>}</Table.Body>
+          </Table.Scroll>
         </Table.Root>
       );
     });

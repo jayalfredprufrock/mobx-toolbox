@@ -653,6 +653,166 @@ first row used to get none if it was constructed before its data loaded.
 
 ---
 
+### table — the header measures itself; `--table-header-height` / `--table-header-gap` change direction
+
+⚠️ **The library no longer reads either variable.** `<Table.Header>` now reports its own border-box
+height into the new `table.headerHeight`, and `<Table.Overlay>` — and therefore `<Table.Empty>`,
+`<Table.Loading>` and `<Table.Error>` — sizes itself from that instead of subtracting two variables
+you had to declare. This compiles fine and changes layout at runtime. Check each table.
+
+**What to do, per table:**
+
+1. **Delete your `--table-header-height` declaration.** It is now an _output_: `<Table.Root>`
+   publishes the measured value under the same name. If your own CSS reads it, that keeps working
+   and gets more accurate. If your own CSS _sets_ it, remove that — you would be overwriting a
+   measurement with a guess, and anything downstream of it will be wrong by the difference.
+
+2. **Check how you space the header from the rows.** The measurement is a border box, so
+   `padding-bottom` on `.table-header` is counted and a bottom `margin` is not. If you used a
+   margin, convert it to padding:
+
+   ```css
+   /* before */
+   .table-header {
+     margin-block-end: var(--table-header-gap);
+   }
+   /* after */
+   .table-header {
+     padding-block-end: 8px;
+   }
+   ```
+
+   A margin left in place leaves every overlay short by exactly that much — the failure is subtle,
+   which is why it's worth grepping for rather than eyeballing.
+
+3. **`--table-header-gap` is no longer part of the contract.** Nothing in the library reads it. Keep
+   it if it is a useful spacing token in your own stylesheet; it is just yours now, not shared.
+
+4. **If you render no `<Table.Header>`, your overlays get taller** — correctly. They previously
+   reserved a `rowHeight` fallback for a header that wasn't there. Nothing to change; expect the
+   message to sit slightly lower and be centred in the full box.
+
+**What this buys you** beyond deleting a declaration: `--table-header-height` is now a number you can
+trust in CSS, which makes it possible to line things up with where the rows actually start. The case
+that motivated it is insetting a custom scrollbar so it stops at the header instead of running up
+behind it — a native scrollbar can never do that, since it belongs to the scroll container and spans
+its full height.
+
+**In tests**, `headerHeight` is driven like `width` and `height` are: `ResizeObserver` reports
+nothing under happy-dom, so call `table.setHeaderHeight(44)` alongside your existing
+`table.setWidth(...)` / `table.setHeight(...)` in any test that asserts an overlay's height.
+
+### table — `<Table.Scroll>`, and chrome moves outside it
+
+⚠️ **Every table needs a new wrapper.** `<Table.Root>` used to render its children inside the
+scrolling box; it is now a flex column whose children are the scrolling box _and_ whatever chrome
+sits outside the scrollbars. The scrolling box is `<Table.Scroll>`.
+
+```tsx
+// before
+<Table.Root table={table}>
+  <Table.Header>…</Table.Header>
+  <Table.Body>…</Table.Body>
+  <Table.Empty>No results</Table.Empty>
+  <Table.StatusBar>Showing {table.rows.length}</Table.StatusBar>
+</Table.Root>
+
+// after
+<Table.Root table={table}>
+  <Table.Scroll>
+    <Table.Header>…</Table.Header>
+    <Table.Body>…</Table.Body>
+    <Table.Empty>No results</Table.Empty>
+  </Table.Scroll>
+  <Table.StatusBar>Showing {table.rows.length}</Table.StatusBar>
+</Table.Root>
+```
+
+**You do not have to find these by hand.** Both mistakes throw in development with a message naming
+the component: a part that needs the scrollport rendered outside one, and chrome rendered inside it.
+Run the app, fix what throws. (The checks are behind `process.env.NODE_ENV !== "production"`, so they
+cost production nothing.)
+
+| goes inside `<Table.Scroll>`                                                                   | goes directly in `<Table.Root>`         |
+| ---------------------------------------------------------------------------------------------- | --------------------------------------- |
+| `Header`, `Body`, `Row`, `Cell`, `Gutter`, `Expansion`, `Overlay`, `Empty`, `Loading`, `Error` | `StatusBar`, and any chrome of your own |
+
+**Why the bar moved.** Inside the scrolling box it was inside the box the scrollbars measure: the
+vertical scrollbar ran past it no matter what, and the bar stopped short of the scrollbar gutter, so
+a divider along its top edge visibly ran out into the middle of a scrollbar. There was no styling
+fix. Outside, it spans the full width and the scrollbar terminates at its top edge.
+
+**Then check these, in rough order of how quietly they fail:**
+
+1. ⚠️ **`className` and `style` on `<Table.Root>` now land on the outer frame, not the scroll
+   container.** No type error, no test failure — your styling simply applies to a different box.
+   Anything cosmetic about the _frame_ (border, `border-radius`, background, padding) is now on the
+   right element and probably wants nothing; anything about the _scrolling area_ moves to
+   `<Table.Scroll className=… style=…>`, which takes every div prop. **Check every occurrence.**
+
+2. ⚠️ **`<Table.StatusBar>` lost its `position: sticky`, its `z-index` and its clipped width.** It is a plain flex child now, full width. If your CSS compensated for any of that —
+   an opaque background so rows didn't show through, a `z-index` to sit above the header, a
+   negative margin to reach the gutter — delete it.
+
+3. ⚠️ **The short-list behaviour changed.** `StatusBar` used to sit directly under the last row on
+   a short list, as a side effect of being sticky inside the scrollport. Now the table fills its
+   parent by default and the bar sits at the bottom with dead space above it — the classic shape. To
+   get the old behaviour, hug the content: `<Table.Root style={{ height: "auto", minHeight: 240 }}>`.
+   The `minHeight` matters if the table can be empty, since an empty box hugs to just its header and
+   `<Table.Overlay>` has nowhere to put its message.
+
+4. **`<Table.Overlay>` gained a wrapper element.** It is now a zero-height sticky div with the sized
+   box as its absolutely positioned child, so that it contributes nothing to the scrolling box's
+   content height (which is what lets a hugging root size itself from the rows rather than from the
+   overlay). If you have a CSS selector or a test querying the overlay's DOM position — a
+   `> div:last-child`-style selector especially — it needs one more level. `data-empty`,
+   `data-loading` and `data-error` are unchanged and are the selectors to prefer.
+
+5. **The `maxHeight` prop is gone — use `style={{ maxHeight }}`.** A mechanical rename, and the
+   compiler finds every one:
+
+   ```tsx
+   <Table.Root table={table} maxHeight={480}>              // before
+   <Table.Root table={table} style={{ maxHeight: 480 }}>   // after
+   ```
+
+   `style` used to land on the _scroll container_, which is exactly why the prop existed — it was
+   the only way to cap the box that got measured. Now that both reach the same element the prop is
+   just a second way to say one CSS value, and the table exposes no other style props. If you have a
+   comment explaining the old hazard, it is obsolete. Note the three shapes are now all `style` on
+   the root: no value fills the parent, `maxHeight` caps it, `height: "auto"` hugs the rows.
+
+6. **`--table-viewport-width` is renamed `--table-scroll-width`.** Grep your stylesheets. The old
+   name was actively misleading once there were two boxes: it is set on the _scrolling_ box and holds
+   _its_ visible width, while `.table-viewport` is the outer frame. Library-set either way, so this
+   only affects CSS of yours that reads it.
+
+7. **`<Table.Scroll>` carries a `.table-scroll` class**, alongside the `.table-viewport` the root has
+   always had. If you were reaching the scrolling box through `[role="table"]` or a descendant
+   selector, that is what to use now.
+
+8. **In tests**, add `<Table.Scroll>` and keep driving `table.setWidth(...)` / `table.setHeight(...)`
+   directly — `ResizeObserver` still reports nothing under happy-dom. One semantic note:
+   `table.height` is now the _scrolling box's_ content height rather than the outer frame's, so it
+   excludes the horizontal scrollbar and any chrome. In a test that sets it by hand the number means
+   the same thing it always did.
+
+**New capability worth knowing about.** `<Table.Scroll>` takes every div prop and merges an incoming
+`ref` with its own, so a scroll-area primitive that needs the scrolling element can compose onto it —
+Ark UI's `<ScrollArea.Viewport asChild>`, for instance. That is what makes a fully styled custom
+scrollbar possible, including insetting it below the sticky header with
+`top: var(--table-header-height)`. Nested that way, `<Table.Scroll>` is no longer a direct child of
+the root's flex column, so move the sizing to the wrapper and pass
+`style={{ flex: "initial", height: "100%" }}`.
+
+### react-util — `useResize` takes an options argument
+
+`useResize(ref, onResize)` is unchanged and still reports the content box. It now accepts a third
+argument, `{ box: "content" | "border" }`, for the case where padding and border are part of the
+number you need. Purely additive.
+
+---
+
 ### table — new column options
 
 Two additions, both opt-in, both aimed at the case where you want _some_ columns configured and the
@@ -1276,6 +1436,29 @@ every render retriggering everything reading it.
 - Hand-written column lists that only exist because configuring one column lost the rest — `columns`
   plus `autoColumns` now compose.
 - Custom sorting of a column array to force a column first or last — `order`, or `pinned` for an edge.
+- `--table-header-height` declarations, and any JS constant mirroring the header's height or the gap
+  below it into a style object. The header is measured now; `<Table.Root>` publishes the number.
+- `--table-header-gap` as a _shared_ token, if it existed only so the library could find out about
+  your header padding. Keep it as your own spacing variable if you like it.
+- CSS compensating for a vertical scrollbar running up behind the sticky header — a custom scrollbar
+  inset with `top: var(--table-header-height)` replaces the whole workaround. (The scrollbar itself
+  is yours to build or to take from a scroll-area primitive; the library only supplies the number.)
+- Any `calc()` in your own overlay or empty-state styling that re-derived "height minus header",
+  which `<Table.Overlay>` now does exactly.
+- Flex or grid wrappers you built _around_ `<Table.Root>` to place a status bar, pagination or a
+  toolbar next to the table, plus the height arithmetic that fed them. Chrome goes inside the root
+  now and the browser subtracts it.
+- A `maxHeight` used purely to reserve room for a bar rendered below the table — the bar can be
+  chrome inside the root instead, and then nothing needs a fixed cap at all.
+- Opaque backgrounds, `z-index` values and negative margins on a status bar, all of which existed to
+  survive being inside the scrollport.
+- `{!table.loading && !table.error && <Table.StatusBar>}` guards added _because_ the bar painted
+  over the overlay surfaces. It no longer overlaps them. Keep the guard only if showing a row count
+  beside an error message actually reads badly.
+- Comments and wrapper props warning that `style={{ maxHeight }}` lands on the wrong box, and any
+  helper that existed to funnel a height into the `maxHeight` prop.
+- Selectors reaching the scrolling box the long way round — `.table-viewport > [role="table"]` and
+  similar — now that it has a `.table-scroll` class of its own.
 
 ---
 

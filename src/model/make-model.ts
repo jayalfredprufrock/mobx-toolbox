@@ -177,6 +177,56 @@ type KeyedBodyFn<S extends ModelSchema, K, R> =
     ? (body: any, ...rest: any[]) => Promise<R>
     : (params: KeyShape<S, K>, body: any, ...rest: any[]) => Promise<R>;
 
+type IsAny<T> = 0 extends 1 & T ? true : false;
+
+/**
+ * The property names a config function's first parameter carries beyond the declared keys.
+ *
+ * Asked of the keys rather than by assignability, which is blind to this: `{ id }` and
+ * `{ id; orgId? }` are *mutually* assignable, so a fetcher declaring more still satisfies the slot.
+ *
+ * `any` and an index signature say nothing about which fields exist, so neither is judged — a mock
+ * or a loosely typed client passes through, and with it the risk this guards against.
+ */
+type ParamsBeyondKeys<S extends ModelSchema, K, F> = F extends (p: infer P, ...rest: any[]) => any
+  ? IsAny<P> extends true
+    ? never
+    : string extends keyof P
+      ? never
+      : Exclude<keyof P, keyof KeyShape<S, K>>
+  : never;
+
+/**
+ * Rejects a config function whose first parameter carries more than the declared keys.
+ *
+ * The invariant: the params that identify a record are the params every call uses. The instance
+ * methods rebuild that argument from `buildParams()`, which knows only the keys — so a fetcher
+ * taking anything else would be called by `reload()`, `update()`, `delete()` and the actions with
+ * the rest missing, quietly addressing a different record than the load did. `reload()` can also
+ * run on its own, from a background refresh under `optimistic`, so the divergence need not even be
+ * traceable to a call you wrote.
+ *
+ * If a value scopes the record, declare it as a key — then it is part of identity and
+ * `buildParams()` can rebuild it. If it doesn't, bind it in the config where it cannot drift:
+ * `get: (params) => api.getUser({ ...params, expand: "roles" })`.
+ */
+type ParamsMustBeKeys<S extends ModelSchema, K, Cfg> =
+  Keyless<K> extends true
+    ? unknown
+    : [
+          | ParamsBeyondKeys<S, K, Cfg extends { get: infer F } ? F : never>
+          | ParamsBeyondKeys<S, K, Cfg extends { delete: infer F } ? F : never>
+          | ParamsBeyondKeys<S, K, Cfg extends { update: infer F } ? F : never>
+          | (Cfg extends { actions: infer A }
+              ? { [N in keyof A]: ParamsBeyondKeys<S, K, A[N]> }[keyof A]
+              : never),
+        ] extends [never]
+      ? unknown
+      : {
+          /** The name is the message: TypeScript reports it as the property the config is missing. */
+          readonly __firstParameterMustCarryOnlyTheDeclaredKeys: never;
+        };
+
 // Strip the first arg when keys is non-empty — model methods don't take the params.
 type StripParams<K, F> =
   Keyless<K> extends true
@@ -784,7 +834,7 @@ function createModelClass(schema: ModelSchema, config?: ModelConfig<any, any>): 
 export function makeModel<S extends T.TObject>(schema: S): ModelConstructor<S, false, {}>;
 export function makeModel<S extends T.TObject, K extends KeySpec<S>, Cfg extends ModelConfig<S, K>>(
   schema: S,
-  config: Cfg & { keys: K },
+  config: Cfg & { keys: K } & ParamsMustBeKeys<S, K, Cfg>,
 ): ModelConstructor<S, K, Cfg>;
 export function makeModel<S extends T.TObject>(
   schema: S,
@@ -871,7 +921,11 @@ export function makeUnionModel<
   D extends keyof Resource<S> & string,
   K extends KeySpec<S>,
   Cfg extends ModelConfig<S, K>,
->(schema: S, discriminator: D, config: Cfg & { keys: K }): UnionModelConstructor<S, D, K, Cfg>;
+>(
+  schema: S,
+  discriminator: D,
+  config: Cfg & { keys: K } & ParamsMustBeKeys<S, K, Cfg>,
+): UnionModelConstructor<S, D, K, Cfg>;
 export function makeUnionModel(
   schema: UnionSchema,
   discriminator: string,

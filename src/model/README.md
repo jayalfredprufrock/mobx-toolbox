@@ -65,6 +65,33 @@ required when the config is hoisted into its own variable, where TypeScript wide
 `string[]` before `makeModel` ever sees it — declare the config inline, or write
 `keys: ["id"] as const` there.
 
+**The params that identify a record are the params every call uses.** `get`, `update`, `delete` and
+the actions take the declared keys as their first argument, and nothing else — a fetcher carrying
+more is refused:
+
+```ts
+makeModel(UserSchema, {
+  keys: ["id"],
+  get: api.getUserExpanded, // ✗ (params: { id: number; expand?: string }) — `expand` is not a key
+});
+```
+
+The reason is `reload()`. An instance rebuilds its params with `buildParams()`, which knows only the
+keys, so a fetcher taking `expand` would be refreshed without it — hitting a different endpoint than
+the load did, from a call nobody wrote, since a background refresh under
+[`optimistic`](#optimistic) reloads on its own.
+
+Two ways to say what you meant. If the value identifies the record, make it a key — then it's part
+of identity and can be rebuilt. If it doesn't, bind it in the config, where it can't drift:
+
+```ts
+get: (params) => api.getUserExpanded({ ...params, expand: "roles" }),
+```
+
+`create`'s body is not params, so it carries whatever you like. A _narrower_ first argument is fine
+too — a fetcher may ignore a key it doesn't need. And the rule can only see what's typed: a
+parameter declared `any`, or one with an index signature, is attached without judgement.
+
 ### Statics — `get` and `create`
 
 `get` and `create` don't need an instance, so they become statics on the class, returning
@@ -79,6 +106,22 @@ Each static mirrors its config function's signature exactly, so extra arguments 
 (`UserModel.get({ id: 1 }, { expand: "roles" })`) and a resource with no key params reads naturally
 (`get: () => api.getSettings()` → `Settings.get()`). Both are typed through the class they're called
 on, so `Admin.get({ id: 1 })` is an `Admin` — see [Identity](#identity--one-instance-per-record).
+
+**The fetch options are yours to declare.** `useModel` and the collection hooks call `get` with
+`{ signal }` — the bag that aborts a superseded request. Because the signature passes through
+untouched, whether a hand-written call has to supply one is decided by your own fetcher:
+
+```ts
+get: api.getSurvey,                                     // (params, init?: RequestInit) → Survey.get({ id })
+get: ({ id }, o?: LazyFetchOptions) => api.get(id, o),  // optional, so → Survey.get({ id })
+get: ({ id }, o: LazyFetchOptions) => api.get(id, o),   // required, so → Survey.get({ id }, o)
+```
+
+A generated client usually declares its options optional, which is why attaching one directly reads
+well. Write the `?` yourself in a wrapper and it reads the same; leave it off and every caller has to
+pass a bag it has nothing to put in — TypeScript gives a parameter its type from context, never its
+optionality. Nothing is manufactured either way: the endpoint sees exactly the arguments the caller
+passed, and a call you made by hand has nothing that could supersede it.
 
 **Request bodies are typed by what you supply, not by the schema.** `create` and `update` leave the
 body unconstrained, so any shape attaches — and whatever you attach or annotate is the type callers
@@ -1037,6 +1080,35 @@ and takes an explicit `deps` array:
 ```tsx
 const stats = useLazy((o) => api.getStudyStats({ id: studyId }, o), [studyId]);
 ```
+
+The other case is a `get` this hook can't call. It calls `get(params, fetchOptions)` and nothing
+else, so one options bag has to satisfy everything after the params — a fetcher with an argument in
+between is unreachable from here, and says so at the hook rather than receiving the bag in the
+wrong slot:
+
+```ts
+const Study = makeModel(StudySchema, {
+  keys: ["id"],
+  get: api.getStudy, // (params, expand: string, options?: RequestInit) => Promise<Study>
+});
+
+useModel(Study, { id }); // ✗ UseLazyInstead_GetTakesMoreThanParamsAndFetchOptions
+```
+
+Your client's own options type is fine here — `RequestInit`, `{ signal?: AbortSignal }`, anything a
+bag can stand in for. What it can't be is an argument the bag isn't: marking `expand` optional
+doesn't help either, because arguments are passed by position, so the bag would arrive as the
+`expand` and the request would get no signal. Write the call yourself instead, and mind the
+dependency list — deriving it from the params is the hook's other job, so anything else the call
+closes over is now yours to declare:
+
+```tsx
+const study = useLazy((o) => Study.get({ id }, expand, o), [id, expand]);
+```
+
+Every other use of the model is unaffected — `Study.get({ id }, expand)` from a route loader, store
+methods, identity, events. It is only this hook that has a fixed call shape, for the same reason
+`lazy`, `collection` and `collectionMap` do: something has to own the request.
 
 ### Where a list should live
 

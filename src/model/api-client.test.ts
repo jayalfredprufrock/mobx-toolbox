@@ -29,7 +29,7 @@ const makeApi = () => ({
   ),
   deleteUser: vi.fn((_params: { id: number }): Promise<void> => Promise.resolve()),
   activateUser: vi.fn((_params: { id: number }): Promise<User> => Promise.resolve(alice)),
-  // a params object with optional extras beyond the key
+  // a params object with extras beyond the key — attachable only through a config that binds them
   getUserExpanded: vi.fn(
     (_params: { id: number; expand?: string }): Promise<User> => Promise.resolve(alice),
   ),
@@ -106,13 +106,27 @@ describe("api client passthrough", () => {
     expect(store.list.value).toHaveLength(0);
   });
 
-  test("a params object with optional extras beyond the key still attaches", async () => {
+  test("a params object with extras beyond the key is refused", async () => {
     const api = makeApi();
-    const Expanded = makeModel(UserSchema, { keys: ["id"] as const, get: api.getUserExpanded });
 
-    await Expanded.get({ id: 1, expand: "roles" });
+    // The params that identify a record are the params every call uses. `buildParams()` knows only
+    // the declared keys, so a fetcher taking more would be called by `reload()` — including the
+    // background refresh under `optimistic`, which nobody wrote — with `expand` missing, quietly
+    // addressing something other than what was loaded.
+    // @ts-expect-error `expand` is not a declared key, so `buildParams()` could never rebuild it
+    void (() => makeModel(UserSchema, { keys: ["id"] as const, get: api.getUserExpanded }));
 
-    expect(api.getUserExpanded).toHaveBeenCalledWith({ id: 1, expand: "roles" });
+    // Bind it in the config instead, where it cannot drift between the load and a refresh.
+    const Expanded = makeModel(UserSchema, {
+      keys: ["id"] as const,
+      get: (params: { id: number }) => api.getUserExpanded({ ...params, expand: "roles" }),
+    });
+
+    const user = await Expanded.get({ id: 1 });
+    await user.reload();
+
+    expect(api.getUserExpanded).toHaveBeenNthCalledWith(1, { id: 1, expand: "roles" });
+    expect(api.getUserExpanded).toHaveBeenNthCalledWith(2, { id: 1, expand: "roles" });
   });
 
   test("update's body is the client's type, not any", () => {

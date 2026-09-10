@@ -636,6 +636,34 @@ reaching for them is a compile error rather than a runtime throw. To build a det
 model that _does_ have identity — two live copies of one record, for a before/after diff or history
 rows sharing an id — use `new Model(data)`, which never touches the registry.
 
+**The first argument of `get`, `update`, `delete` and the actions is exactly the declared keys.** A
+fetcher whose params object carries more than the keys no longer attaches:
+
+```ts
+// before — compiled, and drifted on refresh
+makeModel(UserSchema, { keys: ["id"], get: api.getUserScoped }); // (params: { id; orgId? })
+
+// after — the extra identifies the record and is a field on it, so declare it
+makeModel(UserSchema, { keys: ["id", "orgId"], get: api.getUserScoped });
+
+// after — it doesn't identify anything (and isn't a resource field), so bind it in the config
+makeModel(UserSchema, {
+  keys: ["id"],
+  get: (params) => api.getUserExpanded({ ...params, expand: "roles" }),
+});
+```
+
+The reason is `reload()`. An instance rebuilds its params from `buildParams()`, which knows only the
+keys, so the old form was refreshed **without** the extra — a different request than the load made,
+and not necessarily from a call you wrote, since a background refresh under `optimistic` reloads on
+its own. Note that promoting a value to a key requires it to be a field on the resource (`keys`
+admits only schema fields), which forces the question to be answered properly: if it varies the
+payload, identity has to include it, or two variants collide on one instance.
+
+A _narrower_ first argument is still fine — a fetcher may ignore a key it doesn't need — and
+`create`'s body is not params, so it carries whatever you like. A parameter typed `any` or carrying
+an index signature can't be checked and is attached without judgement.
+
 ### table
 
 ⚠️ **`setRows` no longer clears selection when `getRowId` is configured.** It intersects: ids that
@@ -1338,8 +1366,33 @@ options moving up into the second slot.
 `useCollection` is unchanged and keeps its name — `useModel` / `useCollection` reads as singular and
 plural, and both take a model as their first argument.
 
-Reach past it to `useLazy` only for something that isn't a model record — a count, a summary, an
-endpoint with no model behind it.
+**It requires `get(keys, options?)`** — or `get(options?)` with no keys. The hook makes exactly that
+one call, so a single fetch-options bag has to satisfy everything after the params, and a model whose
+`get` wants more is rejected at the hook rather than being handed the bag in the wrong argument:
+
+```ts
+const Study = makeModel(StudySchema, {
+  keys: ["id"],
+  get: api.getStudy, // (params, expand: string, init?: RequestInit)
+});
+
+useModel(Study, { id }); // ✗ UseLazyInstead_GetTakesMoreThanParamsAndFetchOptions
+```
+
+Your client's own options type is fine — `RequestInit`, `{ signal?: AbortSignal }`, anything a bag
+can stand in for, optional or required. What it can't be is an argument the bag isn't. Marking that
+argument optional doesn't help either: arguments go by position, so the bag would arrive as the
+`expand` and the request would get no signal at all.
+
+Reach past it to `useLazy` for those, and for anything that isn't a model record — a count, a
+summary, an endpoint with no model behind it:
+
+```tsx
+const study = useLazy((o) => Study.get({ id }, expand, o), [id, expand]);
+```
+
+Writing the call yourself means the dependency list is yours again, which is the trade: everything
+the fetch closes over has to be listed.
 
 **`useLazy` instead of `useMemo(() => lazyObservable(…))` for anything else.** Loading one record
 in a component had no first-class shape, so the pattern was:

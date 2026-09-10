@@ -9,6 +9,8 @@
 import * as T from "typebox";
 import { makeModel } from "./make-model";
 import { useModel } from "./use-model";
+import { useLazy } from "../lazy/use-lazy";
+import type { LazyFetchOptions } from "../lazy/lazy";
 
 const StudySchema = T.Object({ id: T.Number(), orgId: T.String(), title: T.String() });
 
@@ -92,5 +94,97 @@ const NoGet = makeModel(StudySchema, { keys: ["id"] });
 
 // @ts-expect-error no `get` declared, so there are no params that could be passed
 useModel(NoGet, { id });
+
+// --- a `get` the hook cannot call --------------------------------------------
+
+// The hook calls `get(params, fetchOptions)` and nothing else, so one bag has to satisfy
+// everything after the params. Every other layer states this in its own fetch type; this one
+// inherits the signature from the config, so it states it here.
+
+declare const listStudy: (
+  params: { id: number; orgId: string },
+  expand: string,
+  options?: RequestInit,
+) => Promise<{ id: number; orgId: string; title: string }>;
+
+const Expanded = makeModel(StudySchema, { keys: ["id", "orgId"], get: listStudy });
+
+// @ts-expect-error `expand` sits between the params and the bag
+useModel(Expanded, { id, orgId });
+
+declare const listStudyLoose: (
+  params: { id: number; orgId: string },
+  expand?: string,
+  options?: RequestInit,
+) => Promise<{ id: number; orgId: string; title: string }>;
+
+const Loose = makeModel(StudySchema, { keys: ["id", "orgId"], get: listStudyLoose });
+
+// @ts-expect-error optional doesn't help — arguments go by position, so the bag would land in
+// `expand` and no signal would reach the request at all
+useModel(Loose, { id, orgId });
+
+declare const needsMore: (
+  params: { id: number; orgId: string },
+  options: { signal: AbortSignal; expand: string },
+) => Promise<{ id: number; orgId: string; title: string }>;
+
+const NeedsMore = makeModel(StudySchema, { keys: ["id", "orgId"], get: needsMore });
+
+// @ts-expect-error the bag alone cannot satisfy this options type
+useModel(NeedsMore, { id, orgId });
+
+// the escape hatch: write the call yourself, and every value it closes over is a dependency
+declare const expand: string;
+const expanded = useLazy((o) => Expanded.get({ id, orgId }, expand, o), [id, orgId, expand]);
+if (expanded.loaded) {
+  const title: string = expanded.value.title;
+  void title;
+}
+
+// --- and the shapes the hook can drive ---------------------------------------
+
+// nothing after the params: the extra argument is ignored, as in any JavaScript call
+const Bare = makeModel(StudySchema, {
+  keys: ["id", "orgId"],
+  get: async (params: { id: number; orgId: string }) => ({ ...params, title: "x" }),
+});
+useModel(Bare, { id, orgId });
+
+// a client's own options type, required or optional. The question is whether a bag can *satisfy*
+// the parameter, not whether it is spelled `LazyFetchOptions` — so the partial shapes a client
+// declares for itself are all fine. Requiredness is the fetcher's business and only constrains
+// calls written by hand; the hook always has a bag to pass.
+declare const attached: (
+  params: { id: number; orgId: string },
+  init: RequestInit,
+) => Promise<{ id: number; orgId: string; title: string }>;
+declare const partialBag: (
+  params: { id: number; orgId: string },
+  options?: Partial<LazyFetchOptions>,
+) => Promise<{ id: number; orgId: string; title: string }>;
+const Attached = makeModel(StudySchema, { keys: ["id", "orgId"], get: attached });
+const PartialBag = makeModel(StudySchema, { keys: ["id", "orgId"], get: partialBag });
+useModel(Attached, { id, orgId });
+useModel(Attached, { id, orgId }, { keepOnUnobserved: true });
+useModel(PartialBag, { id, orgId });
+
+// an argument *past* the bag is fine when the hook's omitting it is legal
+declare const trailingOptional: (
+  params: { id: number; orgId: string },
+  options: LazyFetchOptions,
+  retries?: number,
+) => Promise<{ id: number; orgId: string; title: string }>;
+const TrailingOptional = makeModel(StudySchema, { keys: ["id", "orgId"], get: trailingOptional });
+useModel(TrailingOptional, { id, orgId });
+
+declare const trailingRequired: (
+  params: { id: number; orgId: string },
+  options: LazyFetchOptions,
+  retries: number,
+) => Promise<{ id: number; orgId: string; title: string }>;
+const TrailingRequired = makeModel(StudySchema, { keys: ["id", "orgId"], get: trailingRequired });
+// @ts-expect-error `retries` is required and the hook has nothing to pass for it
+useModel(TrailingRequired, { id, orgId });
 
 export {};

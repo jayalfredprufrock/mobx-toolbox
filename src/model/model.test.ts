@@ -849,6 +849,20 @@ describe("model statics", () => {
     expect(getFn).toHaveBeenCalledWith({ id: 1 }, { expand: "roles" });
   });
 
+  test("nothing is added: a fetcher that declared its bag optional is called without one", async () => {
+    // The config is pass-through, so the arguments the endpoint sees are exactly the arguments the
+    // caller passed. `useModel` supplies the bag because it owns the request; a hand-written call
+    // has nothing to supersede it, so there is nothing to supply.
+    const getFn = vi.fn((_params: { id: number }, _init?: RequestInit) => Promise.resolve(alice));
+    const UserModel = makeModel(UserSchema, { keys: ["id"] as const, get: getFn });
+
+    await UserModel.get({ id: 1 });
+    await UserModel.instantiate(alice).reload();
+
+    expect(getFn.mock.calls[0]).toEqual([{ id: 1 }]);
+    expect(getFn.mock.calls[1]).toEqual([{ id: 1 }]);
+  });
+
   test("reload is derived from get, so the endpoint is declared once", async () => {
     let name = "Alice";
     const getFn = vi.fn(({ id }: { id: number }) =>

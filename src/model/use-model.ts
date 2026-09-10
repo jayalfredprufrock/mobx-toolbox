@@ -1,5 +1,5 @@
 import { useLazy } from "../lazy/use-lazy";
-import type { Lazy, LazyOptions } from "../lazy/lazy";
+import type { Lazy, LazyFetchOptions, LazyOptions } from "../lazy/lazy";
 import type { AnyModelClass } from "./make-store";
 
 /**
@@ -28,6 +28,53 @@ type Keyless<MC> = MC extends { keys: infer K }
       : false
     : true
   : true;
+
+/**
+ * What `Model.get` takes after its params — the part of the fetcher's signature this hook has to
+ * be able to satisfy on its own.
+ */
+type FetchArgs<MC> =
+  Keyless<MC> extends true
+    ? MC extends { get: (...args: infer A) => any }
+      ? A
+      : never
+    : MC extends { get: (params: any, ...rest: infer R) => any }
+      ? R
+      : never;
+
+/**
+ * Whether the hook can drive this model's `get`.
+ *
+ * Every other layer that calls a fetch *declares* the shape it will call — `lazy` takes a
+ * `LazyFetch`, `collection` the same, `collectionMap` a `(key, options)`, `pagedCollection` a
+ * `(request)` — so a fetcher with an argument they can't fill is rejected where it is attached.
+ * This hook is the one that inherits its fetcher's signature from the model config, which is
+ * deliberately pass-through, so it has to state the same contract here instead.
+ *
+ * The contract is `get(keys, options?)`, or `get(options?)` with no keys, and the question asked of
+ * that trailing parameter is whether a `LazyFetchOptions` can *satisfy* it — not whether it is
+ * spelled one. That admits the partial shapes a client declares for itself: `RequestInit`,
+ * `{ signal?: AbortSignal }`, an optional bag, a required one. It also admits a fetcher taking
+ * nothing after its params, where the bag is ignored as in any JavaScript call, and one with an
+ * untyped rest, where there is nothing to check.
+ *
+ * What it rejects is a parameter the bag cannot stand in for: `expand: string`, an options type
+ * needing more than a signal, or a required argument past the bag. Optionality doesn't rescue any
+ * of them, because arguments go by position — `(keys, expand?: string, o?)` would receive the bag
+ * as its `expand`, and the request would get no signal at all.
+ */
+type HookFetchable<MC> =
+  FetchArgs<MC> extends [] ? true : [LazyFetchOptions] extends FetchArgs<MC> ? true : false;
+
+/**
+ * Attached to the model argument so an unreachable fetcher fails here, at the hook, rather than by
+ * sending the options bag to whatever argument happened to be in the way. Named as a sentence
+ * against the repo's usual style on purpose: TypeScript prints the alias name and elides the
+ * structure, so the name is the only part of this the reader will see.
+ */
+type UseLazyInstead_GetTakesMoreThanParamsAndFetchOptions = {
+  readonly __useLazyInstead: never;
+};
 
 /**
  * Everything after the model. A keyless model has nothing to pass for params, so it takes options
@@ -85,7 +132,10 @@ const paramsToDeps = (params: unknown): unknown[] => {
  * `useModel(SettingsModel)`, and `useModel(SettingsModel, { keepOnUnobserved: true })` for options.
  */
 export function useModel<MC extends AnyModelClass>(
-  model: MC,
+  model: MC &
+    (HookFetchable<MC> extends true
+      ? unknown
+      : UseLazyInstead_GetTakesMoreThanParamsAndFetchOptions),
   ...args: UseModelArgs<MC>
 ): Lazy<InstanceType<MC>> {
   // Which argument holds what depends on whether the model declared keys — the same question

@@ -1464,8 +1464,9 @@ A filter can only be persisted if it exposes both `value` and `setValue` — the
 `<Table.Root>` fills its parent, which must therefore be sized. `<Table.Scroll>` takes what is left
 of it after the chrome and measures itself, and everything derived from that measurement (the render
 window, `visibleRowCount`, the fetch-ahead threshold, `<Table.Overlay>`'s size) follows.
-`<Table.Header>` measures itself too, into `table.headerHeight`, which is what lets the overlay
-start exactly where the rows do.
+`<Table.Header>` is the exception: it is sized from `headerHeight` (defaulting to `rowHeight`)
+rather than measured, so the number the overlay starts below and the header's rendered box are the
+same thing, and both are right on the first frame — see [Header height](#header-height).
 
 The root is a **flex column**, so all of this is the browser's arithmetic rather than the library's.
 Chrome takes its natural height, `<Table.Scroll>` absorbs the rest, and `table.height` is read off
@@ -1528,23 +1529,48 @@ The library sets only structural CSS. Hook your styles onto:
 
 Pinned cells must be opaque because they overlap scrolling ones. Set `--table-pinned-bg` to your surface color (it defaults to the system `Canvas`), and override it inside the header to match a header background.
 
+### Header height
+
+The header's box is `headerHeight`, and it **defaults to `rowHeight`** — so a table that says nothing about it looks exactly as it did before the option existed.
+
+```ts
+const table = new TableModel({ data, rowHeight: 40, headerHeight: 56 });
+```
+
+`<Table.Header>` applies that number as a `border-box` height, which is what makes it worth having: it is the space the header occupies, not a claim about it. `--table-header-height` publishes the same number and `<Table.Overlay>` starts below it, so there is nothing to keep in agreement — one value drives the geometry and the variable.
+
+Two things follow from border-box:
+
+- **Express the gap between header and rows as padding on `.table-header`.** It comes out of `headerHeight` rather than adding to it, so the published number stays true. (`headerHeight: 48` with `padding-bottom: 8px` is a 40px row area and an 8px gap.)
+- **Header content taller than `headerHeight` overflows onto the first row** rather than growing the header. Raise the number. That is the trade for it being knowable at all — and it fails visibly, where it is set, rather than silently misplacing the overlay.
+
+The inner `role="row"` carries no height of its own; it stretches into whatever the box leaves, so header cells can be styled freely without an inline height to fight.
+
+**A table with no header wants `headerHeight: 0`.** The reservation is the config's, not the markup's — nothing measures or reports what is rendered, which is what makes the number right on the first paint rather than one frame late. Compose without a `<Table.Header>` and leave `headerHeight` alone and the overlays are inset by a header that isn't there: an empty state sits a row-height low with an uncovered strip above it. That is the entire blast radius — nothing in the virtualization math reads this, so it cannot drift a row — but it shows up on the empty, loading and error screens, which are the ones nobody looks at while building against seeded data.
+
+For a header that comes and goes — hidden at a breakpoint, or replaced by a bulk-selection bar — configure `headerHeight: 0` for that case rather than rendering `<Table.Header>` conditionally, so the number keeps describing what is on screen.
+
+Nothing in the virtualization math reads this. Body offsets are relative to the body, so the header is free to differ from `rowHeight` without rows drifting — which is exactly why `rowHeight` is _not_ configurable this way (see [Row height is the model's](#row-height-is-the-models)).
+
+### Row height is the model's
+
+`rowHeight` reaches CSS as `--table-row-height` for _reading_, and nothing more. The virtualizer computes offsets from it in JS — `index * rowHeight`, `Math.floor(y / rowHeight)`, `rows.length * rowHeight` — so a stylesheet that could change the rendered row height would put the model's arithmetic and the DOM quietly out of step, and rows would drift as you scroll. Change it through config.
+
 ### CSS variables
 
-Every variable the library touches is an **output**. There is nothing here for you to declare, and nothing that has to agree with a number you keep somewhere else.
+Every variable the library touches is an **output**: two of them are what you configured, one is measured, and none of them is yours to declare or keep in sync.
 
 | Variable                | Set on            | Is                                                                     |
 | ----------------------- | ----------------- | ---------------------------------------------------------------------- |
 | `--table-row-height`    | `.table-viewport` | The configured row height                                              |
-| `--table-header-height` | `.table-viewport` | The header's measured border box — its own height plus your padding    |
+| `--table-header-height` | `.table-viewport` | The header's box — `headerHeight`, or `rowHeight` by default           |
 | `--table-scroll-width`  | `.table-scroll`   | The scrolling box's visible content width, vertical scrollbar excluded |
 
 The library reads `--table-scroll-width` itself for the pieces that pin horizontally — `<Table.Gutter>`, `<Table.Expansion>`, `<Table.Overlay>` and the rounded header background layer. The other two exist for you.
 
 `--table-pinned-bg` is the one variable you may want to **set**, and it is a colour rather than a measurement — see above. It has a working default, so nothing breaks if you leave it alone.
 
-`--table-header-height` is what you want for anything that has to line up with where the rows start — insetting a custom scrollbar so it doesn't run up behind the header, for instance. It is `0px` until a `<Table.Header>` mounts, and `0px` for a table that has none.
-
-Because it is measured, express the space between the header and the rows as **padding on `.table-header`**. A bottom `margin` falls outside the border box and won't be counted, which will leave `<Table.Overlay>` and anything else keyed to this number short by that much.
+`--table-header-height` is what you want for anything that has to line up with where the rows start — insetting a custom scrollbar so it doesn't run up behind the header, for instance. Set the value through `headerHeight` rather than defining the variable yourself: `<Table.Header>` renders at exactly what is published here, so a definition of your own would move the header without moving the overlay with it. It is what the config says whether or not a header is rendered — see [Header height](#header-height).
 
 ## Empty, loading and error slots
 

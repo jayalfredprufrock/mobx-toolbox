@@ -378,12 +378,8 @@ describe("the header's measured height drives overlay placement", () => {
     </Table.Root>
   );
 
-  test("the overlay starts below the header, using the measured border box", async () => {
-    // happy-dom lays nothing out, so stand in for the header's ResizeObserver the same way the
-    // other tests stand in for the root's. 44 is a 40px row plus 4px of consumer header padding —
-    // the padding being exactly what a border-box measurement adds over a content-box one.
-    const table = sized({ data: [{ id: 1, name: "alpha" }] });
-    table.setHeaderHeight(44);
+  test("the overlay starts below the header", async () => {
+    const table = sized({ data: [{ id: 1, name: "alpha" }], headerHeight: 44 });
 
     const container = await mount(withOverlay(table));
     const overlay = overlayBox(container);
@@ -391,7 +387,35 @@ describe("the header's measured height drives overlay placement", () => {
     expect(overlay.style.height).toBe("76px"); // 120 - 44
   });
 
-  test("with no header mounted it takes the full height, reserving nothing", async () => {
+  test("the header defaults to the row height, so an unconfigured table is unchanged", async () => {
+    const table = sized({ data: [{ id: 1, name: "alpha" }], rowHeight: 40 });
+
+    const container = await mount(withOverlay(table));
+
+    expect(table.headerHeight).toBe(40);
+    expect(overlayBox(container).style.height).toBe("80px"); // 120 - 40
+  });
+
+  test("headerHeight: 0 is how a table with no header takes the full height", async () => {
+    const table = sized({ data: [{ id: 1, name: "alpha" }], headerHeight: 0 });
+    const container = await mount(
+      <Table.Root table={table}>
+        <Table.Scroll>
+          <Table.Overlay>SAVE FAILED</Table.Overlay>
+        </Table.Scroll>
+      </Table.Root>,
+    );
+    const overlay = overlayBox(container);
+
+    expect(overlay.style.top).toBe("0px");
+    expect(overlay.style.height).toBe("120px");
+  });
+
+  test("and it reserves the height anyway when a headerless table doesn't say so", async () => {
+    // the accepted cost of declaring the height instead of measuring it. The reservation belongs
+    // to the config, so composing without a `<Table.Header>` and leaving `headerHeight` alone
+    // insets the overlay by a header that isn't there — misplacing an empty state, which is the
+    // whole blast radius: nothing in the virtualization math reads this.
     const table = sized({ data: [{ id: 1, name: "alpha" }] });
     const container = await mount(
       <Table.Root table={table}>
@@ -402,14 +426,13 @@ describe("the header's measured height drives overlay placement", () => {
     );
     const overlay = overlayBox(container);
 
-    expect(table.headerHeight).toBe(0);
-    expect(overlay.style.height).toBe("120px");
+    expect(overlay.style.top).toBe("40px");
+    expect(overlay.style.height).toBe("80px");
   });
 
   test("it clamps at zero rather than going negative in a box shorter than its header", async () => {
-    const table = sized({ data: [{ id: 1, name: "alpha" }] });
+    const table = sized({ data: [{ id: 1, name: "alpha" }], headerHeight: 44 });
     table.setHeight(30);
-    table.setHeaderHeight(44);
 
     const container = await mount(withOverlay(table));
     const overlay = overlayBox(container);
@@ -417,9 +440,8 @@ describe("the header's measured height drives overlay placement", () => {
     expect(overlay.style.height).toBe("0px");
   });
 
-  test("dropping the header clears the reservation", async () => {
-    const table = sized({ data: [{ id: 1, name: "alpha" }] });
-    table.setHeaderHeight(44);
+  test("the reservation is the config's, so dropping the header does not clear it", async () => {
+    const table = sized({ data: [{ id: 1, name: "alpha" }], headerHeight: 44 });
 
     const container = document.createElement("div");
     document.body.appendChild(container);
@@ -428,9 +450,8 @@ describe("the header's measured height drives overlay placement", () => {
     await act(async () => {
       root.render(withOverlay(table));
     });
+    expect(overlayBox(container).style.height).toBe("76px");
 
-    // the model outlives the markup, so a stale 44 would leave every later overlay short by a
-    // header the table no longer has
     await act(async () => {
       root.render(
         <Table.Root table={table}>
@@ -441,19 +462,52 @@ describe("the header's measured height drives overlay placement", () => {
       );
     });
 
-    expect(table.headerHeight).toBe(0);
-    const overlay = overlayBox(container);
-    expect(overlay.style.height).toBe("120px");
+    // nothing reports back from the markup — which is what makes the number right on the first
+    // frame, and why a header that comes and goes with a breakpoint wants `headerHeight: 0`
+    // rather than a conditional `<Table.Header>`
+    expect(table.headerHeight).toBe(44);
+    expect(overlayBox(container).style.height).toBe("76px");
   });
 
-  test("Table.Root publishes the measured height for consumer CSS", async () => {
-    const table = sized({ data: [{ id: 1, name: "alpha" }] });
-    table.setHeaderHeight(44);
+  test("Table.Root publishes the header height for consumer CSS", async () => {
+    const table = sized({ data: [{ id: 1, name: "alpha" }], headerHeight: 44 });
 
     const container = await mount(withOverlay(table));
     const viewport = container.querySelector(".table-viewport") as HTMLElement;
 
     expect(viewport.style.getPropertyValue("--table-header-height")).toBe("44px");
+    expect(viewport.style.getPropertyValue("--table-row-height")).toBe("40px");
+  });
+
+  test("the header renders at exactly the height it publishes", async () => {
+    const table = sized({ data: [{ id: 1, name: "alpha" }], headerHeight: 44 });
+
+    const container = await mount(withOverlay(table));
+    const header = container.querySelector(".table-header") as HTMLElement;
+
+    // border-box, so a consumer's own padding comes out of this rather than pushing the rendered
+    // header past the number the overlay and the CSS var are both using
+    expect(header.style.height).toBe("44px");
+    expect(header.style.boxSizing).toBe("border-box");
+
+    // and the row inside carries no height of its own — it stretches into what is left
+    const row = header.querySelector("[role=row]") as HTMLElement;
+    expect(row.style.height).toBe("");
+  });
+
+  test("headerHeight: 0 publishes 0px", async () => {
+    const table = sized({ data: [{ id: 1, name: "alpha" }], headerHeight: 0 });
+
+    const container = await mount(
+      <Table.Root table={table}>
+        <Table.Scroll>
+          <Table.Overlay>SAVE FAILED</Table.Overlay>
+        </Table.Scroll>
+      </Table.Root>,
+    );
+    const viewport = container.querySelector(".table-viewport") as HTMLElement;
+
+    expect(viewport.style.getPropertyValue("--table-header-height")).toBe("0px");
   });
 });
 

@@ -52,9 +52,11 @@ export const TableRoot: FC<TableRootProps> = observer(
               height: "100%",
               position: "relative",
               "--table-row-height": `${table.rowHeight}px`,
-              // Published, not consumed: `<Table.Header>` measures itself and this hands the
-              // number to consumer CSS that needs it — insetting a custom scrollbar below the
-              // header being the case that asks for it. `0px` until a header mounts.
+              // Published, not consumed, exactly like the row height above: `<Table.Header>`
+              // applies this same number as its border-box height, so consumer CSS that has to
+              // line up with where the rows start — insetting a custom scrollbar below the header,
+              // say — can read it instead of restating it. What the config says, header rendered
+              // or not; `headerHeight: 0` is how a table without one says so.
               "--table-header-height": `${table.headerHeight}px`,
               ...style,
             } as React.CSSProperties

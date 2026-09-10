@@ -1,6 +1,5 @@
 import { observer } from "mobx-react-lite";
-import { type CSSProperties, type FC, type HTMLAttributes, useEffect, useRef } from "react";
-import { useResize } from "../../react-util/useResize";
+import type { CSSProperties, FC, HTMLAttributes } from "react";
 import type { ColumnModel } from "../column.model";
 import { useScrollportGuard, useTableContext } from "../table.context";
 import { CellSlot, type RenderColumn } from "./cell-slot";
@@ -22,26 +21,30 @@ export interface TableHeaderProps {
  * unpinned / right-pinned ordering — and defers each cell's content to the `children` render-prop
  * via a per-cell `CellSlot`.
  *
- * Also reports its own **border-box** height into `table.headerHeight`, so the space it occupies —
- * including any padding the consumer adds to separate it from the rows — is measured rather than
- * restated. `<Table.Overlay>` needs that number to start below the header, and `<Table.Root>`
- * republishes it as `--table-header-height`. Express the gap as padding here; a bottom *margin*
- * falls outside the border box and won't be seen.
+ * Sized by `table.headerHeight` — the configured `headerHeight`, or `rowHeight` when the config
+ * says nothing — applied as a **border-box** height so that number is the space the header
+ * occupies rather than a claim about it. `<Table.Overlay>` starts below it and `<Table.Root>`
+ * publishes it as `--table-header-height`, and nothing has to be kept in agreement because there
+ * is one number.
+ *
+ * Express the gap between the header and the rows as padding here: border-box means padding comes
+ * out of that height rather than adding to it, so the published number stays true. Content needing
+ * more room than the height overflows onto the first row instead of growing the header — raise
+ * `headerHeight` for a taller one.
+ *
+ * The inner `role="row"` stretches to fill whatever is left, so it carries no height of its own —
+ * header cells are free to be styled without fighting an inline number.
+ *
+ * Nothing here reports back to the model: `table.headerHeight` is what the config says, so it is
+ * already right when the first frame paints. A table composed without this component still
+ * reserves that height for its overlays — `headerHeight: 0` is how you say there is no header.
  */
 export const TableHeader: FC<TableHeaderProps> = observer(({ className, style, children }) => {
   const table = useTableContext();
   useScrollportGuard("Header");
-  const headerRef = useRef<HTMLDivElement>(null);
-
-  useResize(headerRef, (_width, height) => table.setHeaderHeight(height), { box: "border" });
-
-  // A table can lose its header without losing its model — leave a stale reservation behind and
-  // every overlay stays short by one header.
-  useEffect(() => () => table.setHeaderHeight(0), [table]);
 
   return (
     <div
-      ref={headerRef}
       role="rowgroup"
       className={["table-header", className].filter(Boolean).join(" ")}
       style={{
@@ -49,6 +52,10 @@ export const TableHeader: FC<TableHeaderProps> = observer(({ className, style, c
         top: 0,
         zIndex: 20,
         width: `${table.virtualWidth}px`,
+        height: `${table.headerHeight}px`,
+        // the height *is* the space taken, so a consumer's padding comes out of it rather than
+        // extending it past the number `--table-header-height` and `<Table.Overlay>` are using
+        boxSizing: "border-box",
         display: "grid",
         gridTemplateColumns: table.gridTemplateColumns,
         ...style,
@@ -66,7 +73,6 @@ export const TableHeader: FC<TableHeaderProps> = observer(({ className, style, c
         style={{
           gridColumn: "1 / -1",
           gridRow: "1",
-          height: `${table.rowHeight}px`,
           display: "grid",
           gridTemplateColumns: "subgrid",
           alignItems: "stretch",

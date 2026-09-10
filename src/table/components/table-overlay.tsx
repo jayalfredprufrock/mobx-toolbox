@@ -45,9 +45,10 @@ export const TableOverlay: FC<TableOverlayProps & { children?: ReactNode }> = ob
             top: `${table.headerHeight}px`,
             left: 0,
             width: "100%",
-            // `table.headerHeight` is the header's measured border box, so the consumer's own
-            // header padding is already in it — nothing to declare, and a table with no header
-            // gets the full height rather than reserving space for one that isn't there.
+            // `table.headerHeight` is the border-box height `<Table.Header>` renders at, so any
+            // header padding is already inside it and this starts exactly where the rows do. It is
+            // the configured number rather than a measured one, so a table composed without a
+            // header reserves it anyway — `headerHeight: 0` for one of those.
             height: `${Math.max(0, table.height - table.headerHeight)}px`,
             display: "flex",
             alignItems: "center",

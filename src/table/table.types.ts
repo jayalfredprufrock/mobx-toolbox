@@ -90,6 +90,21 @@ export interface TableConfig<T> {
   /** Fixed pixel height of every row (the virtualization contract). Default 40. */
   rowHeight?: number;
   /**
+   * Fixed pixel height of the header's **whole box** — the row plus any padding used to space the
+   * rows away from it. Defaults to `rowHeight`, so a table that says nothing looks exactly as it
+   * did before this existed.
+   *
+   * `<Table.Header>` applies it as a border-box height, so this number *is* the space the header
+   * occupies rather than a claim about it: `<Table.Overlay>` starts below it and
+   * `--table-header-height` publishes it, and neither can disagree with what is rendered. Header
+   * content needing more room than this overflows onto the first row rather than growing the
+   * header — visible where it is set, which is the trade for the number being knowable at all.
+   *
+   * Unlike {@link rowHeight} nothing in the virtualization math reads this: body offsets are
+   * relative to the body, so the header is free to be a different height without rows drifting.
+   */
+  headerHeight?: number;
+  /**
    * The curated columns. Read once, at construction — change the set at runtime through the model
    * (`setColumns`, `addColumn`, `removeColumn`), which preserves what the user has done to the
    * columns that survive the change.

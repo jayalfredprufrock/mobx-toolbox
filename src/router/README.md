@@ -1061,7 +1061,7 @@ router.navigate({ to: "/login", replace: true }); // replace history entry
 
 ### Awaiting a navigation
 
-`navigate()` returns a promise that resolves once the navigation has **landed** — guards run,
+`navigate()` returns a promise that resolves `true` once the navigation has **landed** — guards run,
 loaders resolved, redirects followed, and `activeRoute` swapped. Await it to sequence work against
 the page that actually ended up on screen:
 
@@ -1083,7 +1083,9 @@ A few things worth knowing:
 - **An unresolvable `to` still throws synchronously.** A `:param` left unfilled is a caller bug, not
   a navigation outcome, so it throws out of the `navigate()` call itself rather than rejecting.
 - **A redundant navigation resolves immediately.** Navigating to the URL you are already on is
-  skipped, so there is nothing to wait for.
+  skipped, so there is nothing to wait for. It still counts as landing, and resolves `true`.
+- **`false` means a blocker declined it.** That is the only way the promise resolves `false`; see
+  [Blocking navigation](#blocking-navigation).
 - **What is awaited is "nothing is in flight"**, not this call specifically. If another navigation
   supersedes yours, the promise resolves when _that_ one lands — which is the only useful answer
   once a redirect has replaced your destination, and what a caller waiting on "the new view" means.
@@ -1206,6 +1208,108 @@ A caller's `onClick` runs **before** the navigation and can cancel it with `prev
 
 A `disabled` link is inert: no navigation, no `href`, and no `onClick` — modifiers included.
 
+## Blocking navigation
+
+A component holding unsaved work can block navigation away from it and decide for itself what to show.
+
+```tsx
+import { useNavigationBlock } from "@mobx-toolbox/router";
+
+const Designer = observer(({ designer }) => {
+  useNavigationBlock(
+    () => designer.dirty,
+    async () => {
+      const choice = await confirmLeave(); // the app's own dialog
+      if (choice === "save") await designer.save();
+      return choice !== "stay";
+    },
+  );
+
+  return <DesignerUI designer={designer} />;
+});
+```
+
+Two arguments: a predicate saying whether the block is live, and a handler deciding what to do about a navigation while it is. Blocking follows the state rather than the mount, so a clean form is as good as no blocker at all — including for the browser's own reload prompt.
+
+**Only `true` proceeds.** `false`, returning nothing, and throwing all keep the user where they are, so a handler that shows a dialog and forgets to report the answer fails safe instead of discarding the work it was meant to protect. The handler may be async: the navigation waits for it, and `navigate()` resolves once the destination lands — after whatever saving the handler did.
+
+The one-line version, when the block should always be live and a native prompt will do:
+
+```tsx
+useNavigationBlock(
+  () => designer.dirty,
+  () => window.confirm("Discard changes?"),
+);
+```
+
+`router.block(when, handler)` is the same thing outside React, and returns its disposer. The hook is a thin wrapper around it.
+
+### What it covers
+
+Every navigation that goes through `router.navigate` — `<Link>` clicks, programmatic navigation, a `search`-only navigation to a different path — the **back and forward buttons**, and closing or reloading the tab.
+
+What it does **not** cover:
+
+|                                                 | why                                                                                                                                                                                                                                                            |
+| ----------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **A `redirect()` from a guard or `[REDIRECT]`** | Where a URL leads is the app's own decision, not the user leaving a page.                                                                                                                                                                                      |
+| **A change that keeps the same pathname**       | A query param, a history-state update, or navigating to the current URL leaves the route on screen, so there is nothing to leave. Same rule `setLocation` applies when it declines to re-match — and what keeps `setQueryParam` working while a block is live. |
+| **`router.history.push(...)`**                  | Let through rather than prompted about. Blocking hangs off `navigate`; write through the router.                                                                                                                                                               |
+
+There is no "navigate anyway" flag, because the predicate is one: a "discard and leave" action resets what it guards and then navigates, by which point the predicate is false.
+
+```tsx
+<Button
+  onClick={() => {
+    designer.reset();
+    router.navigate({ to: "/surveys" });
+  }}
+>
+  Discard and leave
+</Button>
+```
+
+### The predicate must be derived from observables
+
+The predicate is read when a navigation is proposed, but it also _drives registration_: covering pop and the reload prompt means arming a `history.block` blocker exactly while the predicate holds, and a MobX reaction is what keeps those in step.
+
+A predicate reading something MobX cannot see — a ref, a DOM query, a plain field — still blocks in-app navigation correctly, and **silently stops covering the back button**. There is a test pinning that split, because it is the one way to use this API and get half of it.
+
+### Why registration follows the predicate
+
+`history.block` installs a `beforeunload` handler that calls `preventDefault()` unconditionally — it never consults a blocker. A blocker registered for a component's lifetime would therefore prompt "Leave site?" on an untouched form. Arming it only while the predicate holds is what makes that prompt correct, and it is why the router installs no `beforeunload` listener of its own.
+
+The same design note explains why `router.history.push` is let through rather than blocked: `history.block` declines _every_ transition while a blocker is registered and never reads what the blocker returned, so a push `navigate` already approved, a `redirect()`, `setQueryParam` and the trailing-slash normalization all reach that blocker needing nothing but a retry. A pop is the one transition nothing else sees.
+
+### Blocking a pop, and what it can't do
+
+- **The address bar can flicker.** A blocked pop moves the URL and moves it back. `router.location` never sees the intermediate value — a blocked pop reaches no history listener — but anything reading `window.location` directly does.
+- **Popping to an entry the history library didn't create can't be blocked**, and fails silently in production. Navigate through the router rather than `window.history.pushState`.
+- **A cancelled pop is invisible to `navigate()`**, which was never called for it.
+- **One decision at a time.** While a handler is deciding about a pop, further back-presses are ignored rather than queued; the user is still where they were.
+- **A retry the world moved out from under is dropped.** A pop's retry is a `go()` by the delta it fired with, so if something else navigates while the handler is deciding, consenting afterwards does nothing rather than jumping somewhere the user never asked for.
+
+### Two blockers at once
+
+Allowed, and consulted in registration order; the first to decline ends it. Two dirty models therefore prompt one after the other rather than both at once.
+
+### `useConfirmLeave` — the basic version
+
+Native `confirm()` protection against leaving the page, however the user leaves it, with no predicate to track and no dialog to write:
+
+```tsx
+import { useConfirmLeave } from "@mobx-toolbox/router";
+
+useConfirmLeave("Discard your changes?");
+```
+
+It _is_ a `block` with an always-true predicate, so everything above applies unchanged. `confirmLeave(router, message?)` is the imperative form. Both live in their own module and are dropped by tree-shaking if you never import them.
+
+What the shortcut trades away:
+
+- **The prompts are native chrome.** Every browser ignores a custom `beforeunload` message, and `confirm()` renders as the browser draws it.
+- **Reload prompts even on a clean page**, because an always-true predicate is always live. That is the point — there is no state for it to consult — and it is why `useNavigationBlock` is the better default for a form.
+
 ## `RouterStore` API
 
 ```ts
@@ -1225,10 +1329,13 @@ router.query                           // Record<string, string> — parsed sear
 router.pathParams                      // Record<string, string> — URL params
 
 // Navigation
-router.navigate(options)               // Promise<void> — resolves once the navigation lands
+router.navigate(options)               // Promise<boolean> — true once it lands, false if blocked
 router.resolveHref(options)            // string — the URL those options address, for `href`
 router.doesPathMatch(path, exact?)     // boolean — active-link detection (lags a navigation)
 router.doesTargetMatch(path, exact?)   // boolean — same, against the destination
+
+// Blocking
+router.block(when, handler)            // () => void — block navigation while `when()` holds
 
 // Query param helpers
 router.setQueryParam(key, value)       // update one param, replaces current entry
@@ -1362,5 +1469,11 @@ import type {
 **`router.activeRoute` is `undefined` until the first navigation resolves.** During that cold load `<Router>` renders `pendingRoute` instead, so pending outlets show their `[LOADING]` components. While both are undefined — before the first route matches, guards included — it renders the root `[SPLASH]`, or `null` if none is defined.
 
 **`Route` and `Outlet` are exported for type annotation.** When writing guard or loader functions that are defined outside the routes object, import `Route` for the parameter type. `Outlet` and `OutletConfig` are exported but are primarily internal — avoid constructing them directly.
+
+**Navigation blocking hangs off `navigate`, with one history blocker for pops.** `router.block` and `useNavigationBlock` see every navigation through `router.navigate` — links, programmatic navigation — plus back/forward and tab close. They do **not** see a `redirect()` thrown by a guard, a change that keeps the same pathname (query params, history state, the current URL), or a write straight to `router.history`. Only a handler returning `true` lets a navigation through; `false`, `undefined` and a throw all mean "stay". `useConfirmLeave` is the same mechanism with an always-true predicate and a native `confirm()`.
+
+**A blocker's predicate must be derived from observables.** It is read at decision time _and_ drives registration: pop coverage and the reload prompt depend on a `history.block` blocker armed exactly while the predicate holds, kept in step by a MobX reaction. A predicate MobX cannot see still blocks in-app navigation and silently stops covering the back button.
+
+**`history.block` blocks every transition, not the ones its blocker rejects.** `allowTx` declines a transition whenever _any_ blocker is registered and never looks at what the blocker returned, and it installs a `beforeunload` handler that calls `preventDefault()` unconditionally. That is why the router registers exactly one blocker, arms it reactively rather than for a caller's lifetime, retries the transitions it was not there to prompt about, and installs no `beforeunload` listener of its own. A pop's retry is asynchronous, so the blocker stands down and re-arms on the update the retry produces.
 
 **Links leave modifier clicks to the browser.** `makeLinkComponent` only calls `preventDefault()` for an unmodified primary click, so cmd/ctrl/shift/alt- and middle-clicks follow the `href` and open a tab or window as the user expects. It defers only when an `href` exists — with `role="link"` (or a non-anchor element) there is nothing to follow, so those clicks navigate in place. A caller's `onClick` is chained, not replaced, and runs first: `preventDefault()` there cancels both the navigation and the `href`.

@@ -7,4 +7,6 @@ export { Route } from "./route";
 export * from "./router.store";
 export * from "./symbols";
 export * from "./types";
+export * from "./use-confirm-leave";
+export * from "./use-navigation-block";
 export * from "./util";

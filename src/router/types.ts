@@ -278,6 +278,46 @@ export type NavigateOptions<P = string> = {
   preserveSearch?: boolean;
 } & (HasParam<P> extends true ? { params: ExtractParams<P> } : { params?: undefined });
 
+/**
+ * The navigation a blocker is being asked about — where it would go, and how.
+ *
+ * Deliberately not a history `Location`: nothing has been handed to history yet, so there is no
+ * `key` or `state` to report. Deliberately not a matched {@link RouteTarget} either — matching the
+ * destination would run its `[REDIRECT]`s for a navigation that may never happen. A blocker that
+ * wants to allow movement *within* its own subtree tests the pathname:
+ *
+ * ```ts
+ * ({ pathname }) => pathname.startsWith("/designer/") || confirm("Discard changes?");
+ * ```
+ */
+export interface BlockedNavigation {
+  /**
+   * `"POP"` for the back and forward buttons, `"REPLACE"` for a navigation
+   * that would replace the current history entry, `"PUSH"` otherwise.
+   */
+  action: "PUSH" | "REPLACE" | "POP";
+  /** The destination pathname, e.g. `/org/1/surveys`. */
+  pathname: string;
+  /** The destination's query string, leading `?` included, or `""` when there is none. */
+  search: string;
+  /** `pathname` and `search` joined — the same string `router.resolveHref` returns. */
+  href: string;
+}
+
+/**
+ * What to do about a navigation while a block is live.
+ *
+ * **Only `true` proceeds.** `false`, `undefined` and a thrown error all keep the user where they
+ * are, so a handler that shows a dialog and forgets to report the answer fails safe rather than
+ * discarding the work it was meant to protect.
+ *
+ * May be async — the navigation waits for it, so `await confirmLeave()` and `await save()` are
+ * both fine. See `RouterStore.block`.
+ */
+export type NavigationBlocker = (
+  navigation: BlockedNavigation,
+) => boolean | void | Promise<boolean | void>;
+
 /* Finalized Types */
 /********************************************************************************* */
 

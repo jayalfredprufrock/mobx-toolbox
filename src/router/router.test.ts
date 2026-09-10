@@ -2863,7 +2863,7 @@ describe("navigate() resolution", () => {
     });
     const { router } = await makeRouter(routes);
 
-    await expect(router.navigate({ to: "/admin" as any })).resolves.toBeUndefined();
+    await expect(router.navigate({ to: "/admin" as any })).resolves.toBe(true);
 
     expect(router.activeRoute?.error?.type).toBe("GUARD");
   });
@@ -2872,7 +2872,7 @@ describe("navigate() resolution", () => {
     const routes = makeRoutes()({ index: PageA, about: PageD });
     const { router } = await makeRouter(routes, "/about");
 
-    await expect(router.navigate({ to: "/about" as any })).resolves.toBeUndefined();
+    await expect(router.navigate({ to: "/about" as any })).resolves.toBe(true);
     expect(router.activeRoute?.path).toBe("about");
   });
 

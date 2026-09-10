@@ -1,5 +1,11 @@
-import { createBrowserHistory, type History, type Location } from "history";
-import { action, computed, makeObservable, observable, runInAction, when } from "mobx";
+import {
+  Action,
+  createBrowserHistory,
+  type History,
+  type Location,
+  type Transition,
+} from "history";
+import { action, computed, makeObservable, observable, reaction, runInAction, when } from "mobx";
 import { flushSync } from "react-dom";
 import { redirectFailed, RouterError } from "./errors";
 import { makeErrorRoute, matchRoute } from "./make-routes";
@@ -7,9 +13,11 @@ import { LOADING_DELAY_MS } from "./outlet";
 import { Redirect } from "./redirect";
 import type { Route } from "./route";
 import type {
+  BlockedNavigation,
   Component,
   MobxRouterConfig,
   NavigateOptions,
+  NavigationBlocker,
   Obj,
   RoutePath,
   RouteTarget,
@@ -24,6 +32,12 @@ import { resolvePath } from "./util";
  * plausible real chain (one or two hops) and well below "the tab is stuck".
  */
 const MAX_REDIRECTS = 10;
+
+/** @internal one `block()` registration: when it applies, and what it decides. */
+interface BlockerEntry {
+  when: () => boolean;
+  blocker: NavigationBlocker;
+}
 
 export interface MobxRenderSegment {
   segment: string;
@@ -108,6 +122,22 @@ export class RouterStore {
    * so it measures one chain rather than session history.
    */
   private redirects = 0;
+
+  /**
+   * Registered navigation blockers, in registration order (a `Set` iterates
+   * by insertion). See {@link block}.
+   */
+  private readonly blockers = new Set<BlockerEntry>();
+
+  /**
+   * State of the single `history.block` blocker that covers pops — its
+   * disposer while armed, the one-shot listener that re-arms it after a
+   * transition has been let through, and whether a handler is currently
+   * deciding about one. See {@link syncHistoryBlocker}.
+   */
+  private unblockHistory: (() => void) | undefined;
+  private stopRearm: (() => void) | undefined;
+  private deciding = false;
 
   get search(): URLSearchParams {
     return new URLSearchParams(this.location?.search);
@@ -278,7 +308,8 @@ export class RouterStore {
   }
 
   /**
-   * Navigates to `options`, resolving once the navigation has **landed**.
+   * Navigates to `options`, resolving `true` once the navigation has
+   * **landed** — or `false` as soon as a {@link block}er declines it.
    *
    * Landing is the end of the whole chain, not this hop: guards, loaders,
    * any redirect they throw, and the `activeRoute` swap (view transition
@@ -296,7 +327,11 @@ export class RouterStore {
    * still wants to run. Read `activeRoute.error`, or compare `target.pattern`
    * against where you meant to go, when the distinction matters. A
    * navigation skipped as redundant (already at that URL, no `state`)
-   * resolves immediately.
+   * resolves immediately, and counts as landing.
+   *
+   * `false` means only that *this* call did not navigate. A blocker that
+   * saves and then lets the user leave is expected to return `true` and land
+   * normally; `false` is the "stay here" answer. See {@link block}.
    *
    * An unresolvable `to` — a `:param` left unfilled — still throws
    * *synchronously*, because that is a caller bug rather than a navigation
@@ -321,23 +356,52 @@ export class RouterStore {
    * without one the re-render is left on React's scheduler, so a test reading
    * the DOM still needs its usual `act` / `waitFor`.
    */
-  navigate<P extends RoutePath>(options: NavigateOptions<P>): Promise<void> {
+  navigate<P extends RoutePath>(options: NavigateOptions<P>): Promise<boolean> {
+    // resolved up front so an unresolvable `to` still throws synchronously
+    // even with a blocker registered — deferring it past the handler's
+    // `await` would turn a caller bug into a rejected promise
+    const { pathname, search } = this.resolveLocation(options);
+
+    const blockers = this.activeBlockers(pathname);
+    if (!blockers.length) {
+      return this.navigateNow(options);
+    }
+
+    return this.consultBlockers(blockers, {
+      action: options.replace ? "REPLACE" : "PUSH",
+      pathname,
+      search: search ?? "",
+      href: `${pathname}${search ?? ""}`,
+    }).then((allowed) => (allowed ? this.navigateNow(options) : false));
+  }
+
+  /**
+   * {@link navigate} without consulting blockers — the navigation the router
+   * itself performs rather than one the user asked for.
+   *
+   * That is the `redirect()` path: a `[REDIRECT]` leaf or a redirect thrown
+   * by a guard is the app's own decision about where a URL leads, not the
+   * user leaving a page, so prompting for it would ask about a destination
+   * the user never chose.
+   *
+   * Deliberately not `async`: `_navigate` throws synchronously for an
+   * unresolvable path, and the redirect handler in `setLocation` catches it
+   * with a plain `try`/`catch`. An async method would turn that throw into
+   * a rejection and the [ERROR] route would never render.
+   */
+  private navigateNow<P extends RoutePath>(options: NavigateOptions<P>): Promise<boolean> {
     // navigating to the current URL attaches no new information — skip
     // the navigation (and its view transition) entirely so redundant
     // navigations (e.g. clicking an already-active link) cause no churn
     if (!options.state && this.isCurrentLocation(options)) {
-      return Promise.resolve();
+      return Promise.resolve(true);
     }
 
     // the view transition is started around the route swap in
     // `applyRoute`, not here — see the note there
     this._navigate(options);
 
-    // deliberately not `async`: `_navigate` throws synchronously for an
-    // unresolvable path, and the redirect handler in `setLocation` catches
-    // it with a plain `try`/`catch`. An async method would turn that throw
-    // into a rejection and the [ERROR] route would never render.
-    return this.settled();
+    return this.settled().then(() => true);
   }
 
   /**
@@ -363,6 +427,239 @@ export class RouterStore {
     } else {
       this.history.push(location, options.state);
     }
+  }
+
+  /**
+   * Registers a navigation blocker: `when` says whether the block is live,
+   * and `blocker` decides what to do about a navigation while it is.
+   * Returns the disposer.
+   *
+   * ```ts
+   * const dispose = router.block(
+   *   () => designer.dirty,
+   *   async () => {
+   *     const choice = await confirmLeave(); // the app's own dialog
+   *     if (choice === "save") await designer.save();
+   *     return choice !== "stay";
+   *   },
+   * );
+   * ```
+   *
+   * {@link useNavigationBlock} is this with the lifetime tied to a
+   * component, which is the usual way to reach it.
+   *
+   * Only `true` proceeds — see {@link NavigationBlocker}. The handler may be
+   * async, and `navigate()` stays pending until it settles, so a blocker
+   * that saves before allowing the navigation still resolves the caller's
+   * `await router.navigate(...)` once the destination lands.
+   *
+   * Covers every navigation that goes through {@link navigate} — `<Link>`
+   * clicks, programmatic navigation, `search`-only navigations to another
+   * path — the back and forward buttons, and closing or reloading the tab.
+   *
+   * **`when` must be derived from observables.** It is read at the moment a
+   * navigation is proposed, but it also *drives registration*: the pop and
+   * `beforeunload` halves of this depend on a `history.block` blocker being
+   * armed exactly while the predicate holds, and that is kept in step by a
+   * MobX reaction. A predicate reading something MobX cannot see — a ref, a
+   * DOM query, a plain field — still blocks in-app navigation correctly, and
+   * silently stops covering the back button.
+   *
+   * Does **not** cover:
+   * - **The `redirect()` path.** See {@link navigateNow}.
+   * - **A change that keeps the same pathname** — a query param, a history
+   *   state update, or navigating to the current URL. The route on screen
+   *   does not change, so there is nothing to leave; this is the same rule
+   *   `setLocation` applies when it declines to re-match, and it is what
+   *   keeps `setQueryParam` working while a block is live.
+   * - **Writes straight to `router.history`.** A push there is let through
+   *   rather than prompted about — see {@link onTransition}.
+   *
+   * There is no "navigate anyway" option, because the predicate is one: a
+   * "discard and leave" action resets what it guards and then navigates, by
+   * which point `when` is false.
+   *
+   * Registering more than one blocker is allowed. They are consulted in
+   * registration order and the first to decline ends it, so two dirty models
+   * prompt one after the other rather than both at once.
+   *
+   * What blocking a pop cannot do anything about: the URL moves and comes
+   * back, so the address bar can flicker — `router.location` does not, since
+   * a blocked pop never reaches the history listeners — and popping to an
+   * entry the history library did not create cannot be blocked and fails
+   * silently in production. A cancelled pop is also invisible to
+   * `navigate()`, which was never called for it.
+   */
+  block(when: () => boolean, blocker: NavigationBlocker): () => void {
+    const entry: BlockerEntry = { when, blocker };
+    this.blockers.add(entry);
+
+    // registration follows the predicate rather than the caller's lifetime:
+    // `history.block` installs a `beforeunload` handler that calls
+    // `preventDefault()` without ever consulting a blocker, so a
+    // registration outliving its predicate would prompt "Leave site?" on a
+    // clean form. That listener is also why the router keeps none of its
+    // own — armed while the predicate holds is exactly the behaviour wanted.
+    const stopReaction = reaction(
+      () => entry.when(),
+      () => this.syncHistoryBlocker(),
+      {
+        fireImmediately: true,
+      },
+    );
+
+    // idempotent, so StrictMode's mount/unmount/mount and a caller that
+    // disposes twice both land in the same place
+    return () => {
+      stopReaction();
+      this.blockers.delete(entry);
+      this.syncHistoryBlocker();
+    };
+  }
+
+  /**
+   * The blockers with a say in a navigation to `pathname`, in registration
+   * order. Empty is the common case and costs one `Set` size check.
+   */
+  private activeBlockers(pathname: string): NavigationBlocker[] {
+    // a same-pathname change leaves the route on screen — see `block`
+    if (!this.blockers.size || pathname === this.location?.pathname) return [];
+
+    return [...this.blockers].filter((entry) => entry.when()).map((entry) => entry.blocker);
+  }
+
+  /** Asks each blocker in turn, stopping at the first that says no. */
+  private async consultBlockers(
+    blockers: NavigationBlocker[],
+    navigation: BlockedNavigation,
+  ): Promise<boolean> {
+    for (const blocker of blockers) {
+      try {
+        if ((await blocker(navigation)) !== true) return false;
+      } catch (cause) {
+        // staying is the safe failure: a dialog that crashed cannot have
+        // told the user their work was about to be discarded
+        console.error("A navigation blocker threw; staying at the current route.", cause);
+        return false;
+      }
+    }
+
+    return true;
+  }
+
+  /**
+   * Arms a single `history.block` blocker while any predicate holds, and
+   * disarms it when none does.
+   *
+   * One blocker rather than one per registration: `history.block` fans a
+   * transition out to *every* blocker and gives each its own `retry()`, so
+   * several would prompt at once and each retry would re-prompt the others.
+   * Multiplexing here is what makes {@link consultBlockers} the only place
+   * that decides.
+   *
+   * Called from the reaction in {@link block}, from disposal, and after a
+   * transition has been let through.
+   */
+  private syncHistoryBlocker(): void {
+    // a transition is on its way through; the re-arm in `passThrough` owns
+    // the decision until it lands
+    if (this.stopRearm) return;
+
+    const armed = [...this.blockers].some((entry) => entry.when());
+    if (armed === !!this.unblockHistory) return;
+
+    if (!armed) {
+      this.standDown();
+      return;
+    }
+
+    this.unblockHistory = this.history.block((transition) => this.onTransition(transition));
+  }
+
+  /**
+   * The one blocker history sees.
+   *
+   * `history.block` declines *every* transition while a blocker is
+   * registered and never reads what the blocker returned, so most of what
+   * arrives here has already been decided: a push {@link navigate} approved,
+   * a `redirect()`, `setQueryParam`, the trailing-slash normalization and a
+   * write straight to `router.history` all need nothing but a retry.
+   * Prompting for them would ask twice about one navigation, or ask about
+   * one the user never made.
+   *
+   * A pop is the one transition nothing else sees, and the only one this
+   * consults blockers about.
+   */
+  private onTransition(transition: Transition): void {
+    if (transition.action !== Action.Pop) {
+      this.passThrough(transition);
+      return;
+    }
+
+    // one decision at a time. The pop stays reverted, so the user is where
+    // they were and can press back again once they have answered.
+    if (this.deciding) return;
+
+    const { pathname, search } = transition.location;
+    const blockers = this.activeBlockers(pathname);
+    if (!blockers.length) {
+      this.passThrough(transition);
+      return;
+    }
+
+    // where the retry counts from: `retry()` is a `go()` by the delta the
+    // pop fired with, so anything that moves while the handler is deciding
+    // leaves that delta addressing an entry the user did not ask for
+    const from = this.history.location.key;
+    this.deciding = true;
+
+    void this.consultBlockers(blockers, {
+      action: "POP",
+      pathname,
+      search,
+      href: `${pathname}${search}`,
+    })
+      .then((allowed) => {
+        if (allowed && this.history.location.key === from) {
+          this.passThrough(transition);
+        }
+      })
+      .finally(() => {
+        this.deciding = false;
+      });
+  }
+
+  /**
+   * Lets a transition history has already declined through, and re-arms once
+   * it lands.
+   *
+   * Standing down first is not optional: `retry()` re-enters the blocker,
+   * and a pop's retry is a `go()` whose `popstate` arrives asynchronously —
+   * so the blocker has to stay down until the retried navigation lands. The
+   * one-shot listener is that "until", and re-arming through
+   * {@link syncHistoryBlocker} means a predicate that went false in the
+   * meantime leaves it down.
+   *
+   * If the retry never lands — a pop to an entry the history library did not
+   * create cannot be blocked, and fails silently in production — the blocker
+   * stays down, which is the same outcome as never having armed it.
+   */
+  private passThrough(transition: Transition): void {
+    this.standDown();
+
+    this.stopRearm = this.history.listen(() => {
+      this.standDown();
+      this.syncHistoryBlocker();
+    });
+
+    transition.retry();
+  }
+
+  private standDown(): void {
+    this.unblockHistory?.();
+    this.unblockHistory = undefined;
+    this.stopRearm?.();
+    this.stopRearm = undefined;
   }
 
   /**
@@ -516,7 +813,7 @@ export class RouterStore {
             // not awaited: the caller's own `settled()` already spans this
             // hop, and awaiting here would hold this navigation's `finally`
             // open behind a chain it no longer owns
-            void this.navigate({ ...thrown.options, replace: thrown.options.replace ?? true });
+            void this.navigateNow({ ...thrown.options, replace: thrown.options.replace ?? true });
             return;
           } catch (cause) {
             // a redirect that can't be carried out — most often a `to` whose

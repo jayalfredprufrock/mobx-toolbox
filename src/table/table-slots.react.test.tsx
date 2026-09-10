@@ -364,8 +364,10 @@ describe("the slots gate off the controlled props too", () => {
 });
 
 describe("the header's measured height drives overlay placement", () => {
-  // the overlay is a zero-height sticky wrapper — kept out of the scrollport's content height so a
-  // hugging root can't size itself from it — with the sized box as its absolutely positioned child
+  // the overlay is an out-of-flow anchor — kept out of the scrollport's content height so a hugging
+  // root can't size itself from it — with the sized box as its sticky child
+  const overlayAnchor = (container: HTMLElement) =>
+    container.querySelector("[role=table] > div:last-child") as HTMLElement;
   const overlayBox = (container: HTMLElement) =>
     container.querySelector("[role=table] > div:last-child > div") as HTMLElement;
 
@@ -493,6 +495,103 @@ describe("the header's measured height drives overlay placement", () => {
     // and the row inside carries no height of its own — it stretches into what is left
     const row = header.querySelector("[role=row]") as HTMLElement;
     expect(row.style.height).toBe("");
+  });
+
+  // The anchor is absolutely positioned at the top of the scrollport rather than sticky in flow,
+  // so the sized box lands `headerHeight` below the scrollport's top edge no matter where the
+  // consumer wrote the overlay. As a sticky wrapper it inherited its flow position instead, which
+  // put the box at `headerHeight` *past the rows* — a full header height too low even on an empty
+  // table, and off-screen entirely once there were rows.
+  //
+  // happy-dom resolves no layout, so these assert the arithmetic the geometry is built from rather
+  // than the geometry itself; the placement was verified in a browser.
+  test("the anchor is out of flow at the top of the scrollport, wherever the overlay is written", async () => {
+    const table = sized({ data: [{ id: 1, name: "alpha" }], headerHeight: 44 });
+
+    const container = await mount(withOverlay(table));
+    const anchor = overlayAnchor(container);
+
+    expect(anchor.style.position).toBe("absolute");
+    expect(anchor.style.top).toBe("0px");
+    // only the box intercepts, as when the box was the whole of it
+    expect(anchor.style.pointerEvents).toBe("none");
+    expect(overlayBox(container).style.pointerEvents).toBe("auto");
+  });
+
+  test("the box sticks below the header rather than sitting at a flow position", async () => {
+    const table = sized({ data: [{ id: 1, name: "alpha" }], headerHeight: 44 });
+
+    const overlay = overlayBox(await mount(withOverlay(table)));
+
+    expect(overlay.style.position).toBe("sticky");
+    expect(overlay.style.top).toBe("44px");
+  });
+
+  test("the anchor spans the scrollable extent, so the box has room to stay put while scrolling", async () => {
+    const data = Array.from({ length: 20 }, (_, i) => ({ id: i, name: `row ${i}` }));
+    const table = sized({ data, headerHeight: 44, rowHeight: 40 });
+
+    const container = await mount(
+      <Table.Root table={table}>
+        <Table.Scroll>
+          <Table.Header>{(column) => <Table.ColumnHeader column={column} />}</Table.Header>
+          <Table.Body>{(row) => <Table.Row row={row}>{() => null}</Table.Row>}</Table.Body>
+          <Table.Overlay>SAVE FAILED</Table.Overlay>
+        </Table.Scroll>
+      </Table.Root>,
+    );
+
+    // 20 * 40 rows + the header — the scrollport's whole content height. A shorter anchor clamps
+    // the sticky box and the message drifts up as you approach the bottom.
+    expect(table.virtualHeight).toBe(800);
+    expect(overlayAnchor(container).style.height).toBe("844px");
+  });
+
+  test("and falls back to the measured box when there is no extent, so an empty table gets no scrollbar from it", async () => {
+    const table = sized({ data: [], headerHeight: 44 });
+
+    const container = await mount(withOverlay(table));
+
+    // `table.height`, not `height + headerHeight`: the anchor is out of flow, so anything past the
+    // measured client box is scrollable overflow the table invented for itself
+    expect(table.virtualHeight).toBe(0);
+    expect(overlayAnchor(container).style.height).toBe("120px");
+  });
+
+  test("placement does not depend on where the overlay is written", async () => {
+    const data = Array.from({ length: 20 }, (_, i) => ({ id: i, name: `row ${i}` }));
+    const first = sized({ data, headerHeight: 44, rowHeight: 40 });
+    const last = sized({ data, headerHeight: 44, rowHeight: 40 });
+
+    const before = await mount(
+      <Table.Root table={first}>
+        <Table.Scroll>
+          <Table.Overlay>SAVE FAILED</Table.Overlay>
+          <Table.Header>{(column) => <Table.ColumnHeader column={column} />}</Table.Header>
+          <Table.Body>{(row) => <Table.Row row={row}>{() => null}</Table.Row>}</Table.Body>
+        </Table.Scroll>
+      </Table.Root>,
+    );
+    const after = await mount(
+      <Table.Root table={last}>
+        <Table.Scroll>
+          <Table.Header>{(column) => <Table.ColumnHeader column={column} />}</Table.Header>
+          <Table.Body>{(row) => <Table.Row row={row}>{() => null}</Table.Row>}</Table.Body>
+          <Table.Overlay>SAVE FAILED</Table.Overlay>
+        </Table.Scroll>
+      </Table.Root>,
+    );
+
+    const written = (container: HTMLElement) => {
+      const box = container.querySelector(
+        "[role=table] [style*=sticky][style*=flex]",
+      ) as HTMLElement;
+      const anchor = box.parentElement as HTMLElement;
+      return [anchor.style.position, anchor.style.top, anchor.style.height, box.style.top];
+    };
+
+    expect(written(before)).toEqual(written(after));
+    expect(written(before)).toEqual(["absolute", "0px", "844px", "44px"]);
   });
 
   test("headerHeight: 0 publishes 0px", async () => {

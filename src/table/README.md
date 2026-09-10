@@ -1578,8 +1578,9 @@ The library reads `--table-scroll-width` itself for the pieces that pin horizont
 [`<Table.Gutter>`](#tablegutter), which is ungated because what goes there is what the source knows
 rather than something the table can work out.)
 
-All three gate themselves. Render them after `<Table.Body>` and they appear only when they should —
-and never two at once, since the states they read are mutually exclusive:
+All three gate themselves. Render them anywhere inside `<Table.Scroll>` — they position themselves
+against the scrollport rather than against what precedes them — and they appear only when they
+should, and never two at once, since the states they read are mutually exclusive:
 
 ```tsx
 <Table.Body>{...}</Table.Body>
@@ -1639,6 +1640,13 @@ positioning is the hard part; deciding whether to show a message about a failed 
 
 It carries no data attribute — `data-empty` and friends mean "the table decided this", and a
 hand-shown overlay hasn't earned that claim. Pass your own if you want a styling hook.
+
+Structurally it is an out-of-flow anchor pinned to the top of the scrollport with a sticky child
+inside it, which is what makes the placement independent of where you wrote it: the message fills
+the viewport below the header whether it is written before `<Table.Header>` or after the last row,
+and stays there at any scroll offset. Being out of flow is also what keeps it from contributing to
+the scrolling box's content height, so a root that hugs its content sizes itself from the rows
+rather than from the overlay.
 
 ## Resizing
 

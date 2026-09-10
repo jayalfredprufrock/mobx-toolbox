@@ -789,12 +789,23 @@ fix. Outside, it spans the full width and the scrollbar terminates at its top ed
    The `minHeight` matters if the table can be empty, since an empty box hugs to just its header and
    `<Table.Overlay>` has nowhere to put its message.
 
-4. **`<Table.Overlay>` gained a wrapper element.** It is now a zero-height sticky div with the sized
-   box as its absolutely positioned child, so that it contributes nothing to the scrolling box's
-   content height (which is what lets a hugging root size itself from the rows rather than from the
+4. **`<Table.Overlay>` gained a wrapper element.** It is now an absolutely positioned anchor with
+   the sized box as its sticky child, so that it contributes nothing to the scrolling box's content
+   height (which is what lets a hugging root size itself from the rows rather than from the
    overlay). If you have a CSS selector or a test querying the overlay's DOM position — a
    `> div:last-child`-style selector especially — it needs one more level. `data-empty`,
    `data-loading` and `data-error` are unchanged and are the selectors to prefer.
+
+   ⚠️ **Overlay placement no longer depends on where you wrote it, and this fixes a real
+   misplacement.** The wrapper used to be sticky in normal flow, so the box's `top: headerHeight`
+   was measured from wherever the overlay landed rather than from the scrollport: an empty table
+   put its message a full header height too low and gained a header's worth of phantom scroll,
+   and an overlay shown with rows on screen was pushed off-screen entirely. The anchor is now
+   pinned to the top of the scrollport, so the message fills the viewport below the header at any
+   scroll offset and in any writing order. **Delete any compensation for the old behaviour** — a
+   negative `marginTop`, a `top` override, or an overlay deliberately written before
+   `<Table.Header>` — since those now shift the message off its correct position. Overlays written
+   before `<Table.Header>` still land correctly; only explicit offsets need removing.
 
 5. **The `maxHeight` prop is gone — use `style={{ maxHeight }}`.** A mechanical rename, and the
    compiler finds every one:

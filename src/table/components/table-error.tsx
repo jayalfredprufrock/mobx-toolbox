@@ -18,7 +18,7 @@ export interface TableErrorProps extends Omit<TableOverlayProps, "children"> {
 }
 
 /**
- * The failure surface. Render it after `<Table.Body>` alongside `<Table.Empty>` and
+ * The failure surface. Render it inside `<Table.Scroll>` alongside `<Table.Empty>` and
  * `<Table.Loading>`; it shows itself only when the request failed and left nothing to show for it.
  *
  * **A failed *refresh* does not render this**, and that is the whole point of the gate. Rows

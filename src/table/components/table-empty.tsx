@@ -4,8 +4,9 @@ import { useTableContext } from "../table.context";
 import { TableOverlay, type TableOverlayProps } from "./table-overlay";
 
 /**
- * The empty-state surface. Render it after `<Table.Body>`; it shows itself only when the table is
- * genuinely empty — settled, with no rows — and renders nothing while a first load is still running.
+ * The empty-state surface. Render it anywhere inside `<Table.Scroll>`; it shows itself only when
+ * the table is genuinely empty — settled, with no rows — and renders nothing while a first load is
+ * still running.
  *
  * That gating used to be the consumer's, which meant every table author wrote
  * `list.loading ? undefined : <Empty/>` once they noticed their table claiming "no results" during

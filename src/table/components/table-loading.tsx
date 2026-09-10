@@ -17,9 +17,9 @@ export interface TableLoadingProps extends TableOverlayProps {
 const NEVER: SlowLoadingOptions = { after: 0, minDuration: 0 };
 
 /**
- * The first-load surface. Render it after `<Table.Body>` alongside `<Table.Empty>`; it shows itself
- * only while the table has nothing yet and a request is in flight, and only once that wait has gone
- * on long enough to be worth mentioning.
+ * The first-load surface. Render it inside `<Table.Scroll>` alongside `<Table.Empty>`; it shows
+ * itself only while the table has nothing yet and a request is in flight, and only once that wait
+ * has gone on long enough to be worth mentioning.
  *
  * It has nothing to say about a *refresh* — rows already on screen stay put and stay interactive,
  * because replacing them to fetch mostly-identical rows would throw away scroll position, column

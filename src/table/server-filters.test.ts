@@ -1,4 +1,4 @@
-import { autorun, comparer, reaction } from "mobx";
+import { autorun, compareStructural, reaction } from "mobx";
 import { afterEach, describe, expect, test } from "vite-plus/test";
 import { DateFilter } from "../filter/date-filter.model";
 import { SetFilter } from "../filter/set-filter.model";
@@ -148,7 +148,7 @@ describe("server-mode filters", () => {
       reaction(
         () => table.filterQuery,
         (q) => fired.push(q),
-        { equals: comparer.structural },
+        { equals: compareStructural },
       ),
     );
 
@@ -407,7 +407,7 @@ describe("filterQuery before any rows arrive", () => {
         () => table.filterQuery,
         (q) => requests.push(q),
         {
-          equals: comparer.structural,
+          equals: compareStructural,
           fireImmediately: true,
         },
       ),

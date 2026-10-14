@@ -701,7 +701,7 @@ describe("selection", () => {
   test("bound actions keep working when detached from the instance", () => {
     const table = makeTable(makeRows(3));
     // Consumers wire these straight into handlers (onClick={table.toggleAllRows}), which works
-    // because they are annotated `action.bound`. The lint rule can't see mobx's runtime binding,
+    // because they are annotated `actionBound`. The lint rule can't see mobx's runtime binding,
     // and this test exists precisely to prove detaching is safe.
     // oxlint-disable-next-line typescript/unbound-method
     const { toggleAllRows, clearSelection } = table;

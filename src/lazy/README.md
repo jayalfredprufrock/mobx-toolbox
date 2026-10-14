@@ -14,13 +14,8 @@ replaces its contents, `lazyPages` owns an array and _appends_ to it. Everything
 observation, dropping when unobserved, aborting a superseded request, staleness, dependency
 tracking — is one implementation, so using all three costs barely more than using one.
 
-The old `lazyObservable*` / `LazyObservable*` spellings still export as deprecated aliases, and the
-old import path `mobx-toolbox/lazy-observable` still resolves, so a codebase can migrate a file at a
-time. **Both go away at 1.0** — the aliases live in `deprecated.ts`, and the old path is a second
-`pack` entry in `vite.config.ts` that re-exports this one (284 bytes; the implementation is in a
-shared chunk either way). Removing them is deleting that file, its line in `index.ts`, and that
-entry — at which point every remaining use of an old name or the old path fails loudly rather than
-drifting.
+These replaced the `lazyObservable*` / `LazyObservable*` spellings and the
+`mobx-toolbox/lazy-observable` import path, which were removed at 1.0.
 
 > **Importing alongside React?** `lazy` collides with `React.lazy`, which is common in the same
 > files that do route-level code splitting. Alias one of them at the import — `import { lazy as

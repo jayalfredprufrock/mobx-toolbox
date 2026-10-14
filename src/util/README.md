@@ -87,12 +87,12 @@ across renders. Two details it settles that are easy to get wrong by hand:
 - **The write happens in an effect**, not during render, so the render itself stays free of side
   effects.
 - **Values are compared, not assigned blindly**, so the object literal you rebuild every render
-  doesn't retrigger every reaction reading it. The default is `comparer.shallow`, which is what makes
-  `{ orgId, query }` count as unchanged while its fields are. Pass `comparer.structural` for values
-  nested deeper than a field, or `comparer.default` for plain referential equality:
+  doesn't retrigger every reaction reading it. The default is `compareShallow`, which is what makes
+  `{ orgId, query }` count as unchanged while its fields are. Pass `compareStructural` for values
+  nested deeper than a field, or `compareDefault` for plain referential equality:
 
 ```ts
-const filter = useObservableBox(value, { equals: comparer.structural });
+const filter = useObservableBox(value, { equals: compareStructural });
 ```
 
 The flow is one-way: the box mirrors the value, so writing to it from MobX's side holds only until

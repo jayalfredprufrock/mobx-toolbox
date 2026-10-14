@@ -78,7 +78,7 @@ useTable({ data: store.activeUsers });
 
 Two more things worth knowing about the getter form: it is captured once, so close over observables rather than render-scoped values, which would go stale; and it must be the _source_ of the rows, not a transform of a prop.
 
-Re-passing the array already in place is a no-op — same array, same dataset — so a re-render never costs you a selection. `rows` is an `observable.ref` either way, so mutating an array in place is invisible to the model; hand over a new one.
+Re-passing the array already in place is a no-op — same array, same dataset — so a re-render never costs you a selection. `rows` is an `observableRef` either way, so mutating an array in place is invisible to the model; hand over a new one.
 
 ### Selection, filtering, and what counts as "selected"
 
@@ -394,7 +394,7 @@ or a prop, which `useTable` reads only once:
 useEffect(() => table.column("amount")?.setConfig({ title: label }), [label]);
 ```
 
-`config` is an `observable.ref` replaced wholesale by the patch, so every getter over it —
+`config` is an `observableRef` replaced wholesale by the patch, so every getter over it —
 `title`, `width`, `sortable`, `filterable`, the lot — is genuinely reactive. Everything the user has
 done to the column survives, because `hidden`, `pinned` and `manualWidth` are state rather than
 configuration, and so is a filter's selection.
@@ -996,7 +996,7 @@ const table = useTable({
 reaction(
   () => table.filterQuery,
   (query) => void refetch({ where: query?.map(toClause) }).then((r) => table.setData(r)),
-  { equals: comparer.structural },
+  { equals: compareStructural },
 );
 ```
 
@@ -1010,7 +1010,7 @@ Applying client filters _on top of_ server results needs no new machinery either
 over `rows` without replacing them, so `setData(serverResults)` followed by a client filter is the
 behaviour you already have.
 
-`filterQuery` is a `FilterCondition[]` — plain JSON, so it compares with `comparer.structural` and
+`filterQuery` is a `FilterCondition[]` — plain JSON, so it compares with `compareStructural` and
 unrelated churn (sorting, hiding a column) won't fire a refetch.
 
 ```ts

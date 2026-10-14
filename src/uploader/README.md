@@ -111,7 +111,7 @@ Reconciliation rules:
 | Inbound matching          | by `id`; duplicate ids collapse                                                                       |
 | Inbound removal           | only `COMPLETED` uploads. An upload still working was never in your value, so an echo can't cancel it |
 | Inbound `name`            | authoritative for rehydrated uploads; ignored for uploads created from a picked `File`                |
-| Outbound                  | `comparer.structural` over the whole array, so an equal array is not a change                         |
+| Outbound                  | `compareStructural` over the whole array, so an equal array is not a change                           |
 
 `onChange` requires `activate()`, which `useUploader` handles. Initial `value` is applied before the reaction is armed, so mounting with a rehydrated value doesn't immediately dirty your form.
 

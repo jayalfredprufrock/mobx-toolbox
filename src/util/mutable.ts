@@ -1,5 +1,11 @@
 import { observable, runInAction } from "mobx";
-import type { ClassAccessorDecorator } from "mobx/dist/types/decorator_fills";
+
+// mobx's own type for this lives in `mobx/dist`, which mobx 7's `exports` map no longer lets us
+// import from — and it's just TypeScript's built-in decorator types, so spell it out here
+type ClassAccessorDecorator = (
+  value: ClassAccessorDecoratorTarget<any, any>,
+  context: ClassAccessorDecoratorContext,
+) => ClassAccessorDecoratorResult<any, any> | void;
 
 export const mutable: ClassAccessorDecorator = (accessor) => {
   const boxedValues = new WeakMap();

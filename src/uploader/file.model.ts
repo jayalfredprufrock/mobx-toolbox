@@ -1,4 +1,12 @@
-import { action, computed, makeObservable, observable } from "mobx";
+import {
+  action,
+  actionBound,
+  computed,
+  makeObservable,
+  observable,
+  observableRef,
+  observableShallow,
+} from "mobx";
 import { toUploadError, UploadError } from "./errors";
 import { PartModel } from "./part.model";
 import type { UploaderModel } from "./uploader.model";
@@ -149,10 +157,10 @@ export class FileModel implements UploadLike {
       status: observable,
       // shallow: PartModels are observable in their own right, and the array is replaced wholesale
       // exactly once (applyRequestResult) rather than mutated in place
-      parts: observable.shallow,
-      uploadId: observable.ref,
-      serverName: observable.ref,
-      error: observable.ref,
+      parts: observableShallow,
+      uploadId: observableRef,
+      serverName: observableRef,
+      error: observableRef,
 
       name: computed,
       extension: computed,
@@ -173,10 +181,10 @@ export class FileModel implements UploadLike {
       fail: action,
       applyRequestResult: action,
 
-      retry: action.bound,
-      remove: action.bound,
-      activate: action.bound,
-      dispose: action.bound,
+      retry: actionBound,
+      remove: actionBound,
+      activate: actionBound,
+      dispose: actionBound,
     });
   }
 

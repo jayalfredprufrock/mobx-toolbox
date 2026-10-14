@@ -1,4 +1,4 @@
-import { action, computed, makeObservable, observable } from "mobx";
+import { actionBound, computed, makeObservable, observable } from "mobx";
 import { textMatches } from "../filter/util";
 import type { TableModel } from "./table.model";
 import type { FilterCondition, FilterMode, RowData } from "./table.types";
@@ -76,8 +76,8 @@ export class TableSearchFilter {
       predicate: computed,
       condition: computed,
 
-      setText: action.bound,
-      clear: action.bound,
+      setText: actionBound,
+      clear: actionBound,
     });
   }
 

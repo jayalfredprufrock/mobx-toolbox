@@ -16,18 +16,18 @@ Peer dependencies are per-module — see the **Requires** column below. `typebox
 
 Each module is its own entry point — import from `@jayalfredprufrock/mobx-toolbox/<module>` so you only pull in what you use.
 
-| Module                                | Summary                                                                       | Requires                                      |
-| ------------------------------------- | ----------------------------------------------------------------------------- | --------------------------------------------- |
-| [`dialog`](#dialog)                   | Dialog/modal stack with state transitions for enter/exit animations           | `mobx`, `mobx-react-lite`, `react`            |
-| [`filter`](#filter)                   | Reactive value filters — set, number, date, bucket and text                   | `mobx`                                        |
-| [`form`](#form)                       | Schema-driven form state with TypeBox validation and submit lifecycle         | `mobx`, `mobx-react-lite`, `react`, `typebox` |
-| [`lazy-observable`](#lazy-observable) | Observables that fetch on first observation and reset when unobserved         | `mobx`, `mobx-react-lite`, `react`            |
-| [`model`](#model)                     | Observable model classes and collection stores from TypeBox schemas           | `mobx`, `react`, `typebox`                    |
-| [`react-util`](#react-util)           | General-purpose React hooks: async state, debouncing, resize, mount lifecycle | `react`                                       |
-| [`router`](#router)                   | Client-side router with symbol-keyed guards, loaders and layouts              | `mobx`, `mobx-react-lite`, `react`, `history` |
-| [`table`](#table)                     | Headless, virtualized data table                                              | `mobx`, `mobx-react-lite`, `react`            |
-| [`uploader`](#uploader)               | Headless multipart upload engine with progress, retries and a form value      | `mobx`, `mobx-react-lite`, `react`            |
-| [`util`](#util)                       | Small MobX + React utilities — `mutable`, `useAutorun`, `useObservableBox`    | `mobx`, `react`                               |
+| Module                      | Summary                                                                       | Requires                                      |
+| --------------------------- | ----------------------------------------------------------------------------- | --------------------------------------------- |
+| [`dialog`](#dialog)         | Dialog/modal stack with state transitions for enter/exit animations           | `mobx`, `mobx-react-lite`, `react`            |
+| [`filter`](#filter)         | Reactive value filters — set, number, date, bucket and text                   | `mobx`                                        |
+| [`form`](#form)             | Schema-driven form state with TypeBox validation and submit lifecycle         | `mobx`, `mobx-react-lite`, `react`, `typebox` |
+| [`lazy`](#lazy)             | Observables that fetch on first observation and reset when unobserved         | `mobx`, `mobx-react-lite`, `react`            |
+| [`model`](#model)           | Observable model classes and collection stores from TypeBox schemas           | `mobx`, `react`, `typebox`                    |
+| [`react-util`](#react-util) | General-purpose React hooks: async state, debouncing, resize, mount lifecycle | `react`                                       |
+| [`router`](#router)         | Client-side router with symbol-keyed guards, loaders and layouts              | `mobx`, `mobx-react-lite`, `react`, `history` |
+| [`table`](#table)           | Headless, virtualized data table                                              | `mobx`, `mobx-react-lite`, `react`            |
+| [`uploader`](#uploader)     | Headless multipart upload engine with progress, retries and a form value      | `mobx`, `mobx-react-lite`, `react`            |
+| [`util`](#util)             | Small MobX + React utilities — `mutable`, `useAutorun`, `useObservableBox`    | `mobx`, `react`                               |
 
 ### [`dialog`](src/dialog/README.md)
 
@@ -94,20 +94,20 @@ function LoginForm() {
 
 ---
 
-### [`lazy-observable`](src/lazy-observable/README.md)
+### [`lazy`](src/lazy/README.md)
 
 Lazy-loading MobX observables that fetch data on first observation and reset automatically when unobserved.
 
 ```ts
-import { lazyObservableArray } from "@jayalfredprufrock/mobx-toolbox/lazy-observable";
+import { lazyArray } from "@jayalfredprufrock/mobx-toolbox/lazy";
 
-const users = lazyObservableArray(() => api.getUsers());
+const users = lazyArray(() => api.getUsers());
 // users.value is [] until observed; fetch fires automatically inside an observer
 ```
 
 Includes a `LazyObserver` React component that renders a placeholder while loading and propagates fetch errors to an error boundary.
 
-→ [Full docs](src/lazy-observable/README.md)
+→ [Full docs](src/lazy/README.md)
 
 ---
 

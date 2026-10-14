@@ -1,4 +1,4 @@
-import { comparer, reaction } from "mobx";
+import { compareStructural, reaction } from "mobx";
 import { afterEach, describe, expect, test } from "vite-plus/test";
 import { NumberFilter } from "../filter/number-filter.model";
 import { SetFilter } from "../filter/set-filter.model";
@@ -172,7 +172,7 @@ describe("filter state in the snapshot", () => {
           return arrangement;
         },
         (a) => arrangements.push(a),
-        { equals: comparer.structural },
+        { equals: compareStructural },
       ),
     );
 

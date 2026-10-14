@@ -1,4 +1,4 @@
-import { action, computed, makeObservable, observable } from "mobx";
+import { action, computed, makeObservable, observable, observableRef } from "mobx";
 import type { Facet, FilterCondition, SetFilterValue } from "../filter/filter.types";
 // Two pure functions, imported from the module rather than the `../filter` barrel so no filter class
 // is ever reachable from `src/table/index.ts`. `facetValues` in particular *must* be the same
@@ -27,7 +27,7 @@ export const SELECTION_COLUMN_KEY = "__selection__";
 export class ColumnModel {
   readonly table: TableModel;
   /**
-   * The resolved column configuration. An `observable.ref` — replaced wholesale by
+   * The resolved column configuration. An `observableRef` — replaced wholesale by
    * {@link setConfig}, never mutated in place — so every getter over it is genuinely reactive.
    */
   config: ColumnConfig;
@@ -165,7 +165,7 @@ export class ColumnModel {
   /**
    * Whatever the def said this column represents — see {@link ColumnMeta}.
    *
-   * A plain getter over `config`, which is an `observable.ref` replaced wholesale, so this is
+   * A plain getter over `config`, which is an `observableRef` replaced wholesale, so this is
    * reactive with no state of its own. Every render-prop the table has already receives the
    * `ColumnModel`: header cells through `<Table.Header>`, body cells through `<Table.Row>`.
    */
@@ -341,7 +341,7 @@ export class ColumnModel {
     this.config = config;
 
     makeObservable<this, "facetScan">(this, {
-      config: observable.ref,
+      config: observableRef,
       pinned: observable,
       hidden: observable,
       manualWidth: observable,

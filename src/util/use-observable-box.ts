@@ -1,5 +1,5 @@
 import {
-  comparer,
+  compareShallow,
   observable,
   runInAction,
   type IEqualsComparer,
@@ -9,10 +9,10 @@ import { useEffect, useRef } from "react";
 
 export interface UseObservableBoxOptions<T> {
   /**
-   * How a new value is judged against the one held. Defaults to `comparer.shallow`, which is what
+   * How a new value is judged against the one held. Defaults to `compareShallow`, which is what
    * makes an object rebuilt on every render — `{ orgId, query }` — count as unchanged while its
-   * fields are. Pass `comparer.structural` for values nested deeper than a field, or
-   * `comparer.default` to write on every render that isn't referentially equal.
+   * fields are. Pass `compareStructural` for values nested deeper than a field, or
+   * `compareDefault` to write on every render that isn't referentially equal.
    */
   equals?: IEqualsComparer<T>;
 }
@@ -53,7 +53,7 @@ export function useObservableBox<T>(
   const ref = useRef<IObservableValue<T>>(undefined);
   const box = (ref.current ??= observable.box(value, { deep: false }));
 
-  const equals = options?.equals ?? comparer.shallow;
+  const equals = options?.equals ?? compareShallow;
 
   // No dependency array: `value` is often rebuilt every render, so the comparison *is* the
   // dependency check — a `deps` argument would only be a second, less reliable spelling of it.

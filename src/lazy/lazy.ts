@@ -1,12 +1,12 @@
 import {
-  comparer,
+  compareStructural,
+  observable,
+  onBecomeObserved,
+  onBecomeUnobserved,
   reaction,
   runInAction,
   type IObservableArray,
   type IReactionDisposer,
-  observable,
-  onBecomeObserved,
-  onBecomeUnobserved,
 } from "mobx";
 
 /** Options for `invalidate()`. */
@@ -1394,7 +1394,7 @@ export function lazyPages<T, Q = undefined>(
     setQuery: {
       enumerable: true,
       value: (next: Q): void => {
-        if (comparer.structural(state.query, next)) return;
+        if (compareStructural(state.query, next)) return;
         runInAction(() => {
           // Before `invalidate`, so the reload this may trigger already reads the new query — and
           // `pages` drops to 0 now rather than when the page lands, which is what tells a view

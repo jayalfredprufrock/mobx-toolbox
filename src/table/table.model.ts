@@ -1,11 +1,15 @@
 import {
   action,
-  comparer,
+  actionBound,
+  compareShallow,
+  compareStructural,
   computed,
-  type IReactionDisposer,
   makeObservable,
   observable,
+  observableRef,
+  observableShallow,
   reaction,
+  type IReactionDisposer,
 } from "mobx";
 import { ColumnModel } from "./column.model";
 import { TableSearchFilter } from "./search-filter.model";
@@ -411,7 +415,7 @@ export class TableModel {
    * Disjoint from `predicate` by construction — a filter is either evaluated here or serialized
    * here, never both — so nothing is double-applied and there is nothing to reconcile.
    *
-   * Plain JSON, so it compares with `comparer.structural`: react to it, map the conditions onto
+   * Plain JSON, so it compares with `compareStructural`: react to it, map the conditions onto
    * your endpoint's shape, refetch, and `setData`. Debouncing and cursor invalidation are yours —
    * the table has no idea what a request costs you.
    *
@@ -419,7 +423,7 @@ export class TableModel {
    * reaction(
    *   () => table.filterQuery,
    *   (query) => void refetch({ where: query?.map(toClause) }),
-   *   { equals: comparer.structural },
+   *   { equals: compareStructural },
    * );
    * ```
    */
@@ -803,22 +807,22 @@ export class TableModel {
       | "applyFilterState"
       | "activeColumnFiltersIn"
     >(this, {
-      rows: observable.ref,
+      rows: observableRef,
       columns: observable,
-      columnOrder: observable.ref,
-      configuredDefs: observable.ref,
-      runtimeDefs: observable.ref,
-      suppressedKeys: observable.ref,
+      columnOrder: observableRef,
+      configuredDefs: observableRef,
+      runtimeDefs: observableRef,
+      suppressedKeys: observableRef,
       // Its own observable object, held by reference — mobx must not convert it.
       searchFilter: false,
       scrollX: observable,
       scrollY: observable,
       height: observable,
       width: observable,
-      sorts: observable.ref,
-      selectedIds: observable.shallow,
-      expandedIds: observable.shallow,
-      scrollRequest: observable.ref,
+      sorts: observableRef,
+      selectedIds: observableShallow,
+      expandedIds: observableShallow,
+      scrollRequest: observableRef,
 
       headerHeight: computed,
       rowIds: computed,
@@ -841,10 +845,10 @@ export class TableModel {
       // it (`store.byOrg({ orgId })` is a different lazy per key). Left untracked, swapping to a
       // lazy that has not loaded yet left every one of those computeds holding the previous one's
       // answer until something else happened to invalidate them.
-      binding: observable.ref,
+      binding: observableRef,
       givenLoading: observable,
-      givenError: observable.ref,
-      setStatus: action.bound,
+      givenError: observableRef,
+      setStatus: actionBound,
 
       // Memoization behind `rowIds`, not state: a WeakMap keyed by row and a counter. Neither is
       // observable, and `identityId` only ever fills a gap in the map.
@@ -866,12 +870,12 @@ export class TableModel {
       sortMode: computed,
       filterMode: computed,
       // Structural *and* kept alive, which together are what make the identity stable — see the
-      // getter. `computed.struct` alone is not enough: mobx only applies `equals` on the cached
+      // getter. `computedStruct` alone is not enough: mobx only applies `equals` on the cached
       // path, and an unobserved computed recomputes on every read and assigns the result
       // unconditionally. So a consumer reading `table.query` outside a reactive context — in an
       // effect, in a query key, in a plain callback — would get a fresh object every time and
       // refetch on every render, which is precisely the case this exists to serve.
-      query: computed({ equals: comparer.structural, keepAlive: true }),
+      query: computed({ equals: compareStructural, keepAlive: true }),
       ariaRowCount: computed,
       visibleRowCount: computed,
       rowsToEnd: computed,
@@ -894,33 +898,33 @@ export class TableModel {
       allRowsSelected: computed,
       someRowsSelected: computed,
 
-      applyState: action.bound,
+      applyState: actionBound,
       applyFilterState: action,
-      clearColumnFilters: action.bound,
+      clearColumnFilters: actionBound,
       syncColumns: action,
-      setColumns: action.bound,
-      addColumn: action.bound,
-      removeColumn: action.bound,
-      moveColumn: action.bound,
+      setColumns: actionBound,
+      addColumn: actionBound,
+      removeColumn: actionBound,
+      moveColumn: actionBound,
       applyRows: action,
-      setData: action.bound,
-      appendRows: action.bound,
-      setScroll: action.bound,
-      scrollToRow: action.bound,
-      scrollToTop: action.bound,
-      scrollToEnd: action.bound,
-      clearScrollRequest: action.bound,
-      setWidth: action.bound,
-      setHeight: action.bound,
-      setSort: action.bound,
-      setSorts: action.bound,
-      clearSort: action.bound,
-      toggleRow: action.bound,
-      selectAllRows: action.bound,
-      clearSelection: action.bound,
-      toggleRowExpanded: action.bound,
-      collapseAllRows: action.bound,
-      toggleAllRows: action.bound,
+      setData: actionBound,
+      appendRows: actionBound,
+      setScroll: actionBound,
+      scrollToRow: actionBound,
+      scrollToTop: actionBound,
+      scrollToEnd: actionBound,
+      clearScrollRequest: actionBound,
+      setWidth: actionBound,
+      setHeight: actionBound,
+      setSort: actionBound,
+      setSorts: actionBound,
+      clearSort: actionBound,
+      toggleRow: actionBound,
+      selectAllRows: actionBound,
+      clearSelection: actionBound,
+      toggleRowExpanded: actionBound,
+      collapseAllRows: actionBound,
+      toggleAllRows: actionBound,
     });
 
     // Configured columns don't depend on data, so build them now rather than waiting for rows.
@@ -1055,7 +1059,7 @@ export class TableModel {
           // window-level handler, into a crash.
           this.pages?.loadMore().catch(() => {});
         },
-        { equals: comparer.structural, fireImmediately: true },
+        { equals: compareStructural, fireImmediately: true },
       );
     }
 
@@ -1078,7 +1082,7 @@ export class TableModel {
     const onStateChange = this.config?.onStateChange;
     if (onStateChange && !this.stateReactionDisposer) {
       this.stateReactionDisposer = reaction(() => this.getState(), onStateChange, {
-        equals: comparer.structural,
+        equals: compareStructural,
       });
     }
   }
@@ -1352,7 +1356,7 @@ export class TableModel {
    *   them, which is the honest answer there.
    *
    * Use `appendRows` to add without resetting. Re-passing the array already in place is a no-op:
-   * same array, same dataset. (`rows` is an `observable.ref`, so mutating one in place is invisible
+   * same array, same dataset. (`rows` is an `observableRef`, so mutating one in place is invisible
    * either way — hand over a new array to change the data.)
    */
   private applyRows(rows: RowData[]): void {
@@ -1624,7 +1628,7 @@ export class TableModel {
       // while a shallow compare over a handful of keys costs nothing and is right for the shape
       // `meta` actually has — a wrapper around values the app already holds.
       const meta = ColumnModel.metaOf(def);
-      if (!comparer.shallow(existing.config.meta, meta)) existing.setConfig({ meta });
+      if (!compareShallow(existing.config.meta, meta)) existing.setConfig({ meta });
     }
 
     const orderOf = (key: string) => this.columns.get(key)?.config.order ?? 0;

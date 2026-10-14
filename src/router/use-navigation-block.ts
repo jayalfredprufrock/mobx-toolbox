@@ -19,8 +19,13 @@ import type { NavigationBlocker } from "./types";
  *
  * Only `true` proceeds — `false`, nothing at all, and a throw each keep the
  * user where they are. `RouterStore.block` documents exactly what is and is
- * not covered; the short version is every in-app navigation plus closing the
- * tab, but not the back button (see `useConfirmLeave` for that).
+ * not covered; the short version is every in-app navigation, the back and
+ * forward buttons, and closing or reloading the tab.
+ *
+ * **`when` must be derived from observables.** It also drives registration
+ * of the history blocker behind the back button and the reload prompt, so a
+ * predicate MobX cannot see — a ref, a DOM query, a plain field — still
+ * blocks in-app navigation and silently stops covering the back button.
  *
  * Both arguments are read through a ref, so neither has to be stable:
  * passing inline closures re-registers nothing, and the registration lasts

@@ -1233,7 +1233,7 @@ Two arguments: a predicate saying whether the block is live, and a handler decid
 
 **Only `true` proceeds.** `false`, returning nothing, and throwing all keep the user where they are, so a handler that shows a dialog and forgets to report the answer fails safe instead of discarding the work it was meant to protect. The handler may be async: the navigation waits for it, and `navigate()` resolves once the destination lands — after whatever saving the handler did.
 
-The one-line version, when the block should always be live and a native prompt will do:
+The one-line version, when a native prompt will do:
 
 ```tsx
 useNavigationBlock(

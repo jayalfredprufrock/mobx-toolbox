@@ -1,4 +1,4 @@
-import { action, computed, makeObservable, observable } from "mobx";
+import { actionBound, computed, makeObservable, observable } from "mobx";
 import type {
   DateFilterOptions,
   DateFilterProps,
@@ -109,11 +109,11 @@ export class DateFilter implements ValueFilter {
       condition: computed,
       range: computed,
 
-      setMin: action.bound,
-      setMax: action.bound,
-      setRange: action.bound,
-      setValue: action.bound,
-      clear: action.bound,
+      setMin: actionBound,
+      setMax: actionBound,
+      setRange: actionBound,
+      setValue: actionBound,
+      clear: actionBound,
     });
   }
 

@@ -1,4 +1,4 @@
-import { action, computed, makeObservable, observable } from "mobx";
+import { actionBound, computed, makeObservable, observable, observableRef } from "mobx";
 import type {
   FilterCondition,
   IntervalNumberOp,
@@ -135,7 +135,7 @@ export class NumberFilter implements ValueFilter {
 
     makeObservable(this, {
       op: observable,
-      operand: observable.ref,
+      operand: observableRef,
 
       active: computed,
       value: computed,
@@ -144,14 +144,14 @@ export class NumberFilter implements ValueFilter {
       min: computed,
       max: computed,
 
-      setOp: action.bound,
-      setOperand: action.bound,
-      setMin: action.bound,
-      setMax: action.bound,
-      setRange: action.bound,
-      set: action.bound,
-      setValue: action.bound,
-      clear: action.bound,
+      setOp: actionBound,
+      setOperand: actionBound,
+      setMin: actionBound,
+      setMax: actionBound,
+      setRange: actionBound,
+      set: actionBound,
+      setValue: actionBound,
+      clear: actionBound,
     });
   }
 

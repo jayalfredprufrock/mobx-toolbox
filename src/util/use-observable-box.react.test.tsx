@@ -1,7 +1,7 @@
 // @vitest-environment happy-dom
 import { act, useState } from "react";
 import { createRoot } from "react-dom/client";
-import { comparer, reaction, runInAction } from "mobx";
+import { compareStructural, reaction, runInAction } from "mobx";
 import { afterEach, describe, expect, test, vi } from "vite-plus/test";
 import { useObservableBox } from "./use-observable-box";
 
@@ -84,7 +84,7 @@ describe("useObservableBox", () => {
 
     const Probe = ({ value }: { value: { filter: { q: string } } }) => {
       const shallowBox = useObservableBox(value);
-      const structuralBox = useObservableBox(value, { equals: comparer.structural });
+      const structuralBox = useObservableBox(value, { equals: compareStructural });
       if (!stops.length) {
         stops = [
           reaction(() => shallowBox.get(), shallowEffect),

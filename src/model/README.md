@@ -13,7 +13,7 @@ import * as T from "typebox";
 
 ## Defining a model
 
-`makeModel(schema, config?)` returns a class whose constructor accepts raw data and an optional store reference. Every property defined in the schema becomes an `observable.ref` field, which `annotations` can override per field — see [Field observability](#field-observability).
+`makeModel(schema, config?)` returns a class whose constructor accepts raw data and an optional store reference. Every property defined in the schema becomes an `observableRef` field, which `annotations` can override per field — see [Field observability](#field-observability).
 
 ```ts
 const UserSchema = T.Object({
@@ -376,7 +376,7 @@ const UserModel = makeModel(UserSchema, {
 
 ### Field observability
 
-Every schema field is annotated `observable.ref`. Reassigning a field is reactive; mutating the
+Every schema field is annotated `observableRef`. Reassigning a field is reactive; mutating the
 value _inside_ it is not:
 
 ```ts
@@ -395,7 +395,7 @@ When a field genuinely is edited in place — a draft, a locally-managed list �
 ```ts
 const UserModel = makeModel(UserSchema, {
   keys: ["id"],
-  annotations: { tags: observable }, // deep; every other field keeps observable.ref
+  annotations: { tags: observable }, // deep; every other field keeps observableRef
 });
 ```
 
@@ -591,7 +591,7 @@ Nothing about it is a special case: `T.Static` already reads nesting as one flat
 ### Things to know
 
 - **`keys`/`buildParams` are limited to shared fields.** `keyof` a union collapses to the keys present in every variant (e.g. `id`) — exactly what you want for a keyed resource. The `discriminator` argument must likewise be a shared key.
-- **All variants' fields are observable.** Every property across the union is made `observable.ref` up front, so `setData` stays reactive even when it switches the active variant. `toJSON` runs `Value.Clean` to emit only the active variant's fields.
+- **All variants' fields are observable.** Every property across the union is made `observableRef` up front, so `setData` stays reactive even when it switches the active variant. `toJSON` runs `Value.Clean` to emit only the active variant's fields.
 - **`setData` switches variants cleanly.** It takes the full resource and reassigns every field, so moving between variants clears the previous variant's fields on the live instance (not just in `toJSON`).
 - **Reflection still sees every key.** `Object.keys`, spread, and `in` expose all union properties (inactive ones as `undefined`); only typed access (via the guards) and `toJSON` are variant-faithful. This is the deliberate trade for a subclassable, reactive model.
 

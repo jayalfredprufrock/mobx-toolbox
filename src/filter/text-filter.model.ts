@@ -1,4 +1,4 @@
-import { action, computed, makeObservable, observable } from "mobx";
+import { actionBound, computed, makeObservable, observable } from "mobx";
 import type {
   FilterCondition,
   TextFilterOptions,
@@ -64,9 +64,9 @@ export class TextFilter implements ValueFilter {
       value: computed,
       condition: computed,
 
-      setText: action.bound,
-      setValue: action.bound,
-      clear: action.bound,
+      setText: actionBound,
+      setValue: actionBound,
+      clear: actionBound,
     });
   }
 

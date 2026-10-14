@@ -1,4 +1,4 @@
-import { action, computed, makeObservable, observable } from "mobx";
+import { action, computed, makeObservable, observable, observableRef } from "mobx";
 import { UploadError } from "./errors";
 import type { FileModel } from "./file.model";
 import type { PartConfig, PartStatus } from "./uploader.types";
@@ -64,7 +64,7 @@ export class PartModel {
       status: observable,
       loaded: observable,
       attempt: observable,
-      error: observable.ref,
+      error: observableRef,
 
       progress: computed,
 

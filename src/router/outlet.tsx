@@ -1,4 +1,4 @@
-import { makeAutoObservable, observable } from "mobx";
+import { makeAutoObservable, observableRef } from "mobx";
 import { DefaultErrorPage } from "./components/error";
 import { RouterError } from "./errors";
 import { Redirect } from "./redirect";
@@ -109,9 +109,9 @@ export class Outlet {
     this.level = config.level;
 
     makeAutoObservable<Outlet, "component" | "config" | "level">(this, {
-      promise: observable.ref,
-      data: observable.ref,
-      error: observable.ref,
+      promise: observableRef,
+      data: observableRef,
+      error: observableRef,
       component: false,
       config: false,
       level: false,

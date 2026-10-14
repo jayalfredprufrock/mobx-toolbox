@@ -1,4 +1,4 @@
-# Upgrade prompt: mobx-toolbox `model` / `lazy-observable` / `table` / `filter` / `util` / `router` / `react-util`
+# Upgrade prompt: mobx-toolbox 1.0 — mobx 7, `model` / `lazy` / `table` / `filter` / `util` / `router` / `react-util`
 
 Hand this file to a coding agent working in your repository. It describes a release with
 breaking changes to `@jayalfredprufrock/mobx-toolbox`, plus new capabilities that let a fair
@@ -30,6 +30,68 @@ these are right.
 ---
 
 ## Breaking changes
+
+### 1.0 — mobx 7 is required
+
+The peer dependencies are now `mobx ^7.0.0` and `mobx-react-lite ^5.0.0`. mobx 6 is no longer
+supported: mobx 7 removed the namespaced annotations the library used, and mobx 6 doesn't export
+their replacements, so no single build can serve both.
+
+Upgrade both packages together — `mobx-react-lite` 5 requires mobx 7. Then rename in your own code:
+
+| before                                             | after                                                     |
+| -------------------------------------------------- | --------------------------------------------------------- |
+| `observable.ref`                                   | `observableRef`                                           |
+| `observable.shallow`                               | `observableShallow`                                       |
+| `observable.deep` / `observable.struct`            | `observableDeep` / `observableStruct`                     |
+| `computed.struct`                                  | `computedStruct`                                          |
+| `action.bound` / `autoAction.bound` / `flow.bound` | `actionBound` / `autoActionBound` / `flowBound`           |
+| `comparer.structural` / `.shallow` / `.default`    | `compareStructural` / `compareShallow` / `compareDefault` |
+| `comparer.identity`                                | `compareIdentity`                                         |
+
+Each new name is its own named export from `"mobx"`, so imports change too: `comparer` is not
+exported at all any more, and `observable` / `action` can drop out of an import that only used them
+for the namespaced form.
+
+The factories are **unchanged** — `observable.box`, `.array`, `.map`, `.set` and `.object` all
+still exist. Don't rename those.
+
+A plain find-and-replace on the patterns above is safe, with two cautions: it will also rewrite
+prose that mentions the old names (comments, test titles), and an import-fixing script that counts
+any mention as "still used" will keep `comparer` alive because of one. Let the type checker have the
+last word on imports.
+
+Also check for:
+
+- **Deep imports from `mobx/dist/...`.** mobx 7 ships an `exports` map, so extensionless paths such
+  as `mobx/dist/types/decorator_fills` no longer resolve. Import from `"mobx"`, or for decorator
+  types use TypeScript's built-ins (`ClassAccessorDecoratorTarget`,
+  `ClassAccessorDecoratorContext`, …).
+- **The rest of mobx 7's own breaking changes** — this list only covers what upgrading this library
+  will surface. If your app uses legacy decorators, `configure({ useProxies })` or the removed React
+  bindings, read the mobx 7 changelog for those.
+
+### 1.0 — the `lazyObservable*` names and the `lazy-observable` import path are gone
+
+These were renamed in an earlier release and kept as deprecated aliases; 1.0 removes them.
+
+| before                                              | after                                  |
+| --------------------------------------------------- | -------------------------------------- |
+| `@jayalfredprufrock/mobx-toolbox/lazy-observable`   | `@jayalfredprufrock/mobx-toolbox/lazy` |
+| `lazyObservable`, `lazyObservableArray`             | `lazy`, `lazyArray`                    |
+| `LazyObservable`, `LazyObservableArray`             | `Lazy`, `LazyArray`                    |
+| `LazyObservableApi`                                 | `LazyApi`                              |
+| `LazyObservableOptions`                             | `LazyOptions`                          |
+| `LazyObservableOptionsWithInitialValue`             | `LazyOptionsWithInitialValue`          |
+| `LazyObservableArrayOptions`                        | `LazyArrayOptions`                     |
+| `LoadedLazyObservable`, `LoadedLazyObservableArray` | `LoadedLazy`, `LoadedLazyArray`        |
+| `InferLazyObservable`                               | `InferLazy`                            |
+
+Purely mechanical: every leftover use fails to compile, nothing changes silently. `lazy` collides
+with `React.lazy` — where a file uses both, alias one at the import (`import { lazy as lazyValue }`).
+
+Sections below written before the rename show the old spellings only in _before_ examples, which
+describe code you may still have.
 
 ### filter — view props, and `filterOption` is gone
 
@@ -267,7 +329,7 @@ Related fix: a `redirect()` thrown from a `[LOAD]` no longer marks the outlet `e
 out, so the generic "A route loader or lazy component failed." text no longer flashes before the
 new route lands. If you avoided loader redirects because of that flash, they are now clean.
 
-### lazy-observable — the state model
+### lazy — the state model
 
 > Read this before the options-and-methods section below: several of those notes describe
 > behaviour in terms of the properties this section replaces.
@@ -321,7 +383,7 @@ difference shows up on a failed refresh, which is now `loaded: true` with an `er
 once. Anywhere you gate rendering on `loaded`, that is the behaviour you wanted; anywhere you used
 it to mean "the last request was fine", check `error` instead.
 
-⚠️ **`lazyObservableArray` starts at `undefined`, not `[]`.** `value` is `T[] | undefined`, because
+⚠️ **`lazyArray` starts at `undefined`, not `[]`.** `value` is `T[] | undefined`, because
 "no rows yet" and "zero rows" are different answers and only one of them is a fact. This is the
 change with the widest blast radius:
 
@@ -341,7 +403,7 @@ To keep the old behaviour on a specific lazy, ask for it — and note it now mea
 ("there are zero rows, and revalidate"), which is what makes it safe:
 
 ```ts
-lazyObservableArray(fetch, { initialValue: [] });
+lazyArray(fetch, { initialValue: [] });
 ```
 
 ⚠️ **`invalidate({ discard: true })` returns the value to `initialValue`, usually `undefined`.** It
@@ -364,10 +426,10 @@ If you were relying on `getOrLoad()` to be a pure cache read, use `peek`-style a
 first observation — which makes it the right shape for hydration from SSR, storage, or a cache. It is
 distinct from `set()`, which marks a value authoritative and owes no fetch:
 
-| call                                  | state          | meaning                              |
-| ------------------------------------- | -------------- | ------------------------------------ |
-| `lazyObservable(f, { initialValue })` | loaded + stale | a starting point, still owed a fetch |
-| `lazy.set(value)`                     | loaded + fresh | authoritative; no fetch              |
+| call                        | state          | meaning                              |
+| --------------------------- | -------------- | ------------------------------------ |
+| `lazy(f, { initialValue })` | loaded + stale | a starting point, still owed a fetch |
+| `lazy.set(value)`           | loaded + fresh | authoritative; no fetch              |
 
 ⚠️ **`getOrLoad()` and `reload()` on a list lazy now resolve with the lazy's own array.** They used
 to resolve with the raw fetched payload — a different, plain array that never updated. So a
@@ -395,7 +457,7 @@ the old behaviour per call site.
 
 ---
 
-### lazy-observable — options and methods
+### lazy — options and methods
 
 These are the API renames, separate from the state-model rework above.
 
@@ -420,7 +482,7 @@ A caller's own demand counts as well, though: `getOrLoad()` respects staleness, 
 `invalidate()` followed by an `await` fetches whether or not anything is watching. (It previously
 returned the value it had just been told to replace — see the state-model section.)
 
-⚠️ **`lazyObservableArray().value` is the same array from the first load onward** — later loads
+⚠️ **`lazyArray().value` is the same array from the first load onward** — later loads
 replace its _contents_ rather than the array. Anything watching the array _identity_ as a change
 signal fires once, when the first load fills it in, and never again:
 
@@ -487,7 +549,7 @@ A seeded lazy is `loaded` from construction and a discard restores the seed, so 
 back to holding nothing — the type now says so, and `value` reads without a guard:
 
 ```ts
-const rows = lazyObservableArray(api.listSurveys, { initialValue: [] });
+const rows = lazyArray(api.listSurveys, { initialValue: [] });
 rows.value.length; // was `IObservableArray<Survey> | undefined`, now the array itself
 ```
 
@@ -503,8 +565,8 @@ The one thing to fix is a seed that might be `undefined` on a lazy whose type is
 ```ts
 declare const maybe: number | undefined;
 
-lazyObservable<number>(api.count, { initialValue: maybe });
-// ✗ 'initialValue' does not exist in type 'LazyObservableOptions'
+lazy<number>(api.count, { initialValue: maybe });
+// ✗ 'initialValue' does not exist in type 'LazyOptions'
 ```
 
 Nothing can tell that apart from a deliberate `undefined`, so it is rejected rather than guessed
@@ -517,14 +579,14 @@ are unaffected either way, since `undefined` is never a list.
 always given. It previously read as unseeded. Presence of the option is what counts:
 
 ```ts
-lazyObservable<Session | undefined>(api.getSession, { initialValue: undefined });
+lazy<Session | undefined>(api.getSession, { initialValue: undefined });
 // before: loaded false. now: loaded true, value undefined — no spinner, still revalidates
-lazyObservable<Session | undefined>(api.getSession);
+lazy<Session | undefined>(api.getSession);
 // unchanged: loaded false — nothing known yet
 ```
 
 If you were passing an explicit `undefined` to mean "no seed", drop the option instead. Lists are
-unchanged: `{ initialValue: undefined }` on a `lazyObservableArray` still means unseeded.
+unchanged: `{ initialValue: undefined }` on a `lazyArray` still means unseeded.
 
 **Keyed collections.** If you used `lazyObservableArrayMap` to hold one list per key over a single
 resource, the replacement is `collectionMap` on a store — one list per key, built on first use, each
@@ -946,7 +1008,7 @@ Previously the only way to change a configured column was `removeColumn` + `addC
 destroys the `ColumnModel` and everything on it. `setColumns` never worked for this: it keeps the
 model behind a key it already has, so a new def for an existing key is ignored wholesale.
 
-`ColumnModel.config` is now an `observable.ref`, so every getter over it — `title`, `width`,
+`ColumnModel.config` is now an `observableRef`, so every getter over it — `title`, `width`,
 `sortable`, `filterable` — is genuinely reactive. (`title` was previously annotated `computed` over
 non-observable state, so it could never actually change.) The user's `hidden`, `pinned`,
 `manualWidth` and any filter selection survive a patch.
@@ -1097,7 +1159,7 @@ stops narrowing rows locally, serializing into `table.filterQuery` instead:
 reaction(
   () => table.filterQuery,
   (query) => void refetch({ where: query?.map(toClause) }).then((r) => table.setRows(r)),
-  { equals: comparer.structural },
+  { equals: compareStructural },
 );
 ```
 
@@ -1189,7 +1251,7 @@ is finished with — a logout, an organization the user left.
 **`useCollection` instead of per-component fetch glue.** Where a list's parameters are a component's
 own state, the old shape was `useState` plus `useEffect` plus a fetch plus more `useState` for
 loading and error, with models built by hand. That is one call now: params are plain React values,
-the result is a `LazyObservableArray`, and records go through the model's identity map — so an edit
+the result is a `LazyArray`, and records go through the model's identity map — so an edit
 made anywhere in the app shows up in it, and nothing needs disposing. Reach for it instead of putting
 a component's filter state on a shared store, which is what stops the store being shared.
 
@@ -1305,7 +1367,7 @@ value first swaps the content in the instant it lands and reintroduces the flash
 [`useSlowLoading`](src/util/README.md#three-states-not-two).
 
 **Hand a lazy to a table instead of `.slice()`.** `rows` now accepts a _row source_ — anything with
-`value` and `fetching`, which `LazyObservableArray` satisfies:
+`value` and `fetching`, which `LazyArray` satisfies:
 
 ```tsx
 // before
@@ -1343,7 +1405,7 @@ scroll position, column arrangement and selection all survive it.
 
 ⚠️ `<Table.Empty>` now gates itself on `table.isEmpty`. An existing outer gate
 (`{cond && <Table.Empty>}`) still works and is simply redundant. `table` still takes no dependency on
-`lazy-observable` — `RowSource` is a structural shape it declares itself.
+`lazy` — `RowSource` is a structural shape it declares itself.
 
 **`useModel` for a details page — the last place an app had to reach for `lazyObservable`.** Loading
 one record in a component had no first-class shape. Both of these work; the third is the one to
@@ -1369,7 +1431,7 @@ useModel(StudyModel, { id, orgId }); // can't desync
 ```
 
 Params are typed from the model's `keys`, compared shallowly, and key order is not a change. The
-result is an ordinary `lazyObservable` over the model's `get`, so it honours the model's `cache`,
+result is an ordinary `lazy` over the model's `get`, so it honours the model's `cache`,
 aborts superseded requests, and hands back the identity-mapped instance. A model with no key params
 (`keys: []` or `keys: false`) takes no params argument at all — `useModel(SettingsModel)`, with any
 options moving up into the second slot.

@@ -5,7 +5,16 @@ import {
   type Location,
   type Transition,
 } from "history";
-import { action, computed, makeObservable, observable, reaction, runInAction, when } from "mobx";
+import {
+  action,
+  computed,
+  makeObservable,
+  observable,
+  observableRef,
+  reaction,
+  runInAction,
+  when,
+} from "mobx";
 import { flushSync } from "react-dom";
 import { redirectFailed, RouterError } from "./errors";
 import { makeErrorRoute, matchRoute } from "./make-routes";
@@ -242,10 +251,10 @@ export class RouterStore {
       RouterStore,
       "navigating" | "navigationSlow" | "matchedTarget" | "targetSegments"
     >(this, {
-      location: observable.ref,
-      activeRoute: observable.ref,
-      pendingRoute: observable.ref,
-      matchedTarget: observable.ref,
+      location: observableRef,
+      activeRoute: observableRef,
+      pendingRoute: observableRef,
+      matchedTarget: observableRef,
       navigating: observable,
       navigationSlow: observable,
 

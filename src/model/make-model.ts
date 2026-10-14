@@ -1,7 +1,7 @@
 import {
   action,
   makeObservable,
-  observable,
+  observableRef,
   runInAction,
   toJS,
   type AnnotationMapEntry,
@@ -99,7 +99,7 @@ type FieldName<S extends ModelSchema> =
 
 /**
  * Per-field observability overrides, keyed by schema field. Anything left out keeps the default of
- * `observable.ref`.
+ * `observableRef`.
  */
 export type FieldAnnotations<S extends ModelSchema> = Partial<
   Record<FieldName<S>, AnnotationMapEntry>
@@ -265,7 +265,7 @@ export interface ModelConfig<S extends ModelSchema, K> {
   keys: K;
   /**
    * Override how individual schema fields are made observable. Every field defaults to
-   * `observable.ref`: a model is a projection of a server resource, replaced wholesale by
+   * `observableRef`: a model is a projection of a server resource, replaced wholesale by
    * `setData`, so reassigning a field is reactive but mutating the value inside it is not. That
    * keeps `instantiate` cheap on a list of hundreds and stops in-place edits to nested data that
    * the next load would silently discard.
@@ -600,7 +600,7 @@ function createModelClass(schema: ModelSchema, config?: ModelConfig<any, any>): 
           configurable: true,
           writable: true,
         });
-        annotations[key] = fieldAnnotations[key] ?? observable.ref;
+        annotations[key] = fieldAnnotations[key] ?? observableRef;
       }
 
       // The constructor populates fields directly rather than through `setData`, so it carries its

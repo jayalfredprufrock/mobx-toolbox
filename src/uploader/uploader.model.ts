@@ -1,12 +1,13 @@
 import {
   action,
-  comparer,
+  actionBound,
+  compareStructural,
   computed,
-  type IReactionDisposer,
   makeObservable,
-  observable,
+  observableShallow,
   reaction,
   runInAction,
+  type IReactionDisposer,
 } from "mobx";
 import { CompletedUploadModel } from "./completed-upload.model";
 import { toUploadError, UploadError } from "./errors";
@@ -181,7 +182,7 @@ export class UploaderModel {
     >(this, {
       // shallow: the entries are models that manage their own observability, so only the array's
       // membership needs tracking. `ref` would be wrong — addFile and removeUpload mutate in place.
-      uploads: observable.shallow,
+      uploads: observableShallow,
 
       files: computed,
       completedUploads: computed,
@@ -202,16 +203,16 @@ export class UploaderModel {
       progress: computed,
 
       addFile: action,
-      addFiles: action.bound,
-      setFiles: action.bound,
-      addCompletedUpload: action.bound,
-      applyValue: action.bound,
-      removeUpload: action.bound,
-      clear: action.bound,
-      retryAll: action.bound,
+      addFiles: actionBound,
+      setFiles: actionBound,
+      addCompletedUpload: actionBound,
+      applyValue: actionBound,
+      removeUpload: actionBound,
+      clear: actionBound,
+      retryAll: actionBound,
       // pump mutates status across many models; as an action the whole pass lands as one
       // transaction, so observers never see a half-scheduled state and onChange fires once per batch
-      pump: action.bound,
+      pump: actionBound,
       pumpOnce: action,
       settleFiles: action,
       startPendingFiles: action,
@@ -235,7 +236,7 @@ export class UploaderModel {
         (values) => this.config.onChange?.(values, this),
         // structural, so a fresh array of fresh objects with the same contents is not a change.
         // onChange is read off config at fire time, so an inline consumer lambda never re-subscribes.
-        { equals: comparer.structural },
+        { equals: compareStructural },
       );
     }
 

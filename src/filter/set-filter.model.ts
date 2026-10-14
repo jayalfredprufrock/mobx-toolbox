@@ -1,4 +1,4 @@
-import { action, computed, makeObservable, observable } from "mobx";
+import { actionBound, computed, makeObservable, observable, observableShallow } from "mobx";
 import type {
   FilterCondition,
   SetFilterOptions,
@@ -107,7 +107,7 @@ export class SetFilter implements ValueFilter {
     this.props = options?.props ?? {};
 
     makeObservable(this, {
-      selected: observable.shallow,
+      selected: observableShallow,
       matchMode: observable,
 
       active: computed,
@@ -116,11 +116,11 @@ export class SetFilter implements ValueFilter {
       condition: computed,
       intersecting: computed,
 
-      toggle: action.bound,
-      select: action.bound,
-      setMatchMode: action.bound,
-      setValue: action.bound,
-      clear: action.bound,
+      toggle: actionBound,
+      select: actionBound,
+      setMatchMode: actionBound,
+      setValue: actionBound,
+      clear: actionBound,
     });
   }
 

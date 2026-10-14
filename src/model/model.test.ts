@@ -1177,7 +1177,7 @@ describe("field observability", () => {
   });
   const tagged = () => ({ id: 1, name: "Alice", tags: ["a"] });
 
-  test("every field defaults to observable.ref: reassigning is reactive, mutating is not", () => {
+  test("every field defaults to observableRef: reassigning is reactive, mutating is not", () => {
     const Model = makeModel(TaggedSchema, { keys: ["id"] as const });
     const m = new Model(tagged());
 

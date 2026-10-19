@@ -1009,16 +1009,23 @@ export class TableModel {
     // filter — so the source is downstream of it and this is a push, not a subscription. Immediate,
     // because the first page must go out with the filters a restored snapshot already applied
     // rather than fetching twice.
+    //
+    // The source is tracked alongside the query, so `setData` pointing at a different paged lazy —
+    // a keyed collection's next key, a hook rebuilding its list on a param change — hands the new
+    // one the query too. A new lazy starts from its own `query` option, which knows nothing of the
+    // filters on screen.
     if (!this.queryReactionDisposer) {
       this.queryReactionDisposer = reaction(
-        () => this.query,
-        (query) => {
+        () => [this.pages, this.query] as const,
+        ([pages, query]) => {
           // `setQuery` ignores a structurally equal query, so re-targeting at a source that happens
           // to carry the same one costs nothing, and a table with no paged source does nothing at
           // all here.
-          this.pages?.setQuery(query);
+          pages?.setQuery(query);
         },
-        { fireImmediately: true },
+        // Element by element: `query` is a structurally-compared computed, so its identity only
+        // changes when its contents do, and `pages` only when the source is replaced.
+        { fireImmediately: true, equals: compareShallow },
       );
     }
 

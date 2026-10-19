@@ -829,6 +829,44 @@ describe("binding to a paged lazy", () => {
     table.dispose();
   });
 
+  test("a paged source swapped in by setData is handed the table's current query", async () => {
+    const pagedFetch = (seen: unknown[]) =>
+      vi.fn(({ cursor, query }: { cursor?: string; query: TableQuery }) => {
+        seen.push(query);
+        const start = cursor === undefined ? 0 : Number(cursor);
+        const items = Array.from({ length: 50 }, (_, i) => ({
+          id: start + i,
+          name: `r${start + i}`,
+          kind: "x",
+        }));
+        return Promise.resolve({ items, cursor: null, total: 50 });
+      });
+    const filter = new SetFilter();
+    const firstSeen: unknown[] = [];
+    const { table, dispose } = measured({
+      data: lazyPages(pagedFetch(firstSeen), { pageSize: 50 }),
+      columns: [{ key: "kind", filter }, "id", "name"],
+    });
+    await tick();
+    filter.toggle("x");
+    await tick();
+    expect(firstSeen.at(-1)).toMatchObject({ filters: [{ field: "kind", value: ["x"] }] });
+
+    // a new list — a keyed collection's next key, or a hook that discarded on a param change
+    const secondSeen: unknown[] = [];
+    table.setData(lazyPages(pagedFetch(secondSeen), { pageSize: 50 }));
+    await tick();
+
+    // every request it makes carries the filter the table is showing — none goes out without it
+    expect(secondSeen.length).toBeGreaterThan(0);
+    for (const query of secondSeen) {
+      expect(query).toMatchObject({ filters: [{ field: "kind", value: ["x"] }] });
+    }
+
+    dispose();
+    table.dispose();
+  });
+
   test("query omits sorts the table is applying itself", () => {
     const rows = [{ id: 2 }, { id: 1 }];
     const { table, dispose } = measured({ data: rows, columns: ["id"] });

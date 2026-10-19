@@ -71,11 +71,16 @@ const handleSearch = useDebouncedCallback(
 );
 ```
 
+With `leading: true`, the first call in a burst fires immediately and the last fires once the burst
+pauses. A quiet window of `delayMs` re-arms the leading edge, so the next isolated call fires
+immediately as well.
+
 The returned function is safe to call after unmount — it becomes a no-op.
 
 ## `useDebouncedEffect`
 
-A `useEffect` that only fires after the deps have been stable for `delayMs` milliseconds.
+A `useEffect` that only fires after the deps have been stable for `delayMs` milliseconds. It is
+leading by default, so the first run doesn't wait.
 
 ```ts
 import { useDebouncedEffect } from "@jayalfredprufrock/mobx-toolbox/react-util";
@@ -88,6 +93,10 @@ useDebouncedEffect(
   { delayMs: 500 },
 );
 ```
+
+A cleanup returned from the effect is honoured. Because of the delay it runs right before the next
+run fires rather than the moment the deps change — what the previous run set up stays in place until
+its replacement is ready — and on unmount.
 
 ## `useMountedState`
 

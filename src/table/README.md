@@ -1145,7 +1145,8 @@ Nothing above is yours when `data` is a `lazyPages`. The table drives three thin
    the first request carries filters a restored snapshot already applied rather than going out bare.
    Note the direction: the table owns the query — filters live on columns, sorts on the model,
    search on the search filter — so the source is downstream of it and never needs a reference to
-   it.
+   it. A _different_ source — `data` pointing at a new list, as a keyed collection or a hook that
+   discards on a param change does — is handed the current query too, before its first request.
 2. **Calls `loadMore()`** while fewer than a viewport's worth of rows remain below the window. Not
    before the viewport is measured: with no height there is no answer to "how many rows fit", and
    the guess over-fetches. Failures are caught, not rethrown — the table asked on its own

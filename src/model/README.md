@@ -954,7 +954,8 @@ const feed = usePagedCollection(
 ```
 
 `params` restart the list when they change, leaving the rows readable while page one of the new one
-loads. Being component-scoped costs nothing global: identity and the event fan-out live on the model
+loads. `discardOnChange: true` empties it instead, for a list a param picks — see
+[`useCollection`](#what-a-param-change-does). Being component-scoped costs nothing global: identity and the event fan-out live on the model
 class, so an edit here shows up in the app-wide store and vice versa, and nothing needs disposing.
 
 **Driving a table with it is the whole of the consumer's code.** The table infers `mode: "server"`,
@@ -970,7 +971,8 @@ const table = useTable({ data: feed, columns });
 ```
 
 Name the query type and it is typed inside the fetch. Reach for `params` alongside it for the inputs
-the _table_ doesn't own — a route param, a parent record.
+the _table_ doesn't own — a route param, a parent record. A discarding param change builds a new list,
+and the table hands it the query on screen before it fetches, so the filters carry over.
 
 ### Component-scoped collections — `useCollection`
 
@@ -993,7 +995,7 @@ const Surveys = observer(({ orgId }: { orgId: string }) => {
   const list = useCollection(
     SurveyModel,
     ({ orgId, query }, options) => api.listSurveys({ orgId, q: query, ...options }),
-    { params: { orgId, query }, trackDependencies: { throttle: 300 } },
+    { params: { orgId, query }, debounce: 300 },
   );
 
   return (
@@ -1008,6 +1010,32 @@ The hook keeps the params in an observable box the fetch reads through, so `useS
 is and a change refetches — leaving the current rows readable while the next set loads, and aborting
 the request it supersedes. Params are compared shallowly, so rebuilding the object every render costs
 nothing.
+
+#### What a param change does
+
+Refetching in place is the default here, because filters over one list are what this hook is for. It
+is the one place the default runs that way: `useModel` and the [lazy hooks](../lazy/README.md#what-a-change-does--discardonchange)
+discard on a change, since their params usually say _which_ value.
+
+When a param picks the list rather than filtering it — the members of an org, the comments on a post
+— pass `discardOnChange: true`. A change then starts over with an empty list, so the previous org's
+rows never show under the new one:
+
+```tsx
+const members = useCollection(
+  MemberModel,
+  ({ orgId }, options) => api.listMembers({ orgId, ...options }),
+  { params: { orgId }, discardOnChange: true },
+);
+```
+
+It builds a new list, and a new component-scoped store with it, so the previous list is not left
+registered for mutation handling — it is garbage along with its store.
+
+One flag covers all the params, so when they mix both kinds — an org and a search term, as in the
+example above — pick by the worse mistake. If the previous org's rows under the new org would
+mislead, discard, and accept that a keystroke blanks the list too; or keep the search refetching in
+place and remount on the org by giving the component a `key={orgId}`.
 
 Being component-scoped costs nothing global: the model's identity map still hands out one instance
 per record and mutations still fan out, so an edit here shows up in the app-wide store and vice versa.
@@ -1035,16 +1063,16 @@ observes it, honours whatever the model declared for [`cache`](#caching-a-record
 it supersedes, and hands back the identity-mapped instance — so an edit made anywhere else in the app
 shows up here.
 
-**The params are the dependencies.** There is no dependency array to keep in step with them, which is
-the whole reason this exists rather than reaching for `useLazy`:
+**It is `useLazy` with the call written for you.** The params are typed from the model's `keys` and
+handed to its `get`, so there is nothing to spell out:
 
 ```tsx
-useLazy((o) => StudyModel.get({ id, orgId }, o), [id]); // `orgId` forgotten — silently stale
-useModel(StudyModel, { id, orgId }); // can't desync
+useLazy(({ id, orgId }, o) => StudyModel.get({ id, orgId }, o), { params: { id, orgId } });
+useModel(StudyModel, { id, orgId }); // the same lazy
 ```
 
-They are typed from the model's `keys`, compared shallowly (so rebuilding the object every render
-costs nothing), and key order is not a change.
+They are compared shallowly (so rebuilding the object every render costs nothing), and key order is
+not a change.
 
 A model with **no key params** (`keys: []` or `keys: false`) takes no params argument at all — the
 slot isn't there to fill:
@@ -1054,18 +1082,20 @@ const settings = useModel(SettingsModel);
 const settings = useModel(SettingsModel, { keepOnUnobserved: true }); // options move up
 ```
 
-**A param change builds a new lazy**, so the value starts empty and loads again — which is what you
-want for a record: showing the study you navigated away from while the next one loads would be a lie.
-That is the difference from `useCollection`'s `params`, and it is the difference between the two
-questions being asked:
+**A param change discards**, so the value starts empty and loads again — which is what you want for
+a record: showing the study you navigated away from while the next one loads would be a lie. That is
+the difference from `useCollection`'s `params`, and it is the difference between the two questions
+being asked:
 
-|                                | means                   | on change                                 |
-| ------------------------------ | ----------------------- | ----------------------------------------- |
-| `useModel(Model, params)`      | _which_ record this is  | new lazy — value starts empty             |
-| `useCollection(…, { params })` | filters over _one_ list | same lazy — refetches, rows stay readable |
+|                                | means                   | on change                              |
+| ------------------------------ | ----------------------- | -------------------------------------- |
+| `useModel(Model, params)`      | _which_ record this is  | value empties and reloads              |
+| `useCollection(…, { params })` | filters over _one_ list | refetches in place, rows stay readable |
 
 A study id changing makes it a different record. A search term changing does not make it a different
-list.
+list. Both are defaults: `useModel` takes
+[`discardOnChange: false`](../lazy/README.md#what-a-change-does--discardonchange), as `useLazy` does,
+for params that refine one record rather than pick another.
 
 **Pair it with `cache`.** With [`cache`](#caching-a-record) on the model, navigating back to a record
 you have already seen resolves from the identity map and paints without a request.
@@ -1074,11 +1104,13 @@ you have already seen resolves from the identity map and paints without a reques
 
 `useModel` covers a record fetched through the model's `get`, which is the case an app hits over and
 over. For anything else — a count, a summary, an endpoint that isn't a model at all — reach past it
-to [`useLazy`](../lazy/README.md#uselazy--uselazyarray), which knows nothing about models
-and takes an explicit `deps` array:
+to [`useLazy`](../lazy/README.md#uselazy--uselazyarray), which knows nothing about models and takes
+the same `params`:
 
 ```tsx
-const stats = useLazy((o) => api.getStudyStats({ id: studyId }, o), [studyId]);
+const stats = useLazy(({ studyId }, o) => api.getStudyStats({ studyId }, o), {
+  params: { studyId },
+});
 ```
 
 The other case is a `get` this hook can't call. It calls `get(params, fetchOptions)` and nothing
@@ -1098,12 +1130,13 @@ useModel(Study, { id }); // ✗ UseLazyInstead_GetTakesMoreThanParamsAndFetchOpt
 Your client's own options type is fine here — `RequestInit`, `{ signal?: AbortSignal }`, anything a
 bag can stand in for. What it can't be is an argument the bag isn't: marking `expand` optional
 doesn't help either, because arguments are passed by position, so the bag would arrive as the
-`expand` and the request would get no signal. Write the call yourself instead, and mind the
-dependency list — deriving it from the params is the hook's other job, so anything else the call
-closes over is now yours to declare:
+`expand` and the request would get no signal. Write the call yourself instead, passing everything
+it reads as params — including `expand`, which `useModel` would never have known about:
 
 ```tsx
-const study = useLazy((o) => Study.get({ id }, expand, o), [id, expand]);
+const study = useLazy(({ id, expand }, o) => Study.get({ id }, expand, o), {
+  params: { id, expand },
+});
 ```
 
 Every other use of the model is unaffected — `Study.get({ id }, expand)` from a route loader, store
@@ -1112,12 +1145,13 @@ methods, identity, events. It is only this hook that has a fixed call shape, for
 
 ### Where a list should live
 
-| The parameters are…                          | Put the list…                                                 |
-| -------------------------------------------- | ------------------------------------------------------------- |
-| fixed                                        | on a shared store — `collections`, or a field                 |
-| global observable state (the current tenant) | on a shared store, read in the fetch with `trackDependencies` |
-| varying per caller, and spellable as a key   | on a shared store — `collectionMap`                           |
-| the component's own React state              | in the component — `useCollection`                            |
+| The parameters are…                                              | Put the list…                                                 |
+| ---------------------------------------------------------------- | ------------------------------------------------------------- |
+| fixed                                                            | on a shared store — `collections`, or a field                 |
+| global observable state that filters the list                    | on a shared store, read in the fetch with `trackDependencies` |
+| global observable state that picks the list (the current tenant) | on a shared store — `collectionMap`, keyed on it              |
+| varying per caller, and spellable as a key                       | on a shared store — `collectionMap`                           |
+| the component's own React state                                  | in the component — `useCollection`                            |
 
 And for a value that is one record rather than a list, `useModel` in the component — see
 [above](#a-single-record-in-a-component--usemodel).
@@ -1229,6 +1263,7 @@ import type {
   CollectionMap, // what collectionMap returns: call it with a key, plus forget/clear
   CollectionMapOptions, // CollectionOptions plus keyOf, for a free-form collectionMap key
   UseCollectionOptions, // CollectionOptions plus the params useCollection feeds the fetch
+  UseModelOptions, // LazyOptions plus discardOnChange, for a keyed model
   Comparator, // (a: M, b: M) => number, what `sort` takes
   AnyModelClass, // a model class accepted as makeStore's first argument
   StoreConstructor, // the class returned by makeStore

@@ -1,10 +1,9 @@
 /**
  * Type-level tests for `useModel`'s params.
  *
- * Typed params are half of why this hook exists — the other half being that they double as the
- * dependency list. If the params stop being checked against the model's `keys`, the hook degrades
- * to `useLazy` with extra steps and nothing at runtime would notice. The file passing `vp check`
- * *is* the test.
+ * Typed params are why this hook exists rather than spelling the call out with `useLazy`. If they
+ * stop being checked against the model's `keys`, the hook degrades to `useLazy` with extra steps and
+ * nothing at runtime would notice. The file passing `vp check` *is* the test.
  */
 import * as T from "typebox";
 import { makeModel } from "./make-model";
@@ -134,9 +133,14 @@ const NeedsMore = makeModel(StudySchema, { keys: ["id", "orgId"], get: needsMore
 // @ts-expect-error the bag alone cannot satisfy this options type
 useModel(NeedsMore, { id, orgId });
 
-// the escape hatch: write the call yourself, and every value it closes over is a dependency
+// a keyed model takes `discardOnChange`; a keyless one has no params to change
+useModel(Study, { id, orgId }, { discardOnChange: false });
+
+// the escape hatch: write the call yourself, with everything it reads passed as params
 declare const expand: string;
-const expanded = useLazy((o) => Expanded.get({ id, orgId }, expand, o), [id, orgId, expand]);
+const expanded = useLazy(({ id, orgId, expand }, o) => Expanded.get({ id, orgId }, expand, o), {
+  params: { id, orgId, expand },
+});
 if (expanded.loaded) {
   const title: string = expanded.value.title;
   void title;

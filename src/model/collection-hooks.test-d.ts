@@ -47,10 +47,25 @@ useCollection(Survey, ({ orgId }, options) => listSurveys({ orgId, ...options })
   params: { orgId },
 });
 
+useCollection(Survey, ({ orgId }, options) => listSurveys({ orgId, ...options }), {
+  params: { orgId },
+  // @ts-expect-error the hook tracks its params itself
+  trackDependencies: true,
+});
+
+// params plus `discardOnChange`, for a list a param picks rather than filters
+useCollection(Survey, ({ orgId }, options) => listSurveys({ orgId, ...options }), {
+  params: { orgId },
+  discardOnChange: true,
+});
+
+// @ts-expect-error with no params there is no change to discard on
+useCollection(Survey, (options) => listSurveys({ orgId, ...options }), { discardOnChange: true });
+
 // params *plus* another option — the combination that used to resolve to neither overload
 useCollection(Survey, ({ orgId, q }, options) => listSurveys({ orgId, q, ...options }), {
   params: { orgId, q },
-  trackDependencies: { throttle: 300 },
+  debounce: 300,
 });
 
 useCollection(Survey, ({ orgId }, options) => listSurveys({ orgId, ...options }), {
@@ -64,6 +79,12 @@ useCollection(Survey, ({ orgId }, options) => listSurveys({ orgId, ...options })
 
 usePagedCollection(Survey, (request) => pageSurveys({ orgId, ...request }));
 usePagedCollection(Survey, (request) => pageSurveys({ orgId, ...request }), { pageSize: 25 });
+
+usePagedCollection(Survey, ({ orgId }, request) => pageSurveys({ orgId, ...request }), {
+  params: { orgId },
+  discardOnChange: true,
+  pageSize: 25,
+});
 
 usePagedCollection(Survey, ({ orgId }, request) => pageSurveys({ orgId, ...request }), {
   params: { orgId },

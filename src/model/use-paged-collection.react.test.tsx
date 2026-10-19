@@ -95,6 +95,8 @@ describe("usePagedCollection", () => {
   test("params restart the list, leaving the previous rows readable until page one lands", async () => {
     const fetch = api(30);
     let setPost!: (id: string) => void;
+    const lazies = new Set<unknown>();
+    const seen: { postId: string; body: string }[] = [];
 
     const Feed = observer(() => {
       const [postId, set] = useState("a");
@@ -104,7 +106,10 @@ describe("usePagedCollection", () => {
         ({ postId }, request) => fetch({ postId, ...request }),
         { params: { postId }, pageSize: 5 },
       );
-      return <span data-pages={feed.pages}>{feed.value?.map((c) => c.body).join(",") ?? "—"}</span>;
+      lazies.add(feed);
+      const body = feed.value?.map((c) => c.body).join(",") ?? "—";
+      seen.push({ postId, body });
+      return <span data-pages={feed.pages}>{body}</span>;
     });
 
     const { container } = await mount(<Feed />);
@@ -118,6 +123,43 @@ describe("usePagedCollection", () => {
 
     expect(row().textContent).toBe("b-0,b-1,b-2,b-3,b-4");
     expect(row().dataset.pages).toBe("1"); // page one of the new list, not page two of the old
+    // the same list restarted, never empty on the way
+    expect(lazies.size).toBe(1);
+    expect(seen.filter((s) => s.postId === "b").map((s) => s.body)).not.toContain("—");
+  });
+
+  test("discardOnChange: true builds a new list, empty until page one lands", async () => {
+    const fetch = api(30);
+    let setPost!: (id: string) => void;
+    const lazies = new Set<unknown>();
+    const seen: { postId: string; body: string }[] = [];
+
+    const Feed = observer(() => {
+      const [postId, set] = useState("a");
+      setPost = set;
+      const feed = usePagedCollection(
+        CommentModel,
+        ({ postId }, request) => fetch({ postId, ...request }),
+        { params: { postId }, pageSize: 5, discardOnChange: true },
+      );
+      lazies.add(feed);
+      const body = feed.value?.map((c) => c.body).join(",") ?? "—";
+      seen.push({ postId, body });
+      return <span>{body}</span>;
+    });
+
+    const { container } = await mount(<Feed />);
+    await settle();
+    expect(container.textContent).toBe("a-0,a-1,a-2,a-3,a-4");
+
+    await act(async () => setPost("b"));
+    await settle();
+
+    expect(container.textContent).toBe("b-0,b-1,b-2,b-3,b-4");
+    expect(lazies.size).toBe(2);
+    const underB = seen.filter((s) => s.postId === "b").map((s) => s.body);
+    expect(underB).toContain("—");
+    expect(underB).not.toContain("a-0,a-1,a-2,a-3,a-4");
   });
 
   test("re-rendering neither rebuilds the list nor refetches", async () => {

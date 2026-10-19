@@ -4,7 +4,7 @@ import { createRoot } from "react-dom/client";
 import { observer } from "mobx-react-lite";
 import { afterEach, describe, expect, test, vi } from "vite-plus/test";
 import { useLazyPages } from "./use-lazy";
-import type { LazyPageRequest, LazyPageResult } from "./lazy";
+import type { LazyPageRequest, LazyPageResult, LazyPages } from "./lazy";
 
 const containers: HTMLElement[] = [];
 
@@ -62,7 +62,7 @@ describe("useLazyPages", () => {
     let clickMore!: () => void;
 
     const Feed = observer(() => {
-      const feed = useLazyPages(fetch, [], { pageSize: 2 });
+      const feed = useLazyPages(fetch, { pageSize: 2 });
       clickMore = () => void feed.loadMore();
 
       if (!feed.loaded) return <span>loading</span>;
@@ -106,7 +106,7 @@ describe("useLazyPages", () => {
     const Feed = observer(() => {
       const [sort, set] = useState("new");
       setSort = set;
-      const feed = useLazyPages(fetch, [], { pageSize: 2, query: { sort } });
+      const feed = useLazyPages(fetch, { pageSize: 2, query: { sort } });
 
       useEffect(() => feed.setQuery({ sort }), [feed, sort]);
 
@@ -136,7 +136,7 @@ describe("useLazyPages", () => {
     const Feed = observer(() => {
       const [n, setN] = useState(0);
       bump = setN;
-      const feed = useLazyPages(fetch, [], { pageSize: 2 });
+      const feed = useLazyPages(fetch, { pageSize: 2 });
       return <span>{`${n}:${feed.value?.length ?? 0}`}</span>;
     });
 
@@ -150,14 +150,19 @@ describe("useLazyPages", () => {
     expect(fetch).toHaveBeenCalledOnce();
   });
 
-  test("a deps change builds a new list from page one", async () => {
+  test("a param change discards by default, building a new list from page one", async () => {
     const fetch = api(20);
     let setPost!: (id: string) => void;
+    const lazies = new Set<unknown>();
 
     const Feed = observer(() => {
       const [postId, set] = useState("a");
       setPost = set;
-      const feed = useLazyPages(fetch, [postId], { pageSize: 2 });
+      const feed = useLazyPages((_params, request) => fetch(request), {
+        params: { postId },
+        pageSize: 2,
+      });
+      lazies.add(feed);
       return <span>{`${postId}:${feed.value?.length ?? 0}:${feed.pages}`}</span>;
     });
 
@@ -166,9 +171,87 @@ describe("useLazyPages", () => {
 
     await act(async () => setPost("b"));
 
-    // a different list: page one again, not the page after the previous post's rows
+    // a different list — a new lazy, not the previous one restarted — from page one again
+    expect(lazies.size).toBe(2);
     expect(container.textContent).toBe("b:2:1");
     expect(fetch.mock.calls.at(-1)![0]).toMatchObject({ cursor: undefined, page: 0 });
+  });
+
+  test("discardOnChange: false restarts the same list, keeping its rows and its query", async () => {
+    const fetch = api(20);
+    let setPost!: (id: string) => void;
+    let feedRef!: LazyPages<Comment, { sort: string } | undefined>;
+    const lazies = new Set<unknown>();
+    const lengths: (number | undefined)[] = [];
+
+    const Feed = observer(() => {
+      const [postId, set] = useState("a");
+      setPost = set;
+      const feed = useLazyPages<Comment, { postId: string }, { sort: string } | undefined>(
+        ({ postId }, request) =>
+          fetch(request).then((r) => ({
+            ...(r as { items: Comment[] }),
+            items: (r as { items: Comment[] }).items.map((c) => ({
+              ...c,
+              body: `${postId}:${c.body}`,
+            })),
+          })),
+        { params: { postId }, discardOnChange: false, pageSize: 2 },
+      );
+      feedRef = feed;
+      lazies.add(feed);
+      lengths.push(feed.value?.length);
+      return <span>{feed.value?.map((c) => c.body).join(",") ?? "loading"}</span>;
+    });
+
+    const container = await mount(<Feed />);
+    await act(async () => void feedRef.loadMore());
+    await act(async () => feedRef.setQuery({ sort: "new" }));
+    expect(container.textContent).toBe("a:c0/new,a:c1/new");
+
+    const settled = lengths.length;
+    await act(async () => setPost("b"));
+    await act(async () => {});
+
+    // one list throughout, back to page one under the new params, the query still applied
+    expect(lazies.size).toBe(1);
+    expect(container.textContent).toBe("b:c0/new,b:c1/new");
+    expect(fetch.mock.calls.at(-1)![0]).toMatchObject({
+      cursor: undefined,
+      query: { sort: "new" },
+    });
+    expect(lengths.slice(settled)).not.toContain(undefined);
+  });
+
+  test("debounce delays a param change, never a next page or a setQuery", async () => {
+    const fetch = api(20);
+    let setPost!: (id: string) => void;
+    let feedRef!: LazyPages<Comment, { sort: string } | undefined>;
+
+    const Feed = observer(() => {
+      const [postId, set] = useState("a");
+      setPost = set;
+      const feed = useLazyPages<Comment, { postId: string }, { sort: string } | undefined>(
+        (_params, request) => fetch(request),
+        { params: { postId }, discardOnChange: false, debounce: 10_000, pageSize: 2 },
+      );
+      feedRef = feed;
+      return <span>{feed.value?.length ?? 0}</span>;
+    });
+
+    await mount(<Feed />);
+    expect(fetch).toHaveBeenCalledTimes(1);
+
+    await act(async () => void (await feedRef.loadMore()));
+    expect(fetch).toHaveBeenCalledTimes(2);
+
+    await act(async () => feedRef.setQuery({ sort: "new" }));
+    expect(fetch).toHaveBeenCalledTimes(3);
+
+    // the param change is what waits
+    await act(async () => setPost("b"));
+    expect(fetch).toHaveBeenCalledTimes(3);
+    expect(feedRef.fetching).toBe(true);
   });
 
   test("unmounting drops the pages and aborts the request in flight", async () => {
@@ -179,7 +262,7 @@ describe("useLazyPages", () => {
     });
 
     const Feed = observer(() => {
-      const feed = useLazyPages(fetch, [], { pageSize: 2 });
+      const feed = useLazyPages(fetch, { pageSize: 2 });
       return <span>{feed.loaded ? "rows" : "loading"}</span>;
     });
 

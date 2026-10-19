@@ -929,7 +929,7 @@ import { useLazy, LazyObserver } from "@jayalfredprufrock/mobx-toolbox/lazy";
 
 const UserDetailPage = observer(() => {
   const { id } = useRouter().pathParams;
-  const user = useLazy((options) => api.getUser(id, options), [id]);
+  const user = useLazy(({ id }, options) => api.getUser(id, options), { params: { id } });
 
   return (
     <UserLayout>

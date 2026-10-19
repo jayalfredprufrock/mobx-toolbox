@@ -1,4 +1,5 @@
-import { useLazy } from "../lazy/use-lazy";
+import { useLazy, type UseLazyParamsOptions } from "../lazy/use-lazy";
+import type { WithoutTracking } from "../lazy/params";
 import type { Lazy, LazyFetchOptions, LazyOptions } from "../lazy/lazy";
 import type { AnyModelClass } from "./make-store";
 
@@ -82,20 +83,16 @@ type UseLazyInstead_GetTakesMoreThanParamsAndFetchOptions = {
  */
 type UseModelArgs<MC> =
   Keyless<MC> extends true
-    ? [options?: LazyOptions]
-    : [params: GetParams<MC>, options?: LazyOptions];
+    ? [options?: WithoutTracking<LazyOptions>]
+    : [params: GetParams<MC>, options?: UseModelOptions];
 
 /**
- * Turn `params` into a dependency list. Sorted by key so a differently-ordered object of the same
- * values isn't read as a change, and keys are included alongside values so adding or removing one
- * counts.
+ * `LazyOptions` plus what a param change does — see {@link UseLazyParamsOptions.discardOnChange}
+ * and {@link UseLazyParamsOptions.debounce}. Only a keyed model has params to change, so a keyless
+ * one takes `LazyOptions` alone. Neither takes `trackDependencies`: the params are the inputs.
  */
-const paramsToDeps = (params: unknown): unknown[] => {
-  if (params === undefined || params === null || typeof params !== "object") return [params];
-  return Object.entries(params as Record<string, unknown>)
-    .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
-    .flat();
-};
+export type UseModelOptions = WithoutTracking<LazyOptions> &
+  Pick<UseLazyParamsOptions<object>, "discardOnChange" | "debounce">;
 
 /**
  * One record, loaded in a component — the detail-page counterpart to {@link useCollection}.
@@ -116,17 +113,13 @@ const paramsToDeps = (params: unknown): unknown[] => {
  * something observes it, honours whatever the model declared for `cache`, and hands back the
  * identity-mapped instance — an edit made anywhere else in the app shows up here.
  *
- * **The params are the dependencies.** There is no dependency array to keep in step with them, which
- * is the whole reason this exists rather than spelling it out with `useLazy`:
+ * It is `useLazy` with the call written for you: the params are typed from the model's `keys` and
+ * handed to its `get`, so there is no fetch to spell out and nothing to restate.
  *
- * ```tsx
- * useLazy((o) => StudyModel.get({ id, orgId }, o), [id]); // `orgId` forgotten — silently stale
- * useModel(StudyModel, { id, orgId }); // can't desync
- * ```
- *
- * They are compared shallowly, so rebuilding the object every render costs nothing. A change builds
- * a new lazy — the value starts empty and loads again, which is what you want for a record: showing
- * the study you navigated away from while the next one loads would be a lie.
+ * They are compared shallowly, so rebuilding the object every render costs nothing. A change starts
+ * over — the value empties and loads again, which is what you want for a record: showing the study
+ * you navigated away from while the next one loads would be a lie. `discardOnChange: false` refetches
+ * in place instead, as it does for `useLazy`.
  *
  * A model with no key params (`keys: []` or `keys: false`) takes no params argument at all —
  * `useModel(SettingsModel)`, and `useModel(SettingsModel, { keepOnUnobserved: true })` for options.
@@ -144,17 +137,19 @@ export function useModel<MC extends AnyModelClass>(
   const keys = (model as { keys?: unknown }).keys;
   const keyed = Array.isArray(keys) && keys.length > 0;
   const params = keyed ? (args[0] as object) : undefined;
-  const options = (keyed ? args[1] : args[0]) as LazyOptions | undefined;
+  const options = (keyed ? args[1] : args[0]) as UseModelOptions | undefined;
 
   // `get` is generic over the class it is called on, so it can't be reached through a structural
   // type — the conditional above is what types the params, and this is what reaches the function.
   const get = (model as unknown as { get: (...a: any[]) => Promise<InstanceType<MC>> }).get.bind(
     model,
   );
-  return useLazy<InstanceType<MC>>(
-    (fetchOptions) => (params === undefined ? get(fetchOptions) : get(params, fetchOptions)),
-    [model, ...paramsToDeps(params)],
+  // A keyless model still goes through the params form, with params that never change, so the
+  // two cases share one call. The model itself is not an input: it is a class, read once.
+  return useLazy<InstanceType<MC>, object>(
+    (keyParams, fetchOptions) => (keyed ? get(keyParams, fetchOptions) : get(fetchOptions)),
     {
+      params: params ?? {},
       // Models are observable in their own right, so nothing needs converting on the way in — the
       // same default `store.collection` uses. Harmless either way, since MobX leaves an already
       // observable value alone; this just skips the check.

@@ -20,7 +20,7 @@ export function useDebouncedCallback<T extends (...args: any) => any>(
     ...options,
     timeout: null,
     mounted: false,
-    leadingTriggered: options?.leading ?? false,
+    leadingTriggered: false,
   });
 
   useEffect(() => {
@@ -39,8 +39,10 @@ export function useDebouncedCallback<T extends (...args: any) => any>(
     if (!currentRef.leadingTriggered && currentRef.leading) {
       currentRef.leadingTriggered = true;
       callback(...params);
+      // A quiet window after a leading call re-arms the leading edge, so the next isolated call
+      // fires immediately too rather than waiting out a trailing delay.
       currentRef.timeout = window.setTimeout(() => {
-        currentRef.leadingTriggered = true;
+        currentRef.leadingTriggered = false;
       }, currentRef.delayMs ?? 1600);
     } else {
       currentRef.timeout = window.setTimeout(() => {

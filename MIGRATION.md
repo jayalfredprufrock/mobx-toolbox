@@ -93,6 +93,53 @@ with `React.lazy` — where a file uses both, alias one at the import (`import {
 Sections below written before the rename show the old spellings only in _before_ examples, which
 describe code you may still have.
 
+### lazy — `useLazy` / `useLazyArray` / `useLazyPages` take `params`, not a dependency list
+
+The `deps` argument is gone. Inputs move into `params`, which arrive as the fetch's first argument —
+the same shape `useModel`, `useCollection` and `usePagedCollection` take — and a fetch with no
+inputs takes no second argument at all:
+
+| before                                     | after                                                                   |
+| ------------------------------------------ | ----------------------------------------------------------------------- |
+| `useLazy((o) => api.get({ id }, o), [id])` | `useLazy(({ id }, o) => api.get({ id }, o), { params: { id } })`        |
+| `useLazy(fetch, [id], { initialValue })`   | `useLazy(fetch, { params: { id }, initialValue })`                      |
+| `useLazy(fetch, [])`                       | `useLazy(fetch)`                                                        |
+| `useLazyArray(fetch, [studyId])`           | `useLazyArray(fetch, { params: { studyId } })`                          |
+| `useLazyPages((req) => …, [postId], opts)` | `useLazyPages(({ postId }, req) => …, { params: { postId }, ...opts })` |
+
+Every call fails to compile until it is converted, and a converted call behaves exactly as before:
+a param change still discards the value and loads again, as a `deps` change did. Convert by moving
+everything the fetch read from the component — every entry in the old `deps`, and anything it
+closed over that the list forgot — into `params`, and reading it from the fetch's first argument.
+Don't leave a value in the closure: the fetch is captured when the lazy is built, so a value read
+from there goes stale.
+
+New with it, and opt-in: `discardOnChange: false` refetches in place instead, keeping the value
+readable — for search results and filters, where the params refine one value rather than pick a
+different one, or a paged list that should restart in place. `useModel` takes it too.
+
+`useCollection` and `usePagedCollection` take the same option with the opposite default: they keep
+refetching in place, unchanged, and `discardOnChange: true` empties the list for one a param picks —
+an org's members, a post's comments.
+
+### lazy / model — the hooks don't take `trackDependencies`; `debounce` replaces its throttle
+
+`useLazy`, `useLazyArray`, `useLazyPages`, `useModel`, `useCollection` and `usePagedCollection` no
+longer accept `trackDependencies`, and their fetch now runs untracked. The factories and store
+methods (`lazy`, `collection`, `pagedCollection`, …) are unchanged.
+
+| before                                                       | after                                           |
+| ------------------------------------------------------------ | ----------------------------------------------- |
+| `{ params, trackDependencies: { throttle: 300 } }`           | `{ params, debounce: 300 }`                     |
+| `{ params, trackDependencies: true }`                        | `{ params }` — the params were already tracked  |
+| a hook's fetch reading `session.tenant` to refetch on change | read it in the component and add it to `params` |
+
+⚠️ Two behaviour changes compile cleanly. `debounce` waits for the changes to _pause_, where the
+throttle refreshed once per window during sustained typing — the request carries the final params
+rather than intermediate ones. And an observable the fetch reads is no longer a refetch trigger: if a
+hook's fetch read one directly (with or without `trackDependencies`), move it into `params` or the
+lazy will stop following it. Search hook calls for observables read inside the fetch.
+
 ### filter — view props, and `filterOption` is gone
 
 ⚠️ **`filterOption` has been removed from the column def.** Whatever a filter UI needs now travels on
@@ -1415,22 +1462,15 @@ write now:
 // before
 const study = useMemo(() => lazyObservable(() => StudyModel.get({ id: studyId })), [studyId]);
 
-// intermediate — correct, but the deps array restates what the fetch already closes over
-const study = useLazy((o) => StudyModel.get({ id: studyId }, o), [studyId]);
+// intermediate — correct, but spells out the call the model already knows how to make
+const study = useLazy(({ id }, o) => StudyModel.get({ id }, o), { params: { id: studyId } });
 
 // now
 const study = useModel(StudyModel, { id: studyId });
 ```
 
-**The params are the dependencies**, so there is no array to keep in step with them — which is a real
-bug class, not just noise:
-
-```tsx
-useLazy((o) => StudyModel.get({ id, orgId }, o), [id]); // `orgId` forgotten — silently stale
-useModel(StudyModel, { id, orgId }); // can't desync
-```
-
-Params are typed from the model's `keys`, compared shallowly, and key order is not a change. The
+**The params are typed from the model's `keys`**, so a missing or misspelled key fails to compile
+rather than fetching the wrong record. They are compared shallowly, and key order is not a change. The
 result is an ordinary `lazy` over the model's `get`, so it honours the model's `cache`,
 aborts superseded requests, and hands back the identity-mapped instance. A model with no key params
 (`keys: []` or `keys: false`) takes no params argument at all — `useModel(SettingsModel)`, with any
@@ -1461,11 +1501,13 @@ Reach past it to `useLazy` for those, and for anything that isn't a model record
 summary, an endpoint with no model behind it:
 
 ```tsx
-const study = useLazy((o) => Study.get({ id }, expand, o), [id, expand]);
+const study = useLazy(({ id, expand }, o) => Study.get({ id }, expand, o), {
+  params: { id, expand },
+});
 ```
 
-Writing the call yourself means the dependency list is yours again, which is the trade: everything
-the fetch closes over has to be listed.
+Writing the call yourself means the params are yours to assemble, which is the trade: everything the
+fetch reads has to be passed in them.
 
 **`useLazy` instead of `useMemo(() => lazyObservable(…))` for anything else.** Loading one record
 in a component had no first-class shape, so the pattern was:
@@ -1475,7 +1517,9 @@ in a component had no first-class shape, so the pattern was:
 const study = useMemo(() => lazyObservable(() => StudyModel.get({ id: studyId })), [studyId]);
 
 // after
-const study = useLazy((options) => StudyModel.get({ id: studyId }, options), [studyId]);
+const study = useLazy(({ id }, options) => StudyModel.get({ id }, options), {
+  params: { id: studyId },
+});
 ```
 
 Two things that fixes beyond the noise. `useMemo` is a performance hint React is allowed to discard

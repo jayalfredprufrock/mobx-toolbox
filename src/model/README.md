@@ -1145,12 +1145,13 @@ methods, identity, events. It is only this hook that has a fixed call shape, for
 
 ### Where a list should live
 
-| The parameters are…                          | Put the list…                                                 |
-| -------------------------------------------- | ------------------------------------------------------------- |
-| fixed                                        | on a shared store — `collections`, or a field                 |
-| global observable state (the current tenant) | on a shared store, read in the fetch with `trackDependencies` |
-| varying per caller, and spellable as a key   | on a shared store — `collectionMap`                           |
-| the component's own React state              | in the component — `useCollection`                            |
+| The parameters are…                                              | Put the list…                                                 |
+| ---------------------------------------------------------------- | ------------------------------------------------------------- |
+| fixed                                                            | on a shared store — `collections`, or a field                 |
+| global observable state that filters the list                    | on a shared store, read in the fetch with `trackDependencies` |
+| global observable state that picks the list (the current tenant) | on a shared store — `collectionMap`, keyed on it              |
+| varying per caller, and spellable as a key                       | on a shared store — `collectionMap`                           |
+| the component's own React state                                  | in the component — `useCollection`                            |
 
 And for a value that is one record rather than a list, `useModel` in the component — see
 [above](#a-single-record-in-a-component--usemodel).

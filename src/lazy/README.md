@@ -302,8 +302,24 @@ This throttles rather than debounces, which is a real difference under sustained
 opens at the first change and is **not** pushed back by later ones, so continuous typing refreshes
 once per window instead of waiting for a pause. That keeps results moving rather than showing nothing
 until the user stops. A request already in flight when a change arrives keeps running, and its result
-still applies if it lands first. A request already in flight when a change arrives keeps running, and its
-result still applies if it lands first — normal progressive-search behaviour.
+still applies if it lands first — normal progressive-search behaviour. A true debounce isn't on offer
+here: mobx reports only the first change in a burst until the fetch runs again, so nothing at this
+level can see the later ones to restart a wait. The [hooks](#uselazy--uselazyarray) can, and offer
+`debounce` instead.
+
+**A dependency change keeps the value.** The refetch happens in place, with the previous value
+readable and `loaded` until the next lands — right when the observable _refines_ one value, like a
+search term or a filter. When it _picks_ the value instead — the current tenant, a selected record —
+the previous one under the new input is a lie. Key the list on it with
+[`collectionMap`](../model/README.md#keyed-collections--collectionmap), so each tenant has its own,
+or discard explicitly:
+
+```ts
+reaction(
+  () => session.orgId,
+  () => surveys.invalidate({ discard: true }),
+);
+```
 
 If you'd rather keep tracking off and refetch explicitly, a plain reaction is often clearer:
 

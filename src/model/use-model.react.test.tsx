@@ -156,7 +156,30 @@ describe("useModel", () => {
     expect(get).toHaveBeenCalledTimes(2);
   });
 
-  test("a param the deps array would have missed still refetches", async () => {
+  test("discardOnChange: false refetches in place, keeping the old record readable", async () => {
+    const { get, StudyModel } = setup();
+    const seen: (string | undefined)[] = [];
+    let setId: (n: number) => void = () => {};
+
+    const Probe = observer(() => {
+      const [id, setter] = useState(1);
+      setId = setter;
+      const study = useModel(StudyModel, { id, orgId: "acme" }, { discardOnChange: false });
+      seen.push(study.value?.title);
+      return <span>{study.value?.title ?? "loading"}</span>;
+    });
+
+    const { container } = await mount(<Probe />);
+    await act(async () => {});
+    await act(async () => setId(2));
+    await act(async () => {});
+
+    expect(container.textContent).toBe("study 2 of acme");
+    expect(seen.slice(seen.indexOf("study 1 of acme"))).not.toContain(undefined);
+    expect(get).toHaveBeenCalledTimes(2);
+  });
+
+  test("a param a dependency list could have missed still refetches", async () => {
     const { get, StudyModel } = setup();
     let setOrg: (v: string) => void = () => {};
 

@@ -8,7 +8,7 @@
  */
 import type { IObservableArray } from "mobx";
 import { lazy, lazyArray, type LazyFetch, type Lazy, type LazyArray } from "./lazy";
-import { useLazy, useLazyArray } from "./use-lazy";
+import { useLazy, useLazyArray, useLazyPages } from "./use-lazy";
 
 /**
  * Compiles only if the argument is assignable to `Expected`.
@@ -164,24 +164,106 @@ assignableTo<IObservableArray<number>>(explicitList.value);
 
 // --- the hooks carry the narrowing, rather than dropping it ----------------
 
-declare const deps: React.DependencyList;
-
-const hookScalar = useLazy(() => Promise.resolve(42), deps);
+const hookScalar = useLazy(() => Promise.resolve(42));
 assignableTo<number | undefined>(hookScalar.value);
 // @ts-expect-error unseeded, so still a union
 assignableTo<number>(hookScalar.value);
 
-const hookSeeded = useLazy(() => Promise.resolve(42), deps, { initialValue: 0 });
+const hookSeeded = useLazy(() => Promise.resolve(42), { initialValue: 0 });
 assignableTo<number>(hookSeeded.value);
 assignableTo<true>(hookSeeded.loaded);
 
-const hookList = useLazyArray(() => Promise.resolve([1]), deps);
+const hookList = useLazyArray(() => Promise.resolve([1]));
 // @ts-expect-error unseeded, so still a union
 assignableTo<IObservableArray<number>>(hookList.value);
 
-const hookSeededList = useLazyArray(() => Promise.resolve([1]), deps, { initialValue: [] });
+const hookSeededList = useLazyArray(() => Promise.resolve([1]), { initialValue: [] });
 assignableTo<IObservableArray<number>>(hookSeededList.value);
 assignableTo<true>(hookSeededList.loaded);
+
+// --- and so do the params forms, with the fetch typed from `params` -------
+//
+// Every fetch below leaves its parameters un-annotated, so a call that resolved to no overload — the
+// trap `params?: never` on the no-params overloads exists for — would fail here under
+// `noImplicitAny`.
+
+declare const range: string;
+
+const paramsScalar = useLazy(
+  ({ range }, options) => Promise.resolve(options.signal.aborted ? 0 : range.length),
+  {
+    params: { range },
+  },
+);
+assignableTo<number | undefined>(paramsScalar.value);
+// @ts-expect-error unseeded, so still a union
+assignableTo<number>(paramsScalar.value);
+
+const paramsTracked = useLazy(({ range }) => Promise.resolve(range), {
+  params: { range },
+  discardOnChange: false,
+  debounce: 300,
+  keepOnUnobserved: true,
+});
+assignableTo<string | undefined>(paramsTracked.value);
+
+const paramsSeeded = useLazy(({ range }) => Promise.resolve(range.length), {
+  params: { range },
+  initialValue: 0,
+});
+assignableTo<number>(paramsSeeded.value);
+assignableTo<true>(paramsSeeded.loaded);
+
+const paramsList = useLazyArray(({ range }) => Promise.resolve([range]), {
+  params: { range },
+  discardOnChange: false,
+  debounce: 300,
+});
+// @ts-expect-error unseeded, so still a union
+assignableTo<IObservableArray<string>>(paramsList.value);
+
+const paramsSeededList = useLazyArray(({ range }) => Promise.resolve([range]), {
+  params: { range },
+  initialValue: [],
+});
+assignableTo<IObservableArray<string>>(paramsSeededList.value);
+assignableTo<true>(paramsSeededList.loaded);
+
+// @ts-expect-error a params-form fetch needs `params` to read
+useLazy(({ range }: { range: string }) => Promise.resolve(range), {});
+
+// @ts-expect-error with no params there is no change to discard on
+useLazy(() => Promise.resolve(1), { discardOnChange: false });
+
+// useLazyPages: the params form types both arguments, alongside the pager's own options
+const pagesParams = useLazyPages(
+  ({ range }, { cursor, limit, signal }) =>
+    Promise.resolve(signal.aborted ? [] : [`${range}:${cursor ?? ""}:${limit}`]),
+  { params: { range }, discardOnChange: false, pageSize: 10, debounce: 300 },
+);
+assignableTo<string[] | undefined>(pagesParams.value?.slice());
+
+const pagesBare = useLazyPages(({ limit }) => Promise.resolve([limit]), { pageSize: 10 });
+assignableTo<number[] | undefined>(pagesBare.value?.slice());
+
+// the hooks track their params themselves, so `trackDependencies` is not an option on any form
+// @ts-expect-error
+useLazy(({ range }) => Promise.resolve(range), { params: { range }, trackDependencies: true });
+// @ts-expect-error
+useLazy(() => Promise.resolve(1), { trackDependencies: true });
+useLazyArray(({ range }) => Promise.resolve([range]), {
+  params: { range },
+  // @ts-expect-error
+  trackDependencies: true,
+});
+// @ts-expect-error
+useLazyPages(({ limit }) => Promise.resolve([limit]), { trackDependencies: true });
+
+// @ts-expect-error `debounce` delays a param change, so it needs params
+useLazy(() => Promise.resolve(1), { debounce: 300 });
+
+// options without params still type the bare fetch's argument
+useLazy((options) => Promise.resolve(options.signal.aborted), { keepOnUnobserved: true });
 
 // --- narrowed lazies remain usable everywhere an unnarrowed one is --------
 

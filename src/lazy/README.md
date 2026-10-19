@@ -690,12 +690,14 @@ route param, a prop, a piece of local state.
 ```tsx
 import { useLazy } from "@jayalfredprufrock/mobx-toolbox/lazy";
 
-const StudyPage = observer(({ studyId }: { studyId: string }) => {
-  const study = useLazy((options) => api.getStudy({ id: studyId }, options), [studyId]);
+const StudyStats = observer(({ studyId }: { studyId: string }) => {
+  const stats = useLazy(({ studyId }, options) => api.getStudyStats({ studyId }, options), {
+    params: { studyId },
+  });
 
   return (
-    <LazyObserver observe={study} placeholder={<Spinner />}>
-      {(s) => <StudyDetail study={s} />}
+    <LazyObserver observe={stats} placeholder={<Spinner />}>
+      {(s) => <StatsPanel stats={s} />}
     </LazyObserver>
   );
 });
@@ -707,28 +709,119 @@ reloads, and aborts what it supersedes. Passing the fetch options through, as ab
 you that abort.
 
 > **Fetching one record through a model?** Reach for
-> [`useModel`](../model/README.md#a-single-record-in-a-component--usemodel) instead — the params
-> double as the dependency list, so there is no array to keep in step with them. `useLazy` is for
-> everything else: a count, a summary, an endpoint with no model behind it.
+> [`useModel`](../model/README.md#a-single-record-in-a-component--usemodel) instead — it is this hook
+> with the call written for you, params typed from the model's `keys`. `useLazy` is for everything
+> else: a count, a summary, an endpoint with no model behind it.
 
 `useLazyArray` is the same for a list-shaped value, and returns a `lazyArray`.
 
-Both take an `initialValue`, and narrow when you pass one, exactly as the factories do — see
-[A seed narrows the type](#a-seed-narrows-the-type). The seed belongs to _this_ lazy, so a
-`deps` change builds a new one starting from the seed again.
+### `params` are the inputs
 
-**`deps` say _which_ lazy this is.** Changing them builds a new one, exactly as constructing a second
-lazy by hand would: the value starts empty and loads again. For a single record that is the point —
-showing the study you navigated away from while the next one loads would be a lie.
+`params` arrive as the fetch's first argument, ahead of the lazy's own options — the same
+params-first shape `useModel` and `useCollection` take. They are the whole of the fetch's inputs,
+so there is no dependency list to keep in step with them:
 
-The same applies to `useLazyArray`: the array identity a lazy owns is
-[for that lazy's lifetime](#lazyobservablearray), and a `deps` change ends it. Anything watching
-identity as a change signal should watch `loadedAt` instead — the same caveat that applies to a
-hand-built array lazy.
+- **Everything the fetch reads from the component goes in `params`.** A value the fetch closes over
+  directly is read as it was when the lazy was built, so it goes stale.
+- **They are compared shallowly.** Rebuilding the object every render is not a change, and neither
+  is key order.
 
-When the inputs are _filters over one list_ rather than a different list, the other shape is
-[`useCollection`](../model/README.md#component-scoped-collections--usecollection): one lazy that
-refetches, with rows readable throughout.
+A fetch with no inputs takes no `params` at all, and is built once:
+
+```tsx
+const count = useLazy((options) => api.countUnread(options));
+```
+
+### What a change does — `discardOnChange`
+
+A param change **discards** by default: the value empties and loads again, and `loaded` goes back to
+`false`, so a `!loaded` placeholder shows. That is right when the params say _which_ value this is —
+a record by id, a study's sections. Showing the study you navigated away from while the next one
+loads would be a lie, and no render ever does: the change takes effect in the same render as the
+new params.
+
+Pass `discardOnChange: false` when the params _refine_ one value instead — a search term, a filter, a
+date range. The change refetches in place, keeping the value readable and `loaded`, with `fetching`
+saying it belongs to the params before:
+
+```tsx
+const results = useLazyArray(({ orgId, q }, options) => api.search({ orgId, q }, options), {
+  params: { orgId, q },
+  discardOnChange: false,
+  debounce: 300,
+});
+```
+
+|                          | use for                                            | on change                                          |
+| ------------------------ | -------------------------------------------------- | -------------------------------------------------- |
+| default                  | _which_ value — a record, a list owned by a parent | value empties, or returns to its seed, and reloads |
+| `discardOnChange: false` | refining _one_ value — search, filters             | refetches in place, value stays readable           |
+
+Get it wrong in the safe direction: a discard you didn't need costs a placeholder flash, while a keep
+you didn't want shows the previous record under the new params with nothing to say so. The
+collection hooks are the one place the default flips — `useCollection` and `usePagedCollection`
+exist for filtered lists, so their params refetch in place, and take `discardOnChange: true` for a
+list a param picks.
+
+One flag covers all the params. When they mix both kinds — an org and a search term — pick by the
+worse mistake, or keep the search in place and remount on the org with a `key={orgId}`.
+
+What else differs:
+
+- **The seed.** Both hooks take an `initialValue` and narrow when you pass one, exactly as the
+  factories do — see [A seed narrows the type](#a-seed-narrows-the-type). A discarding change
+  returns to the seed, which describes the inputs it was written for; a keeping one refetches over
+  whatever is held.
+- **The array.** A discarding change builds a new lazy, and with it a new array, since the identity
+  a lazy owns is [for that lazy's lifetime](#lazyobservablearray). A keeping one refetches into the
+  same array. Anything watching identity as a change signal should watch `loadedAt` instead.
+
+### `debounce`
+
+`debounce: ms` holds a param change back until the params stop changing for that long, restarting
+the wait on every change — so typing into a search box costs one request, sent once the typing
+pauses.
+
+The wait happens _inside_ the request: the change reaches the lazy at once and its request sleeps
+before calling your fetch. So `fetching` is `true` from the first keystroke, and a "searching…"
+indicator shows throughout the wait rather than only once the request is sent. A further change
+aborts the sleeping request and starts a fresh wait, and unmounting abandons it the same way.
+
+Only a param change waits. The first load, a `reload()`, an invalidation from a mutation, a
+`setQuery` and a next page all go straight out — they aren't the typing being debounced.
+
+It works with either change behaviour. Keeping, the previous value stays on screen through the wait;
+discarding, the placeholder does.
+
+### No `trackDependencies`
+
+The hooks don't take `trackDependencies`. They track their params themselves — that is how a keeping
+lazy hears about a change — and nothing else: your fetch runs untracked. Anything it should react to
+goes in `params`, a store's observable included — read it in the component, which is an observer,
+and pass it in. That way it follows the same keep-or-discard rule as every other input, rather than
+always refetching in place behind it.
+
+### `useLazyPages`
+
+The same, for a list that grows a page at a time. `params` arrive ahead of the page request — the
+shape `usePagedCollection` takes — and the default is the same discard:
+
+```tsx
+const feed = useLazyPages(
+  ({ postId }, { cursor, limit, signal }) => api.listComments({ postId, cursor, limit, signal }),
+  { params: { postId } },
+);
+```
+
+A different post is a different list, so a change builds a new one from page one. With
+`discardOnChange: false`, a change restarts the _same_ list instead, rows readable while page one
+of the new params loads — and a query set through
+[`setQuery`](#setquery--a-different-list-not-a-stale-one) survives it. A discarding change builds a
+new list, which starts from the `query` option again.
+
+`setQuery` is still the way in for a query pushed from somewhere with no observable to offer, such
+as a table's sort and filters. `params` are the component's own inputs; `setQuery` is everyone
+else's.
 
 **Held through `useStable`, not `useMemo`.** `useMemo` is a performance hint React may discard and
 recompute, which would rebuild the lazy and silently drop what it had loaded. See
@@ -815,6 +908,7 @@ import type {
   LazyOptions, // options for lazy()
   LazyOptionsWithInitialValue, // ...plus the seed, for the seeded overload
   LazyInvalidateOptions, // options for invalidate()
+  UseLazyParamsOptions, // { params, discardOnChange? } — what useLazy(), useLazyArray() and useLazyPages() add
   LazyFetch, // ({ signal }: LazyFetchOptions) => Promise<T>
   LazyFetchOptions, // what a fetch is handed — currently { signal }
   LazyPagesOptions, // options for lazyPages()

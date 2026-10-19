@@ -132,6 +132,66 @@ describe("useCollection", () => {
     await view.unmount();
   });
 
+  test("discardOnChange: true starts over, so no render shows the previous params' rows", async () => {
+    const { list, SurveyModel } = setup();
+    const lazies = new Set<unknown>();
+    const seen: { orgId: string; titles: string }[] = [];
+
+    const Probe = observer(({ orgId }: { orgId: string }) => {
+      const surveys = useCollection(
+        SurveyModel,
+        ({ orgId }, options) => list({ orgId, ...options }),
+        { params: { orgId }, discardOnChange: true },
+      );
+      lazies.add(surveys);
+      const titles = surveys.value?.map((s) => s.title).join(",") ?? "";
+      seen.push({ orgId, titles });
+      return <span>{titles}</span>;
+    });
+
+    const view = await render(Probe, "acme");
+    await vi.waitUntil(() => view.container.textContent === "Alpha");
+
+    await view.rerender("globex");
+    await vi.waitUntil(() => view.container.textContent === "Gamma");
+
+    expect(lazies.size).toBe(2);
+    expect(seen.filter((s) => s.orgId === "globex").map((s) => s.titles)).not.toContain("Alpha");
+    expect(list).toHaveBeenCalledTimes(2);
+
+    // equal params are still not a change
+    await view.rerender("globex");
+    expect(lazies.size).toBe(2);
+    expect(list).toHaveBeenCalledTimes(2);
+
+    await view.unmount();
+  });
+
+  test("debounce holds a param change back until the changes pause", async () => {
+    const { list, SurveyModel } = setup();
+    const Probe = observer(({ orgId }: { orgId: string }) => {
+      const surveys = useCollection(
+        SurveyModel,
+        ({ orgId }, options) => list({ orgId, ...options }),
+        { params: { orgId }, debounce: 40 },
+      );
+      return <span>{surveys.value?.map((s) => s.title).join(",") ?? ""}</span>;
+    });
+
+    const view = await render(Probe, "acme");
+    await vi.waitUntil(() => view.container.textContent === "Alpha");
+
+    await view.rerender("globex");
+    await view.rerender("acme");
+    await view.rerender("globex");
+    expect(list).toHaveBeenCalledTimes(1);
+
+    await vi.waitUntil(() => view.container.textContent === "Gamma");
+    expect(list).toHaveBeenCalledTimes(2);
+
+    await view.unmount();
+  });
+
   test("without params the fetch takes the lazy's options alone", async () => {
     const { SurveyModel } = setup();
     const all = vi.fn((_options: { signal?: AbortSignal }) =>

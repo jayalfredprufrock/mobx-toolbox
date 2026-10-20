@@ -1150,7 +1150,9 @@ Nothing above is yours when `data` is a `lazyPages`. The table drives three thin
 2. **Calls `loadMore()`** while fewer than a viewport's worth of rows remain below the window. Not
    before the viewport is measured: with no height there is no answer to "how many rows fit", and
    the guess over-fetches. Failures are caught, not rethrown — the table asked on its own
-   initiative, so there is no caller to reject at, and the error is on `pages.error`.
+   initiative, so there is no caller to reject at, and the error is on `pages.error`. Under
+   [`loadMoreMode: "manual"`](#load-more-on-request--loadmoremode-manual) it doesn't — every page is
+   yours to ask for.
 3. **Scrolls back to the top when the source restarts** (`pages.pages` returning to `0`). A scroll
    offset measured against fifty pages is meaningless against one, and leaving the user parked past
    the end reads as "near the end" — so the fetch-ahead would immediately refill everything the
@@ -1191,14 +1193,38 @@ One row's worth of space at the **end of the rows**, inside the scroll flow. You
 scrolling to the bottom of the list, which is exactly what it is for: the indicator for when you
 outrun the fetch.
 
-The table is already loading the next page as the window nears the end, so the only things left to
-say down there are "still coming" and "that was all":
+By default the table is already loading the next page as the window nears the end, so the only
+things left to say down there are "still coming" and "that was all":
 
 ```tsx
 <Table.Gutter>
   {feed.loadingMore ? <Spinner /> : !feed.hasMore && <EndOfResults total={feed.total} />}
 </Table.Gutter>
 ```
+
+#### Load more on request — `loadMoreMode: "manual"`
+
+When a page should arrive only because the user asked for it, turn the automatic fetching off and
+put the button here. The table keeps doing everything else for a paged source — pushing its query,
+scrolling back to the top on a restart — and leaves the next page to you:
+
+```tsx
+const table = useTable({ data: feed, columns, loadMoreMode: "manual" });
+
+<Table.Gutter>
+  {feed.loadingMore ? (
+    <Spinner />
+  ) : feed.hasMore ? (
+    <button onClick={() => void feed.loadMore().catch(() => {})}>Load more</button>
+  ) : (
+    <EndOfResults total={feed.total} />
+  )}
+</Table.Gutter>;
+```
+
+A failed page leaves `feed.error` set and the rows in place, so the same button is the retry.
+Without `"manual"`, a "Load more" button here would never be clicked: by the time the user scrolls
+down to it, the table has already asked for that page.
 
 It claims `rowHeight` by default (`height` overrides), and rendering `null` children still occupies
 the strip — omit the element entirely for none at all. Sticky-left at the visible width like every
@@ -1575,7 +1601,8 @@ The library reads `--table-scroll-width` itself for the pieces that pin horizont
 
 ## Empty, loading and error slots
 
-(For the strip _below_ the rows — "Loading more…", "Load more", "End of results" — see
+(For the strip _below_ the rows — "Loading more…", "End of results", or a "Load more" button under
+[`loadMoreMode: "manual"`](#load-more-on-request--loadmoremode-manual) — see
 [`<Table.Gutter>`](#tablegutter), which is ungated because what goes there is what the source knows
 rather than something the table can work out.)
 

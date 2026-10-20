@@ -939,6 +939,41 @@ describe("binding to a paged lazy", () => {
     table.dispose();
   });
 
+  test("loadMoreMode: manual never fetches a page on its own, but still drives the rest", async () => {
+    const feed = lazyPages(pagedApi(500), { pageSize: 10 });
+    const filter = new SetFilter();
+    const { table, dispose } = measured({
+      data: feed,
+      columns: [{ key: "name", filter }, "id"],
+      loadMoreMode: "manual",
+    });
+    await tick();
+
+    // one page, a viewport with nothing below it, and still no second request
+    expect(feed.pages).toBe(1);
+    table.setScroll(0, table.virtualHeight);
+    await tick();
+    expect(feed.pages).toBe(1);
+
+    // the consumer's button
+    await feed.loadMore();
+    await tick();
+    expect(table.rows.length).toBe(20);
+    expect(feed.pages).toBe(2);
+
+    // the query is still pushed, and a restart still scrolls to the top
+    table.setScroll(0, 200);
+    table.clearScrollRequest();
+    filter.toggle("r0");
+    await tick();
+    expect(feed.query).toMatchObject({ filters: [{ field: "name", value: ["r0"] }] });
+    expect(table.scrollRequest).toEqual({ y: 0 });
+    expect(feed.pages).toBe(1);
+
+    dispose();
+    table.dispose();
+  });
+
   test("keeps fetching when a client-side filter rejects an entire page", async () => {
     // 200 rows in pages of 10, of which only the first 5 survive the filter. So after page one the
     // display rows stop growing entirely and `rowsToEnd` never moves — the exact case a thresholded

@@ -1039,7 +1039,9 @@ export class TableModel {
     //
     // No guard against re-entry is needed: `loadMore()` resolves immediately when there is nothing
     // more and joins a request already in flight rather than starting a second.
-    if (!this.loadMoreReactionDisposer) {
+    //
+    // Not armed at all under `loadMoreMode: "manual"`, where every page is the consumer's call.
+    if (!this.loadMoreReactionDisposer && this.config?.loadMoreMode !== "manual") {
       this.loadMoreReactionDisposer = reaction(
         () => {
           const source = this.pages;

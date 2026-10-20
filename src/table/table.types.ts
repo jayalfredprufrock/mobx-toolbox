@@ -87,6 +87,17 @@ export interface TableConfig<T> {
    * object.
    */
   mode?: "client" | "server";
+  /**
+   * Who asks a paged `data` source for its next page. `"auto"` (the default) is infinite scroll:
+   * the table calls `loadMore()` itself whenever fewer than a viewport's worth of rows remain below
+   * the render window. `"manual"` leaves it to you — a "Load more" button in `<Table.Gutter>`, say
+   * — and the table never fetches a page on its own.
+   *
+   * Only the fetching changes. Under either, the table still pushes its query into the source and
+   * scrolls back to the top when the source restarts. Has no effect unless `data` is a paged lazy.
+   * Read once, at construction.
+   */
+  loadMoreMode?: "auto" | "manual";
   /** Fixed pixel height of every row (the virtualization contract). Default 40. */
   rowHeight?: number;
   /**

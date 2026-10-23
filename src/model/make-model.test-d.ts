@@ -185,4 +185,30 @@ const LooseIndex = makeModel(SurveySchema, {
 void LooseAny;
 void LooseIndex;
 
+// --- statics are typed through the class they are called on ------------------
+
+// A generated model class is always subclassed, so every static that hands back an instance has to
+// come back as the subclass — its own members included.
+class Admin extends Survey {
+  get label(): string {
+    return `${this.title} (admin)`;
+  }
+}
+
+const peeked = Admin.peek(key);
+if (peeked) {
+  const label: string = peeked.label;
+  void label;
+}
+const instantiated: Admin = Admin.instantiate({ id: "1", orgId: "2", title: "t" });
+void instantiated;
+void Admin.get(key).then((admin) => admin.label);
+void Admin.reload(key).then((admin) => admin.label);
+void Admin.create({ title: "t" }).then((admin) => admin.label);
+
+// and on the base class, the base instance
+const basePeek = Survey.peek(key);
+// @ts-expect-error a base instance has no subclass members
+void basePeek?.label;
+
 export {};

@@ -393,8 +393,13 @@ export interface ModelIdentity<S extends ModelSchema, K, I extends object> {
    *
    * Presence, not freshness: a record `cache` would consider stale still comes back. Use it to
    * decide whether a fetch is needed at all, or to reach a record you know is loaded.
+   *
+   * Typed through the class it is called on, like `instantiate`: `Admin.peek(...)` is an `Admin`.
    */
-  peek(params: KeyShape<S, K>): I | undefined;
+  peek<This extends new (...args: any[]) => any>(
+    this: This,
+    params: KeyShape<S, K>,
+  ): InstanceType<This> | undefined;
   /** The registry key for a payload or model. Override on a subclass to scope identity. */
   identityKey(source: Resource<S> | I): string | number;
   /**

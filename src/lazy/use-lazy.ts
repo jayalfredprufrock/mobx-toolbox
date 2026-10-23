@@ -65,8 +65,9 @@ export interface UseLazyParamsOptions<P> {
  *
  * `params` arrive as the fetch's first argument, ahead of the lazy's own options — the same
  * params-first shape `useCollection` and `useModel` take. They are the whole of the fetch's inputs:
- * there is no dependency list to keep in step with them, and they are compared shallowly, so
- * rebuilding the object every render is not a change and key order does not matter.
+ * there is no dependency list to keep in step with them, and they are compared structurally, so
+ * rebuilding the object every render — arrays and nested objects included — is not a change, and
+ * key order does not matter. Keep them plain data: ids, not model instances or observables.
  *
  * A change starts over by default — the value empties and loads again, since showing the study you
  * navigated away from while the next one loads would be a lie. Pass `discardOnChange: false` when

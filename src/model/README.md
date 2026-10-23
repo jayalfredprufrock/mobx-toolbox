@@ -1008,7 +1008,7 @@ const Surveys = observer(({ orgId }: { orgId: string }) => {
 
 The hook keeps the params in an observable box the fetch reads through, so `useState` stays where it
 is and a change refetches — leaving the current rows readable while the next set loads, and aborting
-the request it supersedes. Params are compared shallowly, so rebuilding the object every render costs
+the request it supersedes. Params are compared structurally — arrays and nested objects by contents — so rebuilding the object every render costs
 nothing.
 
 #### What a param change does
@@ -1071,7 +1071,7 @@ useLazy(({ id, orgId }, o) => StudyModel.get({ id, orgId }, o), { params: { id, 
 useModel(StudyModel, { id, orgId }); // the same lazy
 ```
 
-They are compared shallowly (so rebuilding the object every render costs nothing), and key order is
+They are compared structurally (so rebuilding the object every render costs nothing), and key order is
 not a change.
 
 A model with **no key params** (`keys: []` or `keys: false`) takes no params argument at all — the

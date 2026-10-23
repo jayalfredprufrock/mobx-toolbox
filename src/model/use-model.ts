@@ -116,7 +116,7 @@ export type UseModelOptions = WithoutTracking<LazyOptions> &
  * It is `useLazy` with the call written for you: the params are typed from the model's `keys` and
  * handed to its `get`, so there is no fetch to spell out and nothing to restate.
  *
- * They are compared shallowly, so rebuilding the object every render costs nothing. A change starts
+ * They are compared structurally, so rebuilding the object every render costs nothing. A change starts
  * over — the value empties and loads again, which is what you want for a record: showing the study
  * you navigated away from while the next one loads would be a lie. `discardOnChange: false` refetches
  * in place instead, as it does for `useLazy`.

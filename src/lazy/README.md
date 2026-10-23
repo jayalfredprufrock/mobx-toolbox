@@ -739,8 +739,12 @@ so there is no dependency list to keep in step with them:
 
 - **Everything the fetch reads from the component goes in `params`.** A value the fetch closes over
   directly is read as it was when the lazy was built, so it goes stale.
-- **They are compared shallowly.** Rebuilding the object every render is not a change, and neither
-  is key order.
+- **They are compared structurally.** Rebuilding the object every render is not a change, and
+  neither is key order, an array of ids rebuilt with the same ids, or a nested filter object with
+  the same contents.
+- **They should be plain data.** Pass `studyId`, not `study`. Comparing walks every field, so an
+  observable object or a model instance passed as a param is read in full during render —
+  subscribing the component to each field and turning any edit into a param change.
 
 A fetch with no inputs takes no `params` at all, and is built once:
 

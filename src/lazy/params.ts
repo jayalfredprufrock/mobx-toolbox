@@ -1,4 +1,4 @@
-import { compareShallow, untracked } from "mobx";
+import { compareStructural, untracked } from "mobx";
 import { useRef } from "react";
 import { useObservableBox } from "../util/use-observable-box";
 
@@ -9,14 +9,12 @@ import { useObservableBox } from "../util/use-observable-box";
 export type WithoutTracking<O> = Omit<O, "trackDependencies">;
 
 /**
- * Turn `params` into a dependency list, for a hook that discards on a param change by rebuilding
- * what it holds. Sorted by key so a differently-ordered object of the same values isn't read as a
- * change, and keys are included alongside values so adding or removing one counts.
+ * How params are compared, everywhere: structurally. An array of ids or a nested filter object
+ * rebuilt every render is not a change, and neither is key order. Params should be plain data —
+ * comparing walks every field, so an observable or a model instance passed as a param would be read
+ * in full during render, subscribing the component to each field and making any edit a change.
  */
-const paramsToDeps = (params: object): unknown[] =>
-  Object.entries(params)
-    .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
-    .flat();
+const sameParams = (a: unknown, b: unknown): boolean => compareStructural(a, b);
 
 /** Resolve after `ms`, or reject with the signal's reason the moment it aborts. */
 const sleep = (ms: number, signal: AbortSignal): Promise<void> =>
@@ -83,17 +81,21 @@ export function useParamsFetch<A extends { signal: AbortSignal }>(
   // presence of its key, which an absent bag and an empty one answer the same way.
   const { params, discardOnChange = discardByDefault, debounce = 0, ...rest } = options ?? {};
   // Called whatever the form, since a hook can't be conditional; only a keeping lazy reads it.
-  const box = useObservableBox(params);
+  const box = useObservableBox(params, { equals: sameParams });
   // The params the last request went out with — across rebuilds, so a discarding change can tell
   // it is one. Empty until the first request, which therefore never waits.
   const last = useRef<{ params: unknown }>(undefined);
+  // For discarding: the params the current lazy was built for, and a counter that moves only when
+  // they change structurally — which is what `useStable` rebuilds on, since its own comparison is
+  // `Object.is` per dep.
+  const built = useRef<{ params: unknown; version: number }>(undefined);
 
   if (!hasParams) return { fetch, options: rest, deps: [] };
 
   const request = async (current: unknown, arg: A) => {
     const previous = last.current;
     last.current = { params: current };
-    if (debounce > 0 && previous && !compareShallow(previous.params, current)) {
+    if (debounce > 0 && previous && !sameParams(previous.params, current)) {
       await sleep(debounce, arg.signal);
     }
     return untracked(() => fetch(current, arg));
@@ -110,9 +112,14 @@ export function useParamsFetch<A extends { signal: AbortSignal }>(
     };
   }
 
+  if (!built.current || !sameParams(built.current.params, params)) {
+    built.current = { params, version: (built.current?.version ?? 0) + 1 };
+  }
+  // The params the lazy was built for, not this render's copy: equal by definition, and stable.
+  const current = built.current.params;
   return {
-    fetch: (arg) => request(params, arg),
+    fetch: (arg) => request(current, arg),
     options: rest,
-    deps: paramsToDeps(params as object),
+    deps: [built.current.version],
   };
 }

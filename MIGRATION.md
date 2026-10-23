@@ -1470,7 +1470,7 @@ const study = useModel(StudyModel, { id: studyId });
 ```
 
 **The params are typed from the model's `keys`**, so a missing or misspelled key fails to compile
-rather than fetching the wrong record. They are compared shallowly, and key order is not a change. The
+rather than fetching the wrong record. They are compared structurally, and key order is not a change. The
 result is an ordinary `lazy` over the model's `get`, so it honours the model's `cache`,
 aborts superseded requests, and hands back the identity-mapped instance. A model with no key params
 (`keys: []` or `keys: false`) takes no params argument at all — `useModel(SettingsModel)`, with any

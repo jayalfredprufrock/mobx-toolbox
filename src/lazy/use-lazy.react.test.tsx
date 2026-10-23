@@ -451,6 +451,107 @@ describe("useLazy with discardOnChange: false", () => {
 
 const wait = (ms: number) => act(async () => void (await new Promise((r) => setTimeout(r, ms))));
 
+describe("params are compared structurally", () => {
+  // Each render rebuilds every param — fresh arrays, fresh nested objects, fresh Dates, keys in a
+  // different order — so only a real difference in contents may count as a change.
+  const setup = (discardOnChange: boolean) => {
+    const calls: unknown[] = [];
+    const lazies = new Set<unknown>();
+    let rerender: (n: number) => void = () => {};
+    let setIds: (ids: number[]) => void = () => {};
+
+    const Probe = () => {
+      const [n, setN] = useState(0);
+      const [ids, setter] = useState([1, 2]);
+      rerender = setN;
+      setIds = setter;
+      const params =
+        n % 2
+          ? { range: { to: new Date(2026, 0, 2), from: new Date(2026, 0, 1) }, ids: [...ids] }
+          : { ids: [...ids], range: { from: new Date(2026, 0, 1), to: new Date(2026, 0, 2) } };
+      return (
+        <Observer>
+          {() => {
+            const result = useLazy(
+              async (p) => {
+                calls.push(p);
+                return p.ids.join(",");
+              },
+              { params, discardOnChange },
+            );
+            lazies.add(result);
+            return <span>{result.value ?? "loading"}</span>;
+          }}
+        </Observer>
+      );
+    };
+
+    return {
+      calls,
+      lazies,
+      Probe,
+      rerender: (n: number) => rerender(n),
+      setIds: (i: number[]) => setIds(i),
+    };
+  };
+
+  for (const discardOnChange of [true, false]) {
+    test(`${discardOnChange ? "discarding" : "keeping"}: equal contents are not a change; different ones are`, async () => {
+      const { calls, lazies, Probe, rerender, setIds } = setup(discardOnChange);
+      const container = await mount(<Probe />);
+      await act(async () => {});
+
+      await act(async () => rerender(1));
+      await act(async () => rerender(2));
+      await act(async () => {});
+      expect(calls).toHaveLength(1);
+      expect(lazies.size).toBe(1);
+
+      await act(async () => setIds([1, 3]));
+      await act(async () => {});
+      expect(calls).toHaveLength(2);
+      expect(container.textContent).toBe("1,3");
+      expect(lazies.size).toBe(discardOnChange ? 2 : 1);
+    });
+  }
+
+  test("debounce waits only for a structural change", async () => {
+    const calls: number[][] = [];
+    let current!: ReturnType<typeof useLazy<string>>;
+    let rerender: (n: number) => void = () => {};
+
+    const Probe = () => {
+      const [n, setN] = useState(0);
+      rerender = setN;
+      return (
+        <Observer>
+          {() => {
+            current = useLazy(
+              async ({ ids }) => {
+                calls.push(ids);
+                return `${ids.length} ${n}`;
+              },
+              { params: { ids: [1, 2] }, discardOnChange: false, debounce: 10_000 },
+            );
+            return <span>{current.value}</span>;
+          }}
+        </Observer>
+      );
+    };
+
+    await mount(<Probe />);
+    await act(async () => {});
+    expect(calls).toHaveLength(1);
+    await act(async () => rerender(1));
+    // a fresh array with the same ids is not a param change, so nothing is waiting either
+    expect(current.fetching).toBe(false);
+
+    // and a reload with those params goes straight out
+    await act(async () => void (await current.reload()));
+    expect(calls).toHaveLength(2);
+  });
+});
+
 describe("useLazy keeping, without tracking the fetch", () => {
   test("an observable the fetch reads is not a reason to refetch — only params are", async () => {
     const tenant = observable.box("acme");

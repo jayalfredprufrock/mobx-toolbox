@@ -508,7 +508,7 @@ a comparison to catch.
 
 ## Discriminated unions — `makeUnionModel`
 
-For a `T.Union` of objects, use `makeUnionModel(schema, discriminator, config?)`. It takes the discriminator property name and returns a model whose instance exposes the **shared** fields directly; variant-specific fields are reached through the `is`/`as` guards. `makeModel` itself only accepts a single `T.Object`.
+For a `T.Union` of objects, use `makeUnionModel(schema, discriminator, config?)`. It takes the discriminator property name and returns a model whose instance exposes the **shared** fields directly; variant-specific fields are reached through `variant` or the `is`/`as` guards. `makeModel` itself only accepts a single `T.Object`.
 
 ```ts
 const PaymentSchema = T.Union([
@@ -538,12 +538,68 @@ Because the resulting instance type would be a union, and **a union type cannot 
 ```ts
 class Payment extends PaymentModel {
   get label() {
-    if (this.is("card")) return `card ${this.cardNumber}`;
-    if (this.is("bank")) return `bank ${this.routing}`;
-    return "?";
+    switch (this.variant.kind) {
+      case "card":
+        return `card ${this.variant.cardNumber}`;
+      case "bank":
+        return `bank ${this.variant.routing}`;
+    }
   }
 }
 ```
+
+### Switching on the variant — `variant`
+
+`model.variant` is the same instance, typed as a union of its variants — the one shape TypeScript
+narrows with a `switch`, which a class instance can't be. Switch on its discriminator and each
+`case` sees that variant's fields, with subclass members and the narrowed `updateData` / `toJSON`
+along with them:
+
+```ts
+switch (payment.variant.kind) {
+  case "card":
+    return <Card digits={payment.variant.cardNumber} />;
+  case "bank":
+    return <Bank routing={payment.variant.routing} />;
+  default:
+    return assertNever(payment.variant); // a new variant in the schema fails to compile here
+}
+```
+
+Only that path is narrowed — `payment` itself keeps the shared type, so inside a `case` the
+variant's fields are `payment.variant.cardNumber`, never `payment.cardNumber`. A case that uses
+them a lot can take `const card = payment.variant` first; declared inside the `case`, it is
+narrowed too.
+
+It is a property rather than a method so that no variable is needed: TypeScript narrows the path
+`payment.variant` itself, re-checking it on every access. The narrowing only goes stale inside a
+`case`, after an `await` or a call that replaces the record (`setData`, `reload`) — check the
+discriminator again there. It is not data: it never appears in `toJSON()`.
+
+`variant` is reserved on union models, so a schema declaring a field by that name is refused when
+the model is made.
+
+#### Naming a variant's type — `ModelVariant`
+
+To type a function or a prop that takes one variant, name it from the class — the value is checked
+against the schema, and subclass members come along:
+
+```ts
+import type { ModelVariant } from "@jayalfredprufrock/mobx-toolbox/model";
+
+type CardPayment = ModelVariant<typeof Payment, "card">; // what payment.as("card") returns, minus undefined
+
+const CardDetails = ({ card }: { card: CardPayment }) => <span>{card.cardNumber}</span>;
+
+switch (payment.variant.kind) {
+  case "card":
+    return <CardDetails card={payment.variant} />;
+  // ...
+}
+```
+
+For all of them at once — a parameter that switches for itself — index the instance:
+`Payment["variant"]`.
 
 ### Guards
 
@@ -1248,6 +1304,7 @@ import type {
   ModelConfig, // config object passed to makeModel / makeUnionModel
   ModelConstructor, // the class returned by makeModel
   UnionModelConstructor, // the class returned by makeUnionModel
+  ModelVariant, // one variant of a union model: ModelVariant<typeof Payment, "card">
   ModelListener, // what a store exposes to hear about mutations
   ModelEventType, // "created" | "updated" | "deleted"
   ModelIdentity, // the identity-map statics — only on a model that declared identity

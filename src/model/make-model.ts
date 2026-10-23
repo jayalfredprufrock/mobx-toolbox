@@ -861,6 +861,10 @@ type VariantFields<S extends UnionSchema, D extends keyof Resource<S>, V> = Extr
   Record<D, V>
 >;
 
+// `Self` once per variant, joined: a union a `switch` on the discriminator can narrow, where the
+// single shared-fields instance type can't be. Distributes over `R`, the schema's variants.
+type Variants<Self, R> = R extends any ? Self & R : never;
+
 // The members makeUnionModel adds. An interface (not a type-alias literal) so the
 // polymorphic `this` in `is`/`as` is allowed; at a call site `this` resolves to
 // the full instance, so the guard reveals the variant's fields on it.
@@ -896,6 +900,26 @@ interface UnionModelMembers<S extends UnionSchema, D extends keyof Resource<S>, 
   is<V extends Resource<S>[D]>(value: V): this is this & VariantFields<S, D, V>;
   /** This instance narrowed to the `value` variant (fields exposed directly), or `undefined` if it doesn't match. */
   as<V extends Resource<S>[D]>(value: V): (this & VariantFields<S, D, V>) | undefined;
+  /**
+   * This same instance, typed as a union of its variants, so a `switch` on the discriminator
+   * narrows it — with an exhaustiveness check if you want one:
+   *
+   * ```ts
+   * switch (payment.variant.kind) {
+   *   case "card": return payment.variant.cardNumber;
+   *   case "bank": return payment.variant.routing;
+   * }
+   * ```
+   *
+   * Only this path narrows — `payment` itself keeps the shared type, so a variant's fields are read
+   * through `payment.variant` inside each `case`.
+   *
+   * Not a copy and not data: it is the instance, with its methods and subclass members, typed
+   * differently. The narrowing is re-checked on every access, so it holds anywhere you switch on it;
+   * only after an `await`, or a call that replaces the record (`setData`, `reload`), inside the same
+   * `case` should you check the discriminator again.
+   */
+  readonly variant: Variants<this, Resource<S>>;
 }
 
 // Base instance exposes only the shared fields (a single object type, so it can
@@ -917,6 +941,34 @@ export type UnionModelConstructor<S extends UnionSchema, D extends keyof Resourc
   (HasIdentity<K> extends true ? ModelIdentity<S, K, UnionModelInstance<S, D, K, Cfg>> : {}) &
   ModelStatics<Cfg>;
 
+/** A union model class — what {@link ModelVariant} reads the discriminator and instance off. */
+type AnyUnionModelClass = {
+  readonly discriminator: PropertyKey;
+  new (...args: any[]): { readonly variant: unknown };
+};
+
+/**
+ * One variant of a union model, as `model.as(value)` returns it (minus the `undefined`) and as a
+ * `case` of `switch (model.variant.kind)` sees it: the instance — subclass members included — with
+ * that variant's fields.
+ *
+ * Takes the class, since that is where the discriminator's name lives, so only the value is yours
+ * to give — and it is checked against the schema, so a misspelled one is an error rather than
+ * `never`:
+ *
+ * ```ts
+ * type CardPayment = ModelVariant<typeof Payment, "card">;
+ * const renderCard = (card: CardPayment) => card.cardNumber;
+ * ```
+ *
+ * For every variant at once, as a union a `switch` can narrow, index the instance:
+ * `Payment["variant"]`.
+ */
+export type ModelVariant<
+  C extends AnyUnionModelClass,
+  V extends InstanceType<C>["variant"][C["discriminator"] & keyof InstanceType<C>["variant"]],
+> = Extract<InstanceType<C>["variant"], Record<C["discriminator"], V>>;
+
 export function makeUnionModel<S extends UnionSchema, D extends keyof Resource<S> & string>(
   schema: S,
   discriminator: D,
@@ -936,6 +988,16 @@ export function makeUnionModel(
   discriminator: string,
   config?: ModelConfig<any, any>,
 ): any {
+  // `variant` is a member of every union model, so a schema field by that name would be shadowed on
+  // every instance — and its type left contradictory. Refuse it here, where the schema is in view.
+  const clash = flattenVariants(schema).some((variant) => "variant" in variant.properties);
+  if (clash) {
+    throw new Error(
+      `[makeUnionModel] the schema declares a field named "variant", which union models reserve: ` +
+        `\`model.variant\` is the instance typed as a union of its variants. Rename the field.`,
+    );
+  }
+
   const ModelClass = createModelClass(schema, config);
   ModelClass.discriminator = discriminator;
 
@@ -946,6 +1008,13 @@ export function makeUnionModel(
   proto.as = function (value: unknown): unknown {
     return (this as any)[discriminator] === value ? this : undefined;
   };
+  // The instance itself — the union type is all there is to it.
+  Object.defineProperty(proto, "variant", {
+    get(this: unknown) {
+      return this;
+    },
+    configurable: true,
+  });
 
   return ModelClass;
 }

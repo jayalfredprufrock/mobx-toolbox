@@ -228,6 +228,35 @@ describe("makeUnionModel", () => {
     expect(model.as("card")).toBeUndefined();
   });
 
+  test("variant is the same instance, following setData", () => {
+    const PaymentModel = makeUnionModel(PaymentSchema, "kind");
+    const model = new PaymentModel({ kind: "card", id: 1, cardNumber: "4242" });
+    expect(model.variant).toBe(model);
+
+    const describe = () => {
+      switch (model.variant.kind) {
+        case "card":
+          return `card ${model.variant.cardNumber}`;
+        case "bank":
+          return `bank ${model.variant.routing}`;
+      }
+    };
+    expect(describe()).toBe("card 4242");
+
+    model.setData({ kind: "bank", id: 1, routing: "021" });
+    expect(describe()).toBe("bank 021");
+    // not data: it stays out of the payload
+    expect(Object.keys(model.toJSON())).not.toContain("variant");
+  });
+
+  test("a schema field named variant is refused when the model is made", () => {
+    const Clashing = T.Union([
+      T.Object({ kind: T.Literal("a"), variant: T.String() }),
+      T.Object({ kind: T.Literal("b") }),
+    ]);
+    expect(() => makeUnionModel(Clashing, "kind")).toThrow(/reserve/);
+  });
+
   test("toJSON emits only the active variant's fields", () => {
     const PaymentModel = makeUnionModel(PaymentSchema, "kind");
     // foreign-variant keys exist on the instance (all observable) but are cleaned out

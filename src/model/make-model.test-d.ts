@@ -9,7 +9,7 @@
  */
 import * as T from "typebox";
 import type { LazyFetchOptions } from "../lazy/lazy";
-import { makeModel } from "./make-model";
+import { makeModel, makeUnionModel, type ModelVariant } from "./make-model";
 
 const SurveySchema = T.Object({ id: T.String(), orgId: T.String(), title: T.String() });
 type Survey = { id: string; orgId: string; title: string };
@@ -211,4 +211,74 @@ const basePeek = Survey.peek(key);
 // @ts-expect-error a base instance has no subclass members
 void basePeek?.label;
 
-export {};
+// --- a union model narrows through `variant` -----------------------------------
+
+const PaymentSchema = T.Union([
+  T.Object({ kind: T.Literal("card"), id: T.Number(), cardNumber: T.String() }),
+  T.Object({ kind: T.Literal("bank"), id: T.Number(), routing: T.String() }),
+]);
+
+class Payment extends makeUnionModel(PaymentSchema, "kind", { keys: ["id"] }) {
+  get display(): string {
+    return `#${this.id}`;
+  }
+}
+
+declare const payment: Payment;
+
+// un-narrowed, only the shared fields
+// @ts-expect-error
+void payment.variant.cardNumber;
+
+const describePayment = (): string => {
+  switch (payment.variant.kind) {
+    case "card": {
+      const digits: string = payment.variant.cardNumber;
+      // subclass members come through, and the narrowed methods follow the variant
+      const display: string = payment.variant.display;
+      payment.variant.updateData({ cardNumber: "4242" });
+      const json: string = payment.variant.toJSON().cardNumber;
+      // @ts-expect-error a card has no routing number
+      void payment.variant.routing;
+      return digits + display + json;
+    }
+    case "bank":
+      return payment.variant.routing;
+    default: {
+      // exhaustive: every variant is handled above
+      const unhandled: never = payment.variant;
+      return unhandled;
+    }
+  }
+};
+void describePayment;
+
+// --- ModelVariant names one variant, the way `as` returns it -------------------
+
+type CardPayment = ModelVariant<typeof Payment, "card">;
+type BankPayment = ModelVariant<typeof Payment, "bank">;
+
+declare const cardPayment: CardPayment;
+const cardDigits: string = cardPayment.cardNumber;
+const cardDisplay: string = cardPayment.display; // subclass members included
+// @ts-expect-error a card has no routing number
+void cardPayment.routing;
+
+// exactly what `as` hands back, minus the `undefined`
+const asCard: CardPayment | undefined = payment.as("card");
+// and what a `case` sees
+if (payment.variant.kind === "bank") {
+  const bank: BankPayment = payment.variant;
+  void bank;
+}
+
+// @ts-expect-error the value is checked against the schema
+export type Misspelled = ModelVariant<typeof Payment, "crad">;
+
+// every variant at once is the indexed form, which a switch narrows
+const anyPayment = (p: Payment["variant"]): string =>
+  p.kind === "card" ? p.cardNumber : p.routing;
+void cardDigits;
+void cardDisplay;
+void asCard;
+void anyPayment;

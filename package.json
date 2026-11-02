@@ -46,7 +46,7 @@
     "react": "catalog:",
     "react-dom": "catalog:",
     "semantic-release": "^25.0.3",
-    "typebox": "^1.1.17",
+    "typebox": "^1.4.3",
     "typescript": "^6.0.2",
     "vite-plus": "0.2.1"
   },

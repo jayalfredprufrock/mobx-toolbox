@@ -17,7 +17,10 @@ import {
 } from "./make-store";
 
 /** The payload a model's collections resolve to arrays of. */
-type Payload<MC extends AnyModelClass> = T.Static<MC["schema"]>;
+// `NoInfer`: `MC` comes from `model` alone. Inferring it back out of the fetch's return type relates
+// `Static` to `Static` generically, which makes TypeScript compute the variance of TypeBox's
+// `StaticType` (~1M instantiations per program with typebox >= 1.3).
+type Payload<MC extends AnyModelClass> = NoInfer<T.Static<MC["schema"]>>;
 
 /**
  * `CollectionOptions` plus the component's own inputs. Their type is inferred from what you pass,

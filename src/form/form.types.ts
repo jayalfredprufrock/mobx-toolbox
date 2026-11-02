@@ -5,8 +5,11 @@ import type { FormModel } from "./form.model";
 
 export type FormSchema = TObject | TUnion;
 
-export interface FormConfig<T extends FormSchema = TObject> {
-  handleSubmit: (data: Static<T>) => Promise<unknown>;
+/** `Static<T>`, except `any` stays `any` — so `FormModel<any>` still accepts every form. */
+export type StaticOrAny<T extends TSchema> = 0 extends 1 & T ? any : Static<T>;
+
+export interface FormConfig<T extends FormSchema = TObject, V = StaticOrAny<T>> {
+  handleSubmit: (data: V) => Promise<unknown>;
   /**
    * Called when `handleSubmit` throws — for a toast, a report to your error tracker, or mapping an API
    * error onto fields with `form.fields.x.setError(...)`.
@@ -18,15 +21,15 @@ export interface FormConfig<T extends FormSchema = TObject> {
    * the form's own `catch` and a thrown error would otherwise be completely invisible — so if you take
    * over, logging unexpected failures becomes yours too.
    */
-  handleError?: (error: unknown, form: FormModel<T>) => void;
+  handleError?: (error: unknown, form: FormModel<T, V>) => void;
   // Any field on any variant may be seeded — the merged field map holds them all.
-  initialValues?: FormInitialValues<T>;
+  initialValues?: FormInitialValues<T, V>;
 }
 
-export interface FormFieldConfig<T extends TSchema = TSchema> {
+export interface FormFieldConfig<T extends TSchema = TSchema, V = StaticOrAny<T>> {
   name: string;
   schema: T;
-  initialValue?: Static<T>;
+  initialValue?: V;
 }
 
 type UnionToIntersection<U> = (U extends unknown ? (k: U) => void : never) extends (
@@ -53,37 +56,49 @@ type VariantSchema<O, K extends PropertyKey> = O extends TObject
     : never
   : never;
 
-/** The static value type of key `K` across the variants that declare it. */
-type VariantValue<O, K extends PropertyKey> = O extends TObject
-  ? K extends keyof O["properties"]
-    ? Static<O["properties"][K]>
+/** The value type of key `K` across the variants (of the static value `V`) that declare it. */
+// `Required`, so an optional field's value is its schema's static type, as `Static<schema>` reads it
+// (the optionality is the property's, not the value's).
+type ValueAt<V, K extends PropertyKey> = V extends unknown
+  ? K extends keyof V
+    ? Required<V>[K]
     : never
   : never;
 
 // Outside <FormWhen>, only shared fields are exposed; variant-specific fields
 // are reachable through <FormWhen>, which narrows to a single variant.
-export type FormFields<T extends FormSchema = TObject> =
+export type FormFields<T extends FormSchema = TObject, Val = StaticOrAny<T>> =
   T extends TUnion<infer V>
-    ? { [K in SharedKeys<Flat<V[number]>>]: FormFieldModel<VariantSchema<Flat<V[number]>, K>> }
+    ? {
+        [K in SharedKeys<Flat<V[number]>>]: FormFieldModel<
+          VariantSchema<Flat<V[number]>, K>,
+          ValueAt<Val, K>
+        >;
+      }
     : T extends TObject
-      ? { [K in keyof T["properties"]]: FormFieldModel<T["properties"][K]> }
+      ? { [K in keyof T["properties"]]: FormFieldModel<T["properties"][K], ValueAt<Val, K>> }
       : never;
 
 // Every field across every variant, typed by its (possibly unioned) schema — the
 // `form.rawFields` escape hatch for reaching variant fields outside <FormWhen>.
-export type RawFormFields<T extends FormSchema = TObject> =
+export type RawFormFields<T extends FormSchema = TObject, Val = StaticOrAny<T>> =
   T extends TUnion<infer V>
-    ? { [K in VariantKeys<Flat<V[number]>>]: FormFieldModel<VariantSchema<Flat<V[number]>, K>> }
+    ? {
+        [K in VariantKeys<Flat<V[number]>>]: FormFieldModel<
+          VariantSchema<Flat<V[number]>, K>,
+          ValueAt<Val, K>
+        >;
+      }
     : T extends TObject
-      ? { [K in keyof T["properties"]]: FormFieldModel<T["properties"][K]> }
+      ? { [K in keyof T["properties"]]: FormFieldModel<T["properties"][K], ValueAt<Val, K>> }
       : never;
 
 // Every field across all variants is optional, typed by its (possibly unioned) value.
-type FormInitialValues<T extends FormSchema> =
+type FormInitialValues<T extends FormSchema, Val = StaticOrAny<T>> =
   T extends TUnion<infer V>
-    ? { [K in VariantKeys<Flat<V[number]>>]?: VariantValue<Flat<V[number]>, K> }
+    ? { [K in VariantKeys<Flat<V[number]>>]?: ValueAt<Val, K> }
     : T extends TObject
-      ? Partial<Static<T>>
+      ? Partial<Val>
       : never;
 
 // --- discriminated-union variant narrowing (used by <FormWhen>) ---

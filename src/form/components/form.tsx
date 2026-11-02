@@ -6,7 +6,7 @@ export interface MobxFormProps extends Omit<
   React.HTMLProps<HTMLFormElement>,
   "form" | "action" | "method"
 > {
-  form: FormModel<any>;
+  form: FormModel<any, any>;
 }
 
 export const MobxForm = forwardRef(function MobxForm(

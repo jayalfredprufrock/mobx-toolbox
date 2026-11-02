@@ -2,19 +2,19 @@ import Schema, { Validator } from "typebox/schema";
 import * as Value from "typebox/value";
 import * as T from "typebox";
 import { makeAutoObservable, toJS } from "mobx";
-import type { FormFieldConfig } from "./form.types";
+import type { FormFieldConfig, StaticOrAny } from "./form.types";
 
 // TODO: should infer required prop
 // TODO: should also allow for "id", defaulting to name
 // TODO: probably shouldn't assume value is of correct type, maybe unknown?
 
-export class FormFieldModel<T extends T.TSchema = T.TSchema> {
+export class FormFieldModel<T extends T.TSchema = T.TSchema, V = StaticOrAny<T>> {
   readonly name: string;
   readonly schema: T;
-  readonly config: FormFieldConfig<T>;
-  readonly validator: Validator<T>;
+  readonly config: FormFieldConfig<T, V>;
+  readonly validator: Validator<T, V>;
 
-  value: T.Static<T> | undefined;
+  value: V | undefined;
   touched = false;
 
   /**
@@ -61,13 +61,13 @@ export class FormFieldModel<T extends T.TSchema = T.TSchema> {
     return error.message;
   }
 
-  constructor(config: FormFieldConfig<T>) {
+  constructor(config: FormFieldConfig<T, V>) {
     this.config = config;
     this.name = config.name;
     this.schema = config.schema;
     // Type-only casts: relating `Validator<T>` for a generic `T` makes TS evaluate TypeBox's
     // `Static` generically, which costs every program importing this module ~600k instantiations.
-    this.validator = Schema.Compile(this.schema as T.TSchema) as unknown as Validator<T>;
+    this.validator = Schema.Compile(this.schema as T.TSchema) as unknown as Validator<T, V>;
     this.value = this.convertValue(config.initialValue);
 
     makeAutoObservable(this, {
@@ -78,7 +78,7 @@ export class FormFieldModel<T extends T.TSchema = T.TSchema> {
     });
   }
 
-  setValue(value?: T.Static<T>) {
+  setValue(value?: V) {
     // An edit invalidates a message that described the previous value — otherwise "that username is
     // taken" survives the user typing a different one, and the field stays stuck invalid.
     this.error = undefined;
@@ -92,14 +92,14 @@ export class FormFieldModel<T extends T.TSchema = T.TSchema> {
     this.error = error;
   }
 
-  private convertValue(value: unknown): T.Static<T> | undefined {
+  private convertValue(value: unknown): V | undefined {
     // Value.Convert fabricates zero-values for undefined primitives ("" / 0 / false).
     // Only "" and false faithfully represent an empty control; a fabricated 0 reads
     // as real input (e.g. an epoch-0 date), so everything else stays undefined.
     if (value === undefined && !T.IsString(this.schema) && !T.IsBoolean(this.schema)) {
       return undefined;
     }
-    return Value.Convert(this.schema, value) as T.Static<T>;
+    return Value.Convert(this.schema, value) as V;
   }
 
   setTouched(touched: boolean) {
@@ -118,7 +118,7 @@ export class FormFieldModel<T extends T.TSchema = T.TSchema> {
   props(): any {
     return {
       name: this.name,
-      onChange: (v?: T.Static<T>) => this.setValue(v),
+      onChange: (v?: V) => this.setValue(v),
       value: this.value,
       onBlur: () => {
         this.setTouched(true);
@@ -126,7 +126,7 @@ export class FormFieldModel<T extends T.TSchema = T.TSchema> {
     };
   }
 
-  toJSON(): T.Static<T> | undefined {
+  toJSON(): V | undefined {
     return toJS(this.value);
   }
 }

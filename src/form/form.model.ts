@@ -1,9 +1,9 @@
 import * as Format from "typebox/format";
 import * as Value from "typebox/value";
 import Schema, { type Validator } from "typebox/schema";
-import { IsUnion, Union, type Static, type TObject, type TSchema } from "typebox";
+import { IsUnion, Union, type TObject, type TSchema } from "typebox";
 import { makeAutoObservable } from "mobx";
-import type { FormConfig, FormFields, FormSchema, RawFormFields } from "./form.types";
+import type { FormConfig, FormFields, FormSchema, RawFormFields, StaticOrAny } from "./form.types";
 import { FormFieldModel } from "./form-field.model";
 import { flattenVariants, type UnionSchema } from "../util/union-schema";
 
@@ -58,14 +58,14 @@ function resolveProperties(schema: FormSchema): Record<string, TSchema> {
 // No second class needed: unlike `makeUnionModel`, nothing here puts the resource union in a
 // base-class position, so the TS2509 problem that forced that separate factory doesn't apply here.
 
-export class FormModel<T extends FormSchema = TObject> {
+export class FormModel<T extends FormSchema = TObject, V = StaticOrAny<T>> {
   /** Shared fields only (for unions); every field for a plain object schema. */
-  readonly fields: FormFields<T>;
+  readonly fields: FormFields<T, V>;
   /** Every field across all variants — escape hatch for reaching variant fields. */
-  readonly rawFields: RawFormFields<T>;
-  readonly config: FormConfig<T>;
+  readonly rawFields: RawFormFields<T, V>;
+  readonly config: FormConfig<T, V>;
   readonly schema: T;
-  readonly validator: Validator<T>;
+  readonly validator: Validator<T, V>;
 
   // TODO: maybe refactor into a "state" property?
   submitting = false;
@@ -77,11 +77,11 @@ export class FormModel<T extends FormSchema = TObject> {
    */
   submitError: unknown;
 
-  constructor(schema: T, config: FormConfig<T>) {
+  constructor(schema: T, config: FormConfig<T, V>) {
     this.schema = schema;
     this.config = config;
     // Type-only casts, for the same reason as in FormFieldModel.
-    this.validator = Schema.Compile(schema as TSchema) as unknown as Validator<T>;
+    this.validator = Schema.Compile(schema as TSchema) as unknown as Validator<T, V>;
 
     makeAutoObservable(this, {
       fields: false,
@@ -107,8 +107,8 @@ export class FormModel<T extends FormSchema = TObject> {
 
     // `fields` and `rawFields` are the same object; the types differ so that a
     // union form only surfaces shared fields by default.
-    this.rawFields = fields as unknown as RawFormFields<T>;
-    this.fields = fields as unknown as FormFields<T>;
+    this.rawFields = fields as unknown as RawFormFields<T, V>;
+    this.fields = fields as unknown as FormFields<T, V>;
   }
 
   get valid(): boolean {
@@ -149,7 +149,7 @@ export class FormModel<T extends FormSchema = TObject> {
 
         this.setSubmitting(true);
         this.config
-          .handleSubmit(this.toJSON() as Static<T>)
+          .handleSubmit(this.toJSON() as V)
           .then((resp) => {
             this.setSubmitted(true);
             return resp;
@@ -209,7 +209,7 @@ export class FormModel<T extends FormSchema = TObject> {
     return this.valid;
   }
 
-  toJSON(): Partial<Static<T>> {
+  toJSON(): Partial<V> {
     const data = Object.values(this.fields).reduce(
       (fields, field) => {
         fields[field.name] = field.toJSON();
@@ -221,8 +221,8 @@ export class FormModel<T extends FormSchema = TObject> {
     // Drop fields belonging to the inactive variant so submitted data matches
     // the selected member of the union exactly.
     if (IsUnion(this.schema)) {
-      return Value.Clean(this.schema, data) as Partial<Static<T>>;
+      return Value.Clean(this.schema, data) as Partial<V>;
     }
-    return data as Partial<Static<T>>;
+    return data as Partial<V>;
   }
 }

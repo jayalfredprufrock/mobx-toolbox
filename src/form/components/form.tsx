@@ -14,7 +14,9 @@ export const MobxForm = forwardRef(function MobxForm(
   ref,
 ) {
   return (
-    <FormProvider value={form}>
+    // Through `unknown`: relating `FormModel<any>` to the context's `FormModel` makes TS measure the
+    // class's variance through TypeBox's `Static`, which is expensive.
+    <FormProvider value={form as unknown as FormModel}>
       <form noValidate {...formProps} ref={ref} {...form.props()}>
         {children}
       </form>

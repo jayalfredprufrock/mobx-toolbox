@@ -80,7 +80,8 @@ export class FormModel<T extends FormSchema = TObject> {
   constructor(schema: T, config: FormConfig<T>) {
     this.schema = schema;
     this.config = config;
-    this.validator = Schema.Compile(schema);
+    // Type-only casts, for the same reason as in FormFieldModel.
+    this.validator = Schema.Compile(schema as TSchema) as unknown as Validator<T>;
 
     makeAutoObservable(this, {
       fields: false,
@@ -93,7 +94,8 @@ export class FormModel<T extends FormSchema = TObject> {
     const initialValues = config?.initialValues as Record<string, unknown> | undefined;
     const fields = Object.entries(resolveProperties(schema)).reduce(
       (fields, [fieldName, fieldSchema]) => {
-        fields[fieldName] = new FormFieldModel({
+        // An explicit type argument: inferring it through `initialValue?: Static<T>` is expensive.
+        fields[fieldName] = new FormFieldModel<TSchema>({
           name: fieldName,
           schema: fieldSchema,
           initialValue: initialValues?.[fieldName],

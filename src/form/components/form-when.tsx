@@ -33,9 +33,12 @@ export function FormWhen<T extends TUnion, D extends DiscriminatorKeys<T>, V ext
   return (
     <Observer>
       {() => {
-        const fields = form.rawFields as Record<string, FormFieldModel>;
+        // Both casts go through `unknown` (or a widened `children`): relating instantiations of the
+        // generic field types makes TS measure FormFieldModel's variance through TypeBox's `Static`,
+        // which costs ~400k instantiations.
+        const fields = form.rawFields as unknown as Record<string, FormFieldModel>;
         if (fields[field as string]?.value !== value) return null;
-        return <>{children(fields as unknown as FormFields<MatchVariant<T, D, V>>)}</>;
+        return <>{(children as (fields: unknown) => React.ReactNode)(fields)}</>;
       }}
     </Observer>
   );

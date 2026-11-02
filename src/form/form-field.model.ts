@@ -65,7 +65,9 @@ export class FormFieldModel<T extends T.TSchema = T.TSchema> {
     this.config = config;
     this.name = config.name;
     this.schema = config.schema;
-    this.validator = Schema.Compile(this.schema);
+    // Type-only casts: relating `Validator<T>` for a generic `T` makes TS evaluate TypeBox's
+    // `Static` generically, which costs every program importing this module ~600k instantiations.
+    this.validator = Schema.Compile(this.schema as T.TSchema) as unknown as Validator<T>;
     this.value = this.convertValue(config.initialValue);
 
     makeAutoObservable(this, {

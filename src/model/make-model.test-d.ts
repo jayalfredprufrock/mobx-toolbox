@@ -282,3 +282,104 @@ void cardDigits;
 void cardDisplay;
 void asCard;
 void anyPayment;
+
+// --- updateData on a union -------------------------------------------------------
+
+// Un-narrowed, a patch can name only the shared fields — and never the discriminator or an identity
+// key. Narrowing (`as`, `is`, or a `case` on `variant`) makes that variant's fields patchable, and
+// only those. This holds even when nothing shared is patchable: that patch type must not collapse to
+// `{}`, which would accept anything.
+
+const LabeledSchema = T.Union([
+  T.Object({ kind: T.Literal("card"), id: T.Number(), label: T.String(), digits: T.String() }),
+  T.Object({ kind: T.Literal("bank"), id: T.Number(), label: T.String(), routing: T.String() }),
+]);
+const Labeled = makeUnionModel(LabeledSchema, "kind", { keys: ["id"] as const });
+declare const labeled: InstanceType<typeof Labeled>;
+
+// a shared field is patchable un-narrowed
+labeled.updateData({ label: "Personal" });
+labeled.updateData({});
+// @ts-expect-error a variant field needs narrowing first
+labeled.updateData({ digits: "1111" });
+// @ts-expect-error the discriminator is not patchable
+labeled.updateData({ kind: "bank" });
+// @ts-expect-error an identity key is not patchable
+labeled.updateData({ id: 2 });
+// @ts-expect-error not a field at all
+labeled.updateData({ nope: 1 });
+
+// Nothing shared is patchable: only the discriminator and the identity key are on every variant.
+const BareSchema = T.Union([
+  T.Object({ kind: T.Literal("card"), id: T.Number(), digits: T.String() }),
+  T.Object({ kind: T.Literal("bank"), id: T.Number(), routing: T.String() }),
+]);
+const Bare = makeUnionModel(BareSchema, "kind", { keys: ["id"] as const });
+declare const bare: InstanceType<typeof Bare>;
+
+bare.updateData({});
+// @ts-expect-error a variant field needs narrowing first
+bare.updateData({ digits: "1111" });
+// @ts-expect-error the other variant's field, too
+bare.updateData({ routing: "0000" });
+// @ts-expect-error the discriminator is not patchable
+bare.updateData({ kind: "bank" });
+// @ts-expect-error not a field at all
+bare.updateData({ nope: 1 });
+// @ts-expect-error a patch is an object
+bare.updateData(5);
+
+// narrowed: that variant's fields (and the shared ones), and nothing else
+bare.as("card")?.updateData({ digits: "1111" });
+labeled.as("card")?.updateData({ digits: "1111", label: "Visa" });
+// @ts-expect-error the bank variant's field, on a card
+bare.as("card")?.updateData({ routing: "0000" });
+// @ts-expect-error still not the discriminator
+bare.as("card")?.updateData({ kind: "bank" });
+if (bare.is("bank")) {
+  bare.updateData({ routing: "0000" });
+  // @ts-expect-error the card variant's field, on a bank
+  bare.updateData({ digits: "1111" });
+}
+switch (bare.variant.kind) {
+  case "card":
+    bare.variant.updateData({ digits: "1111" });
+    break;
+  case "bank":
+    bare.variant.updateData({ routing: "0000" });
+    break;
+}
+
+// A narrowed instance is still an instance of the model: it must stay assignable where the
+// un-narrowed type is expected (a consumer passing a variant to code typed for any variant).
+const wideLabeled: InstanceType<typeof Labeled> = labeled.as("card")!;
+const wideBare: InstanceType<typeof Bare> = bare.as("bank")!;
+const wideFromCase = (): InstanceType<typeof Bare> =>
+  bare.variant.kind === "card" ? bare.variant : bare;
+void wideLabeled;
+void wideBare;
+void wideFromCase;
+
+// The same through a hand-written narrowing (`Model & Variant`) passed where a structural subset is
+// expected — with a shared non-discriminator field whose literal differs per variant.
+const BlockSchema = T.Union([
+  T.Object({
+    type: T.Literal("legal"),
+    id: T.Number(),
+    kind: T.Literal("special"),
+    agree: T.String(),
+  }),
+  T.Object({
+    type: T.Literal("text"),
+    id: T.Number(),
+    kind: T.Literal("question"),
+    title: T.String(),
+  }),
+]);
+const Block = makeUnionModel(BlockSchema, "type", { keys: ["id"] as const });
+type BlockModel = InstanceType<typeof Block>;
+type LegalBlock = BlockModel & Extract<T.Static<typeof BlockSchema>, { type: "legal" }>;
+type PromptBlock = BlockModel & { title?: string };
+declare const legalBlock: LegalBlock;
+const promptBlock: PromptBlock = legalBlock;
+void promptBlock;

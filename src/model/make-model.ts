@@ -126,19 +126,30 @@ type ObjectPatch<S extends ModelSchema, K> = Partial<Omit<Resource<S>, KeyName<K
  * another. The discriminator is excluded outright: changing it is a change of variant, which is a
  * whole-record replacement and so belongs to `setData`.
  */
-type UnionPatch<S extends ModelSchema, D extends PropertyKey, K, Self> = Partial<
-  Pick<Self, Exclude<Extract<FieldName<S>, keyof Self>, D | KeyName<K>>>
+type UnionPatchOf<FN extends PropertyKey, D extends PropertyKey, K, Self> = PatchOf<
+  Self,
+  FN,
+  Exclude<Extract<FN, keyof Self>, D | KeyName<K>>
 >;
+
+// When nothing is patchable — a union whose only shared fields are the discriminator and identity
+// keys, un-narrowed — `Partial<Pick<Self, never>>` would be `{}`, which accepts any value, so a
+// variant field would slip through. That case names every field as unpatchable instead; otherwise
+// the patch is exactly the patchable fields (which keeps a narrowed instance assignable where a
+// wider one is expected).
+type PatchOf<Self, FN extends PropertyKey, P extends keyof Self> = [P] extends [never]
+  ? { [F in FN]?: never }
+  : Partial<Pick<Self, P>>;
 
 /**
  * The variant a union instance is currently known to be, resolved from `Self` — the polymorphic
  * `this`, whose discriminator narrows to a single literal once `is`/`as` has been through it.
  *
- * Inferred rather than indexed (`Self[D]`): the interface only constrains `D` against
- * `Resource<S>`, so TypeScript will not accept it as a key of `this`.
+ * Inferred rather than indexed (`Self[D]`): the interface only constrains `D` against the
+ * resource type, so TypeScript will not accept it as a key of `this`.
  */
-type VariantOf<S extends ModelSchema, D extends PropertyKey, Self> =
-  Self extends Record<D, infer V> ? Extract<Resource<S>, Record<D, V>> : Resource<S>;
+type VariantOfR<R, D extends PropertyKey, Self> =
+  Self extends Record<D, infer V> ? Extract<R, Record<D, V>> : R;
 
 /**
  * Whether the model's methods take a leading params argument. True for both `keys: false` and
@@ -348,7 +359,17 @@ type ModelMethods<K, Cfg> = (Cfg extends { get: infer F }
 // Constructor type
 // -----------------------------------------------------------------------------
 
-type ModelInstance<S extends ModelSchema, K, Cfg> = Resource<S> & {
+// The instance types resolve through a conditional over `[Resource<S>]` (a one-element tuple, so a
+// union never distributes) so that the resolved type carries no alias parameterized by the schema.
+// Otherwise any generic inference that sees an instance — even `models.map((m) => m.name)` — relates
+// two references by their alias arguments, which makes TS measure that alias's variance through
+// TypeBox's `Static`: a one-off cost of ~400k instantiations. For the same reason the union members
+// below are parameterized by the resolved resource `R` rather than the schema.
+type ModelInstance<S extends ModelSchema, K, Cfg> = ModelInstanceOf<[Resource<S>], S, K, Cfg>;
+type ModelInstanceOf<X, S extends ModelSchema, K, Cfg> = X extends [infer R]
+  ? R & ModelInstanceMembers<S, K, Cfg>
+  : never;
+type ModelInstanceMembers<S extends ModelSchema, K, Cfg> = {
   setData(data: Resource<S>): void;
   /**
    * Apply a partial, purely local edit — every field in one action, so reactions see one
@@ -841,10 +862,9 @@ export function makeModel<S extends T.TObject, K extends KeySpec<S>, Cfg extends
   schema: S,
   config: Cfg & { keys: K } & ParamsMustBeKeys<S, K, Cfg>,
 ): ModelConstructor<S, K, Cfg>;
-export function makeModel<S extends T.TObject>(
-  schema: S,
-  config?: ModelConfig<S, KeySpec<S>>,
-): any {
+// Not generic, like makeUnionModel's: checking the overloads against a generic implementation
+// signature relates `ModelConfig<S, …>` generically, through TypeBox's `Static` — expensive.
+export function makeModel(schema: T.TObject, config?: ModelConfig<any, any>): any {
   return createModelClass(schema, config);
 }
 
@@ -853,13 +873,10 @@ export function makeModel<S extends T.TObject>(
 // -----------------------------------------------------------------------------
 
 // Properties common to every variant (`keyof` a union resolves to shared keys).
-type SharedFields<S extends UnionSchema> = { [K in keyof Resource<S>]: Resource<S>[K] };
+type SharedFields<R> = Pick<R, keyof R>;
 
 // The full static shape of the variant whose discriminator `D` equals `V`.
-type VariantFields<S extends UnionSchema, D extends keyof Resource<S>, V> = Extract<
-  Resource<S>,
-  Record<D, V>
->;
+type VariantFields<R, D extends keyof R, V> = Extract<R, Record<D, V>>;
 
 // `Self` once per variant, joined: a union a `switch` on the discriminator can narrow, where the
 // single shared-fields instance type can't be. Distributes over `R`, the schema's variants.
@@ -868,8 +885,8 @@ type Variants<Self, R> = R extends any ? Self & R : never;
 // The members makeUnionModel adds. An interface (not a type-alias literal) so the
 // polymorphic `this` in `is`/`as` is allowed; at a call site `this` resolves to
 // the full instance, so the guard reveals the variant's fields on it.
-interface UnionModelMembers<S extends UnionSchema, D extends keyof Resource<S>, K> {
-  setData(data: Resource<S>): void;
+interface UnionModelMembers<R, D extends keyof R, K, FN extends PropertyKey, KS> {
+  setData(data: R): void;
   /**
    * Apply a partial, purely local edit — every field in one action. Local only: no endpoint, no
    * `updated` event, and no load-stamp refresh (see the note on the single-object form).
@@ -886,7 +903,7 @@ interface UnionModelMembers<S extends UnionSchema, D extends keyof Resource<S>, 
    * The discriminator is not patchable: changing variant replaces the whole record, so it goes
    * through `setData`. Identity keys are not patchable either.
    */
-  updateData(patch: UnionPatch<S, D, K, this>): void;
+  updateData(patch: UnionPatchOf<FN, D, K, this>): void;
   /**
    * The record as plain data, with any field outside its current variant stripped.
    *
@@ -894,12 +911,12 @@ interface UnionModelMembers<S extends UnionSchema, D extends keyof Resource<S>, 
    * yields that variant alone rather than the whole union — `payment.as("card")?.toJSON().digits`
    * compiles, where the un-narrowed `payment.toJSON().digits` correctly does not.
    */
-  toJSON(): VariantOf<S, D, this>;
-  buildParams(): KeyShape<S, K>;
+  toJSON(): VariantOfR<R, D, this>;
+  buildParams(): KS;
   /** Type guard: true when the discriminator equals `value`, revealing that variant's fields on this same instance. */
-  is<V extends Resource<S>[D]>(value: V): this is this & VariantFields<S, D, V>;
+  is<V extends R[D]>(value: V): this is this & VariantFields<R, D, V>;
   /** This instance narrowed to the `value` variant (fields exposed directly), or `undefined` if it doesn't match. */
-  as<V extends Resource<S>[D]>(value: V): (this & VariantFields<S, D, V>) | undefined;
+  as<V extends R[D]>(value: V): (this & VariantFields<R, D, V>) | undefined;
   /**
    * This same instance, typed as a union of its variants, so a `switch` on the discriminator
    * narrows it — with an exhaustiveness check if you want one:
@@ -919,7 +936,7 @@ interface UnionModelMembers<S extends UnionSchema, D extends keyof Resource<S>, 
    * only after an `await`, or a call that replaces the record (`setData`, `reload`), inside the same
    * `case` should you check the discriminator again.
    */
-  readonly variant: Variants<this, Resource<S>>;
+  readonly variant: Variants<this, R>;
 }
 
 // Base instance exposes only the shared fields (a single object type, so it can
@@ -930,7 +947,10 @@ type UnionModelInstance<
   D extends keyof Resource<S>,
   K,
   Cfg,
-> = SharedFields<S> & UnionModelMembers<S, D, K> & ModelMethods<K, Cfg>;
+> = UnionInstanceOf<[Resource<S>], D, K, Cfg, FieldName<S>, KeyShape<S, K>>;
+type UnionInstanceOf<X, D, K, Cfg, FN extends PropertyKey, KS> = X extends [infer R]
+  ? SharedFields<R> & UnionModelMembers<R, D & keyof R, K, FN, KS> & ModelMethods<K, Cfg>
+  : never;
 
 export type UnionModelConstructor<S extends UnionSchema, D extends keyof Resource<S>, K, Cfg> = {
   new (data: Resource<S>): UnionModelInstance<S, D, K, Cfg>;

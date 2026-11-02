@@ -562,6 +562,17 @@ export type RouteAt<P extends string> = Omit<Route, "params" | "data" | "context
 };
 
 /**
+ * Optional string params for each of `Names`.
+ *
+ * `Names` is deliberately unconstrained. Mapping over it directly in {@link RouteAtPrefix} made
+ * TypeScript prove the names are valid property keys for *every* possible path, which means
+ * expanding `ParamNamesIn` through `Routes`' recursive index signature: ~3M type instantiations
+ * for every program that type-checks this file. The names are always strings, so `& PropertyKey`
+ * changes nothing for any real route tree.
+ */
+type OptionalParams<Names> = { [K in Names & PropertyKey]?: string };
+
+/**
  * {@link RouteAt} for a level that renders over its descendants — a `[WRAPPER]` or `[LAYOUT]`.
  *
  * Identical except for `params`, which also carries every `:param` a descendant could contribute,
@@ -574,12 +585,10 @@ export type RouteAt<P extends string> = Omit<Route, "params" | "data" | "context
  * `:segmentId` and reads it to highlight a row would otherwise have to assert the type by hand.
  */
 export type RouteAtPrefix<P extends string> = Omit<Route, "params" | "data" | "context"> & {
-  params: ExtractParams<P> & {
-    [K in Exclude<
-      ParamNamesIn<NodeAt<MobxRouterRoutes, Segments<P>>>,
-      keyof ExtractParams<P>
-    >]?: string;
-  };
+  params: ExtractParams<P> &
+    OptionalParams<
+      Exclude<ParamNamesIn<NodeAt<MobxRouterRoutes, Segments<P>>>, keyof ExtractParams<P>>
+    >;
   data: RouteDataAt<P>;
   context: RouteContextAt<P>;
 };

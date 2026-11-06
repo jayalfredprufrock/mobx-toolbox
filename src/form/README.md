@@ -133,6 +133,7 @@ Each field in `form.fields` is a `FormFieldModel` with its own reactive state.
 | `value`        | `Static<T> \| undefined` | Current value (TypeBox-coerced)                                     |
 | `initialValue` | `Static<T> \| undefined` | Baseline for `dirty` and `reset`; moved by each successful submit   |
 | `touched`      | `boolean`                | Set to `true` on blur or explicit `setTouched(true)`                |
+| `submitValue`  | `Static<T> \| undefined` | `value` as submitted: strings trimmed                               |
 | `dirty`        | `boolean`                | `value` deeply differs from `initialValue` (undoing an edit cleans) |
 | `valid`        | `boolean`                | Passes TypeBox schema check                                         |
 | `error`        | `string                  | undefined`                                                          | Manually-set error (see below); blocks validity |
@@ -153,6 +154,22 @@ field.toJSON()           // current plain value
 ### Value coercion
 
 TypeBox's `Value.Convert` runs on every `setValue` call. This means `"42"` converts to `42` for `T.Number()` schemas, `"true"` converts to `true` for `T.Boolean()`, etc. Undefined coerces to `""` for string fields.
+
+### Edge whitespace
+
+String values are trimmed of leading and trailing whitespace, but only when read as data. `value` (and so the input) keeps exactly what was typed, so the space in "John Smith" isn't eaten as it's typed. `submitValue` is the trimmed version, and validity, error messages, `dirty` and `toJSON` all read it. **What is validated is what is submitted**, so there's no need to trim in `handleSubmit`. `"   "` counts as blank: it fails `minLength: 1` with "This field is required.", and an edit that only adds edge whitespace isn't dirty. Only top-level string fields are trimmed; strings inside array or object fields are left alone.
+
+There is no per-field opt-out; every string field is trimmed, passwords included.
+
+### Formats
+
+The library registers no string formats of its own. TypeBox validates its built-in formats (`email`, `uri`, `uuid`, `date-time`, …) and accepts any format nobody has registered, so `format: "phone"` validates nothing until you register a check. To add or override one, use TypeBox's registry, which applies to all TypeBox validation in the app:
+
+```ts
+import * as Format from "typebox/format";
+
+Format.Set("phone", (value) => /^\+?[\d\s()-]{7,}$/.test(value));
+```
 
 ### Error messages
 

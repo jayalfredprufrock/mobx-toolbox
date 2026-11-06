@@ -32,13 +32,27 @@ export class FormFieldModel<T extends T.TSchema = T.TSchema, V = StaticOrAny<T>>
 
   get valid(): boolean {
     if (this.error) return false;
-    if (this.value === undefined && T.IsOptional(this.schema)) return true;
-    return this.validator.Check(this.value);
+    if (this.submitValue === undefined && T.IsOptional(this.schema)) return true;
+    return this.validator.Check(this.submitValue);
   }
 
   /** The value differs from `initialValue`. Value-based: undoing an edit makes the field clean again. */
   get dirty(): boolean {
-    return !Value.Equal(this.value, this.initialValue);
+    return !Value.Equal(this.submitValue, this.normalize(this.initialValue));
+  }
+
+  /**
+   * `value` as it will be submitted: strings trimmed of edge whitespace. Validity,
+   * error messages, `dirty` and `toJSON` all read this, so what is validated is what is submitted —
+   * while `value` stays exactly what was typed, so the space in "John Smith" survives being typed.
+   */
+  get submitValue(): V | undefined {
+    return this.normalize(this.value);
+  }
+
+  private normalize(value: V | undefined): V | undefined {
+    if (typeof value !== "string") return value;
+    return value.trim() as V;
   }
 
   get errorMessage(): string {
@@ -47,12 +61,13 @@ export class FormFieldModel<T extends T.TSchema = T.TSchema, V = StaticOrAny<T>>
     if (this.error) return this.error;
     if (this.valid || !this.touched) return "";
     // TODO: revisit this, now that .Errors returns success/fail
-    const [_, errors] = this.validator.Errors(this.value);
+    const value = this.submitValue;
+    const [_, errors] = this.validator.Errors(value);
     const error = errors.at(0);
 
     if (!error) return "";
 
-    if (!T.IsOptional(this.schema) && (this.value === undefined || this.value === "")) {
+    if (!T.IsOptional(this.schema) && (value === undefined || value === "")) {
       return "This field is required.";
     }
 
@@ -60,7 +75,7 @@ export class FormFieldModel<T extends T.TSchema = T.TSchema, V = StaticOrAny<T>>
       if (typeof this.schema.errorMessage === "string") {
         return this.schema.errorMessage;
       } else if (typeof this.schema.errorMessage === "function") {
-        return this.schema.errorMessage(this.value, this.schema);
+        return this.schema.errorMessage(value, this.schema);
       }
     }
 
@@ -151,6 +166,6 @@ export class FormFieldModel<T extends T.TSchema = T.TSchema, V = StaticOrAny<T>>
   }
 
   toJSON(): V | undefined {
-    return toJS(this.value);
+    return toJS(this.submitValue);
   }
 }

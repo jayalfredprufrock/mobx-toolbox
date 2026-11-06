@@ -893,3 +893,61 @@ describe("dirty state", () => {
     });
   });
 });
+
+describe("edge whitespace", () => {
+  const Schema = T.Object({
+    name: T.String({ minLength: 1 }),
+    password: T.String({ minLength: 1 }),
+    tags: T.Optional(T.Array(T.String())),
+  });
+  const makeForm = (initialValues?: Partial<T.Static<typeof Schema>>) =>
+    new FormModel(Schema, { handleSubmit: vi.fn().mockResolvedValue(undefined), initialValues });
+
+  test("value keeps what was typed, so an inner space survives typing", () => {
+    const form = makeForm();
+    form.fields.name.setValue("John ");
+    expect(form.fields.name.value).toBe("John ");
+    expect(form.fields.name.props().value).toBe("John ");
+  });
+
+  test("toJSON submits the trimmed value", () => {
+    const form = makeForm();
+    form.fields.name.setValue("  Ada  ");
+    expect(form.fields.name.toJSON()).toBe("Ada");
+    expect(form.toJSON().name).toBe("Ada");
+  });
+
+  test("validation reads the trimmed value, so whitespace alone is required-and-missing", () => {
+    const form = makeForm();
+    form.fields.name.setValue("   ");
+    form.fields.name.setTouched(true);
+    expect(form.fields.name.valid).toBe(false);
+    expect(form.fields.name.errorMessage).toBe("This field is required.");
+  });
+
+  test("an edge-whitespace-only edit is not dirty", () => {
+    const form = makeForm({ name: "Ada" });
+    form.fields.name.setValue("Ada  ");
+    expect(form.fields.name.dirty).toBe(false);
+  });
+
+  test("handleSubmit receives trimmed values", async () => {
+    const handleSubmit = vi.fn().mockResolvedValue(undefined);
+    const form = new FormModel(Schema, { handleSubmit });
+    form.fields.name.setValue(" Ada ");
+    form.fields.password.setValue("hunter2");
+    form.props().onSubmit({ preventDefault: () => {} });
+    await new Promise<void>((resolve) => setTimeout(resolve, 0));
+    expect(handleSubmit).toHaveBeenCalledWith({
+      name: "Ada",
+      password: "hunter2",
+      tags: undefined,
+    });
+  });
+
+  test("non-string values pass through untouched", () => {
+    const form = makeForm();
+    form.fields.tags.setValue([" a "]);
+    expect(form.fields.tags.toJSON()).toEqual([" a "]);
+  });
+});

@@ -1,4 +1,3 @@
-import * as Format from "typebox/format";
 import * as Value from "typebox/value";
 import Schema, { type Validator } from "typebox/schema";
 import { IsUnion, Union, type TObject, type TSchema } from "typebox";
@@ -6,10 +5,6 @@ import { makeAutoObservable } from "mobx";
 import type { FormConfig, FormFields, FormSchema, RawFormFields, StaticOrAny } from "./form.types";
 import { FormFieldModel } from "./form-field.model";
 import { flattenVariants, type UnionSchema } from "../util/union-schema";
-
-// should these be here?
-Format.Set("password", () => true);
-Format.Set("phone", () => true);
 
 // Flatten a schema's fields into a single property map. For a discriminated
 // union this merges the properties of every variant — nested unions included, as

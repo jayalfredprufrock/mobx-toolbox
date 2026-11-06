@@ -31,7 +31,7 @@ export class FormFieldModel<T extends T.TSchema = T.TSchema, V = StaticOrAny<T>>
   error: string | undefined = undefined;
 
   get valid(): boolean {
-    if (this.error || this.passwordHasEdgeWhitespace) return false;
+    if (this.error) return false;
     if (this.submitValue === undefined && T.IsOptional(this.schema)) return true;
     return this.validator.Check(this.submitValue);
   }
@@ -51,20 +51,12 @@ export class FormFieldModel<T extends T.TSchema = T.TSchema, V = StaticOrAny<T>>
   }
 
   /**
-   * A field whose schema has `format: "password"`. Read straight off the schema keyword — no format
-   * is registered with TypeBox, so this neither depends on nor changes the app-wide format registry.
+   * A field whose schema has `format: "password"`, which is submitted as typed: changing a password
+   * silently would lock the user out. Read straight off the schema keyword — no format is registered
+   * with TypeBox, so this neither depends on nor changes the app-wide format registry.
    */
   private get isPassword(): boolean {
     return "format" in this.schema && this.schema.format === "password";
-  }
-
-  /**
-   * Passwords aren't trimmed — changing one silently would lock the user out — so edge whitespace is
-   * rejected instead, keeping what is validated identical to what is submitted.
-   * @internal Read by `FormModel` to block a union form's submit.
-   */
-  get passwordHasEdgeWhitespace(): boolean {
-    return this.isPassword && typeof this.value === "string" && this.value !== this.value.trim();
   }
 
   private normalize(value: V | undefined): V | undefined {
@@ -79,8 +71,6 @@ export class FormFieldModel<T extends T.TSchema = T.TSchema, V = StaticOrAny<T>>
     if (this.valid || !this.touched) return "";
     // TODO: revisit this, now that .Errors returns success/fail
     const value = this.submitValue;
-    if (this.passwordHasEdgeWhitespace) return "Password can't start or end with a space.";
-
     const [_, errors] = this.validator.Errors(value);
     const error = errors.at(0);
 

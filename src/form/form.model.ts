@@ -111,12 +111,11 @@ export class FormModel<T extends FormSchema = TObject, V = StaticOrAny<T>> {
     // inactive variant would fail — so validate the assembled object instead.
     if (IsUnion(this.schema)) {
       const data = this.toJSON() as Record<string, unknown>;
-      // Manual errors and password edge whitespace — neither of which the schema sees — still have to
-      // block, but only for fields the active variant actually has:
+      // Manual errors still have to block, but only for fields the active variant actually has:
       // `toJSON` has already dropped the others, so a stale error on an inactive field can't wedge
       // a submit that doesn't include it.
       const blocked = Object.values<FormFieldModel<TSchema>>(this.fields).some(
-        (field) => (field.error || field.passwordHasEdgeWhitespace) && field.name in data,
+        (field) => field.error && field.name in data,
       );
       return !blocked && this.validator.Check(data);
     }

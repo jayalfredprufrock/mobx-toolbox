@@ -621,22 +621,24 @@ describe("useLazy with debounce", () => {
   });
 
   test("a burst of changes costs one request, with the last params, once the burst pauses", async () => {
-    const { calls, Probe, setQ, lazy } = setup(60);
+    // Real timers, so the margins are wide: the window between the debounce restarting and firing is
+    // 200ms, which a loaded CI machine's timer drift and `act` overhead won't eat through.
+    const { calls, Probe, setQ, lazy } = setup(300);
     const container = await mount(<Probe />);
     await act(async () => {});
 
     await act(async () => setQ("ab"));
-    await wait(30);
+    await wait(200);
     await act(async () => setQ("abc"));
-    await wait(30);
-    // 60ms since the first change, but only 30 since the last: the wait restarted
+    await wait(100);
+    // 300ms since the first change, but only 100 since the last: the wait restarted
     expect(calls).toEqual(["a"]);
 
     // a request is on its way the whole time, so an indicator can show
     expect(lazy().fetching).toBe(true);
     expect(container.textContent).toBe("results for a");
 
-    await wait(60);
+    await wait(300);
     expect(calls).toEqual(["a", "abc"]);
     expect(container.textContent).toBe("results for abc");
     expect(lazy().fetching).toBe(false);

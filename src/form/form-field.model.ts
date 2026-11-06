@@ -31,7 +31,7 @@ export class FormFieldModel<T extends T.TSchema = T.TSchema, V = StaticOrAny<T>>
   error: string | undefined = undefined;
 
   get valid(): boolean {
-    if (this.error) return false;
+    if (this.error || this.passwordHasEdgeWhitespace) return false;
     if (this.submitValue === undefined && T.IsOptional(this.schema)) return true;
     return this.validator.Check(this.submitValue);
   }
@@ -42,7 +42,7 @@ export class FormFieldModel<T extends T.TSchema = T.TSchema, V = StaticOrAny<T>>
   }
 
   /**
-   * `value` as it will be submitted: strings trimmed of edge whitespace. Validity,
+   * `value` as it will be submitted: strings trimmed of edge whitespace, passwords excepted. Validity,
    * error messages, `dirty` and `toJSON` all read this, so what is validated is what is submitted —
    * while `value` stays exactly what was typed, so the space in "John Smith" survives being typed.
    */
@@ -50,8 +50,25 @@ export class FormFieldModel<T extends T.TSchema = T.TSchema, V = StaticOrAny<T>>
     return this.normalize(this.value);
   }
 
+  /**
+   * A field whose schema has `format: "password"`. Read straight off the schema keyword — no format
+   * is registered with TypeBox, so this neither depends on nor changes the app-wide format registry.
+   */
+  private get isPassword(): boolean {
+    return "format" in this.schema && this.schema.format === "password";
+  }
+
+  /**
+   * Passwords aren't trimmed — changing one silently would lock the user out — so edge whitespace is
+   * rejected instead, keeping what is validated identical to what is submitted.
+   * @internal Read by `FormModel` to block a union form's submit.
+   */
+  get passwordHasEdgeWhitespace(): boolean {
+    return this.isPassword && typeof this.value === "string" && this.value !== this.value.trim();
+  }
+
   private normalize(value: V | undefined): V | undefined {
-    if (typeof value !== "string") return value;
+    if (typeof value !== "string" || this.isPassword) return value;
     return value.trim() as V;
   }
 
@@ -62,6 +79,8 @@ export class FormFieldModel<T extends T.TSchema = T.TSchema, V = StaticOrAny<T>>
     if (this.valid || !this.touched) return "";
     // TODO: revisit this, now that .Errors returns success/fail
     const value = this.submitValue;
+    if (this.passwordHasEdgeWhitespace) return "Password can't start or end with a space.";
+
     const [_, errors] = this.validator.Errors(value);
     const error = errors.at(0);
 

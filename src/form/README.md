@@ -10,7 +10,7 @@ import * as T from "typebox";
 
 const LoginSchema = T.Object({
   email: T.String({ format: "email" }),
-  password: T.String({ minLength: 8 }),
+  password: T.String({ format: "password", minLength: 8 }),
 });
 
 function LoginForm() {
@@ -133,7 +133,7 @@ Each field in `form.fields` is a `FormFieldModel` with its own reactive state.
 | `value`        | `Static<T> \| undefined` | Current value (TypeBox-coerced)                                     |
 | `initialValue` | `Static<T> \| undefined` | Baseline for `dirty` and `reset`; moved by each successful submit   |
 | `touched`      | `boolean`                | Set to `true` on blur or explicit `setTouched(true)`                |
-| `submitValue`  | `Static<T> \| undefined` | `value` as submitted: strings trimmed                               |
+| `submitValue`  | `Static<T> \| undefined` | `value` as submitted: strings trimmed, passwords excepted           |
 | `dirty`        | `boolean`                | `value` deeply differs from `initialValue` (undoing an edit cleans) |
 | `valid`        | `boolean`                | Passes TypeBox schema check                                         |
 | `error`        | `string                  | undefined`                                                          | Manually-set error (see below); blocks validity |
@@ -159,7 +159,7 @@ TypeBox's `Value.Convert` runs on every `setValue` call. This means `"42"` conve
 
 String values are trimmed of leading and trailing whitespace, but only when read as data. `value` (and so the input) keeps exactly what was typed, so the space in "John Smith" isn't eaten as it's typed. `submitValue` is the trimmed version, and validity, error messages, `dirty` and `toJSON` all read it. **What is validated is what is submitted**, so there's no need to trim in `handleSubmit`. `"   "` counts as blank: it fails `minLength: 1` with "This field is required.", and an edit that only adds edge whitespace isn't dirty. Only top-level string fields are trimmed; strings inside array or object fields are left alone.
 
-There is no per-field opt-out; every string field is trimmed, passwords included.
+There is no per-field opt-out, with one exception: fields with `format: "password"` are never trimmed, because silently changing a password would lock the user out. Edge whitespace makes them invalid instead, with "Password can't start or end with a space." The field reads the `format` keyword straight off its schema, so no format is registered with TypeBox. Give every password field this format: a plain `T.String()` password is trimmed like any other string.
 
 ### Formats
 
@@ -173,15 +173,16 @@ Format.Set("phone", (value) => /^\+?[\d\s()-]{7,}$/.test(value));
 
 ### Error messages
 
-| Condition                                            | Message                           |
-| ---------------------------------------------------- | --------------------------------- |
-| `error` is set (via `setError`)                      | That message, even if untouched   |
-| `!touched`                                           | `""` (no message shown)           |
-| Required field is blank (`""`) or `undefined`        | `"This field is required."`       |
-| Schema has `errorMessage: string`                    | That string                       |
-| Schema has `errorMessage: (value, schema) => string` | Result of the function            |
-| String with `format` constraint                      | `"Please enter a valid {format}"` |
-| Anything else                                        | TypeBox's default error message   |
+| Condition                                            | Message                                       |
+| ---------------------------------------------------- | --------------------------------------------- |
+| `error` is set (via `setError`)                      | That message, even if untouched               |
+| `!touched`                                           | `""` (no message shown)                       |
+| Required field is blank (`""`) or `undefined`        | `"This field is required."`                   |
+| Password (`format: "password"`) with edge whitespace | `"Password can't start or end with a space."` |
+| Schema has `errorMessage: string`                    | That string                                   |
+| Schema has `errorMessage: (value, schema) => string` | Result of the function                        |
+| String with `format` constraint                      | `"Please enter a valid {format}"`             |
+| Anything else                                        | TypeBox's default error message               |
 
 To require a non-empty string, use `T.String({ minLength: 1 })`. Plain `T.String()` accepts `""` as valid.
 

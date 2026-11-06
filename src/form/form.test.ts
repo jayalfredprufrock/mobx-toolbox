@@ -951,3 +951,68 @@ describe("edge whitespace", () => {
     expect(form.fields.tags.toJSON()).toEqual([" a "]);
   });
 });
+
+describe("password edge whitespace", () => {
+  const Schema = T.Object({
+    name: T.String({ minLength: 1 }),
+    password: T.String({ format: "password", minLength: 1 }),
+  });
+
+  test("passwords are not trimmed; edge whitespace is invalid instead", () => {
+    const form = new FormModel(Schema, { handleSubmit: vi.fn() });
+    const { password } = form.fields;
+    password.setTouched(true);
+
+    password.setValue("hunter2 ");
+    expect(password.toJSON()).toBe("hunter2 ");
+    expect(password.valid).toBe(false);
+    expect(password.errorMessage).toBe("Password can't start or end with a space.");
+
+    password.setValue("hun ter2");
+    expect(password.valid).toBe(true);
+    expect(password.errorMessage).toBe("");
+  });
+
+  test("the message waits for touched, like schema messages", () => {
+    const form = new FormModel(Schema, { handleSubmit: vi.fn() });
+    form.fields.password.setValue(" hunter2");
+    expect(form.fields.password.errorMessage).toBe("");
+  });
+
+  test("blocks submit", async () => {
+    const handleSubmit = vi.fn().mockResolvedValue(undefined);
+    const form = new FormModel(Schema, { handleSubmit });
+    form.fields.name.setValue("Ada");
+    form.fields.password.setValue(" hunter2");
+    form.props().onSubmit({ preventDefault: () => {} });
+    await new Promise<void>((resolve) => setTimeout(resolve, 0));
+    expect(handleSubmit).not.toHaveBeenCalled();
+  });
+
+  describe("discriminated union", () => {
+    const LoginSchema = T.Union([
+      T.Object({ kind: T.Literal("password"), password: T.String({ format: "password" }) }),
+      T.Object({ kind: T.Literal("sso"), provider: T.String({ minLength: 1 }) }),
+    ]);
+
+    test("blocks the form when the active variant has the password", () => {
+      const form = new FormModel(LoginSchema, {
+        handleSubmit: vi.fn(),
+        initialValues: { kind: "password", password: "hunter2 " },
+      });
+      expect(form.valid).toBe(false);
+      form.rawFields.password.setValue("hunter2");
+      expect(form.valid).toBe(true);
+    });
+
+    test("ignores the password once another variant is active", () => {
+      const form = new FormModel(LoginSchema, {
+        handleSubmit: vi.fn(),
+        initialValues: { kind: "password", password: "hunter2 " },
+      });
+      form.fields.kind.setValue("sso");
+      form.rawFields.provider.setValue("okta");
+      expect(form.valid).toBe(true);
+    });
+  });
+});

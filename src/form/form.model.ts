@@ -127,6 +127,19 @@ export class FormModel<T extends FormSchema = TObject, V = StaticOrAny<T>> {
     return Object.values(this.fields).every((field) => field.valid);
   }
 
+  /**
+   * Any field differs from its baseline. For a union, only fields the active variant has count — an
+   * edit to another variant's field is discarded on submit, so switching back leaves the form clean.
+   */
+  get dirty(): boolean {
+    const fields = Object.values<FormFieldModel<TSchema>>(this.fields);
+    if (IsUnion(this.schema)) {
+      const data = this.toJSON() as Record<string, unknown>;
+      return fields.some((field) => field.dirty && field.name in data);
+    }
+    return fields.some((field) => field.dirty);
+  }
+
   props(): any {
     return {
       onSubmit: (e: React.FormEvent<HTMLFormElement>) => {
@@ -148,9 +161,11 @@ export class FormModel<T extends FormSchema = TObject, V = StaticOrAny<T>> {
         }
 
         this.setSubmitting(true);
+        const data = this.toJSON() as V;
         this.config
-          .handleSubmit(this.toJSON() as V)
+          .handleSubmit(data)
           .then((resp) => {
+            this.rebase(data as Record<string, unknown>);
             this.setSubmitted(true);
             return resp;
           })
@@ -186,6 +201,29 @@ export class FormModel<T extends FormSchema = TObject, V = StaticOrAny<T>> {
 
   protected setSubmitted(submitted: boolean): void {
     this.submitted = submitted;
+  }
+
+  /**
+   * Replace every field's baseline and reset to it — for initial values that load after the form is
+   * created. A full replacement, like `config.initialValues`: fields missing from `values` go blank.
+   */
+  setInitialValues(values: Partial<V>): void {
+    const record = values as Record<string, unknown>;
+    for (const field of Object.values<FormFieldModel<TSchema>>(this.fields)) {
+      field.setInitialValue(record[field.name]);
+    }
+    this.setSubmitError(undefined);
+    this.setSubmitted(false);
+  }
+
+  // After a successful submit the saved values are the new baseline, so the form is clean again —
+  // otherwise a dirty-form navigation blocker would block the redirect that follows a save. The
+  // submitted snapshot is used rather than live values, so edits made while the submit was in flight
+  // stay dirty. Fields absent from it (another variant's) keep their baseline.
+  private rebase(data: Record<string, unknown>): void {
+    for (const field of Object.values<FormFieldModel<TSchema>>(this.fields)) {
+      if (field.name in data) field.rebase(data[field.name]);
+    }
   }
 
   reset(): void {

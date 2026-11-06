@@ -15,6 +15,11 @@ export class FormFieldModel<T extends T.TSchema = T.TSchema, V = StaticOrAny<T>>
   readonly validator: Validator<T, V>;
 
   value: V | undefined;
+  /**
+   * The baseline `dirty` compares against and `reset` restores: `config.initialValue` to begin with,
+   * moved by `setInitialValue` — and so by every successful form submit.
+   */
+  initialValue: V | undefined;
   touched = false;
 
   /**
@@ -29,6 +34,11 @@ export class FormFieldModel<T extends T.TSchema = T.TSchema, V = StaticOrAny<T>>
     if (this.error) return false;
     if (this.value === undefined && T.IsOptional(this.schema)) return true;
     return this.validator.Check(this.value);
+  }
+
+  /** The value differs from `initialValue`. Value-based: undoing an edit makes the field clean again. */
+  get dirty(): boolean {
+    return !Value.Equal(this.value, this.initialValue);
   }
 
   get errorMessage(): string {
@@ -68,7 +78,10 @@ export class FormFieldModel<T extends T.TSchema = T.TSchema, V = StaticOrAny<T>>
     // Type-only casts: relating `Validator<T>` for a generic `T` makes TS evaluate TypeBox's
     // `Static` generically, which costs every program importing this module ~600k instantiations.
     this.validator = Schema.Compile(this.schema as T.TSchema) as unknown as Validator<T, V>;
-    this.value = this.convertValue(config.initialValue);
+    // Converted like any value, so a string field's baseline is "" rather than `undefined` and an
+    // untouched field isn't dirty.
+    this.initialValue = this.convertValue(config.initialValue);
+    this.value = this.initialValue;
 
     makeAutoObservable(this, {
       name: false,
@@ -106,10 +119,21 @@ export class FormFieldModel<T extends T.TSchema = T.TSchema, V = StaticOrAny<T>>
     this.touched = touched;
   }
 
+  /** Move the baseline without touching the current value. See `setInitialValue` to move both. */
+  rebase(value?: V) {
+    this.initialValue = this.convertValue(value);
+  }
+
+  /** Replace the baseline and reset to it — for values that arrive after the form is created. */
+  setInitialValue(value?: V) {
+    this.rebase(value);
+    this.reset();
+  }
+
   reset() {
     this.setTouched(false);
     this.setError(undefined);
-    this.setValue(this.config.initialValue);
+    this.setValue(this.initialValue);
   }
 
   // TODO: this any type is dangerous, need to figure out a good way

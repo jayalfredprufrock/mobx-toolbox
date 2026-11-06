@@ -773,3 +773,123 @@ describe("submit lifecycle fixes", () => {
     expect(form.submitted).toBe(false);
   });
 });
+
+describe("dirty state", () => {
+  const flush = () => new Promise<void>((resolve) => setTimeout(resolve, 0));
+  const submit = (form: { props(): any }) => form.props().onSubmit({ preventDefault: () => {} });
+
+  test("a fresh form is clean, including string fields converted from undefined", () => {
+    const form = new FormModel(UserSchema, { handleSubmit: vi.fn() });
+    expect(form.fields.name.value).toBe("");
+    expect(form.fields.name.dirty).toBe(false);
+    expect(form.dirty).toBe(false);
+  });
+
+  test("is value-based: undoing an edit makes the field clean again", () => {
+    const form = new FormModel(UserSchema, {
+      handleSubmit: vi.fn(),
+      initialValues: { name: "Ada" },
+    });
+    form.fields.name.setValue("Grace");
+    expect(form.fields.name.dirty).toBe(true);
+    expect(form.dirty).toBe(true);
+    form.fields.name.setValue("Ada");
+    expect(form.dirty).toBe(false);
+  });
+
+  test("compares converted values, so '36' typed into a number field matches 36", () => {
+    const form = new FormModel(UserSchema, { handleSubmit: vi.fn(), initialValues: { age: 36 } });
+    form.fields.age.setValue("36" as unknown as number);
+    expect(form.fields.age.dirty).toBe(false);
+  });
+
+  test("is observable", () => {
+    const form = new FormModel(UserSchema, { handleSubmit: vi.fn() });
+    const seen: boolean[] = [];
+    autorun(() => seen.push(form.dirty));
+    form.fields.name.setValue("Ada");
+    expect(seen).toEqual([false, true]);
+  });
+
+  test("reset makes the form clean", () => {
+    const form = new FormModel(UserSchema, { handleSubmit: vi.fn() });
+    form.fields.name.setValue("Ada");
+    form.reset();
+    expect(form.dirty).toBe(false);
+  });
+
+  test("a successful submit rebases, so the form is clean and reset keeps the saved values", async () => {
+    const form = new FormModel(UserSchema, {
+      handleSubmit: vi.fn().mockResolvedValue(undefined),
+      initialValues: { name: "Ada", age: 36 },
+    });
+    form.fields.name.setValue("Grace");
+    submit(form);
+    await flush();
+    expect(form.dirty).toBe(false);
+
+    form.fields.name.setValue("Edith");
+    form.reset();
+    expect(form.fields.name.value).toBe("Grace");
+  });
+
+  test("a failed submit does not rebase", async () => {
+    const form = new FormModel(UserSchema, {
+      handleSubmit: vi.fn().mockRejectedValue(new Error("boom")),
+      handleError: () => {},
+      initialValues: { name: "Ada", age: 36 },
+    });
+    form.fields.name.setValue("Grace");
+    submit(form);
+    await flush();
+    expect(form.dirty).toBe(true);
+  });
+
+  test("edits made while a submit is in flight stay dirty", async () => {
+    let release: (() => void) | undefined;
+    const form = new FormModel(UserSchema, {
+      handleSubmit: () => new Promise<void>((resolve) => (release = resolve)),
+      initialValues: { name: "Ada", age: 36 },
+    });
+    form.fields.name.setValue("Grace");
+    submit(form);
+    form.fields.name.setValue("Edith");
+    release?.();
+    await flush();
+    expect(form.dirty).toBe(true);
+    form.fields.name.setValue("Grace");
+    expect(form.dirty).toBe(false);
+  });
+
+  test("setInitialValues replaces the baseline and resets to it", () => {
+    const form = new FormModel(UserSchema, { handleSubmit: vi.fn() });
+    form.fields.bio.setValue("draft");
+    form.setInitialValues({ name: "Ada", age: 36 });
+    expect(form.fields.name.value).toBe("Ada");
+    expect(form.fields.bio.value).toBe("");
+    expect(form.dirty).toBe(false);
+  });
+
+  describe("discriminated union", () => {
+    const makePaymentForm = () =>
+      new FormModel(PaymentSchema, {
+        handleSubmit: vi.fn().mockResolvedValue(undefined),
+        initialValues: { method: "card", holder: "Ada", cardNumber: "4242" },
+      });
+
+    test("switching variant is dirty", () => {
+      const form = makePaymentForm();
+      form.fields.method.setValue("bank");
+      expect(form.dirty).toBe(true);
+    });
+
+    test("edits to another variant's fields don't count once you switch back", () => {
+      const form = makePaymentForm();
+      form.fields.method.setValue("bank");
+      form.rawFields.routing.setValue("021");
+      expect(form.dirty).toBe(true);
+      form.fields.method.setValue("card");
+      expect(form.dirty).toBe(false);
+    });
+  });
+});

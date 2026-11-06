@@ -64,6 +64,9 @@ const form = new FormModel(schema, {
 ```ts
 form.validate(); // touch all fields and return valid boolean
 form.reset(); // restore initial values, clear errors and touched state
+
+form.dirty; // any field differs from its initial value — observable, so it can drive a navigation blocker
+form.setInitialValues(data); // replace the baseline (e.g. once fetched data arrives) and reset to it
 form.toJSON(); // { fieldName: value, ... } — current field values
 form.props(); // { onSubmit } — spread onto a <form> element
 form.setSubmitError(e); // set or clear (pass undefined) the submit error
@@ -124,14 +127,16 @@ Each field in `form.fields` is a `FormFieldModel` with its own reactive state.
 
 ### Properties
 
-| Property       | Type                     | Description                                                        |
-| -------------- | ------------------------ | ------------------------------------------------------------------ | ----------------------------------------------- |
-| `name`         | `string`                 | Field key from the schema                                          |
-| `value`        | `Static<T> \| undefined` | Current value (TypeBox-coerced)                                    |
-| `touched`      | `boolean`                | Set to `true` on blur or explicit `setTouched(true)`               |
-| `valid`        | `boolean`                | Passes TypeBox schema check                                        |
-| `error`        | `string                  | undefined`                                                         | Manually-set error (see below); blocks validity |
-| `errorMessage` | `string`                 | `error` when set, else the schema message when `touched && !valid` |
+| Property       | Type                     | Description                                                         |
+| -------------- | ------------------------ | ------------------------------------------------------------------- | ----------------------------------------------- |
+| `name`         | `string`                 | Field key from the schema                                           |
+| `value`        | `Static<T> \| undefined` | Current value (TypeBox-coerced)                                     |
+| `initialValue` | `Static<T> \| undefined` | Baseline for `dirty` and `reset`; moved by each successful submit   |
+| `touched`      | `boolean`                | Set to `true` on blur or explicit `setTouched(true)`                |
+| `dirty`        | `boolean`                | `value` deeply differs from `initialValue` (undoing an edit cleans) |
+| `valid`        | `boolean`                | Passes TypeBox schema check                                         |
+| `error`        | `string                  | undefined`                                                          | Manually-set error (see below); blocks validity |
+| `errorMessage` | `string`                 | `error` when set, else the schema message when `touched && !valid`  |
 
 ### Methods
 
@@ -139,7 +144,8 @@ Each field in `form.fields` is a `FormFieldModel` with its own reactive state.
 field.setValue(value?)   // update value (runs through TypeBox Value.Convert)
 field.setTouched(bool)   // manually mark as touched/untouched
 field.setError(msg?)     // set or clear a manual error
-field.reset()            // restore initial value, clear touched
+field.reset()            // restore initialValue, clear touched
+field.setInitialValue(v) // replace the baseline and reset to it
 field.props()            // { name, value, onChange, onBlur } — spread onto any input
 field.toJSON()           // current plain value
 ```
@@ -204,6 +210,14 @@ returning normally reports success. Throwing routes into `submitError` as usual 
 examples above throw something cheap after setting the field error. If you don't want a form-level
 banner alongside the field message, check `submitError` before rendering one, or clear it with
 `form.setSubmitError(undefined)`.
+
+## Dirty state
+
+`field.dirty` and `form.dirty` compare current values with each field's `initialValue`. The comparison is by value, so typing and then undoing an edit makes the field clean again.
+
+**A successful submit rebases.** The submitted values become the new baseline, so the form is clean once the save finishes, and a dirty-form navigation blocker doesn't block the redirect after a save. Edits made while the submit was in flight stay dirty. `reset()` restores the **saved** values from then on. A "save another" create form that should go blank afterwards calls `form.setInitialValues({})`.
+
+For a union form, only the active variant's fields count. If you switch variants, edit a field, and switch back, the form is clean again.
 
 ## Discriminated unions
 

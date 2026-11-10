@@ -1,7 +1,8 @@
 import { describe, expect, test, vi } from "vite-plus/test";
 import * as T from "typebox";
 import { autorun, isObservableProp, makeObservable, observable, runInAction } from "mobx";
-import { LOADED_AT, makeModel, makeUnionModel } from "./make-model";
+import { LOADED_AT, makeModel } from "./make-model";
+import { DiscriminatedUnion } from "../util/union-schema";
 import { createStore, makeStore } from "./make-store";
 
 // ---------------------------------------------------------------------------
@@ -190,17 +191,17 @@ describe("makeModel", () => {
 });
 
 // ---------------------------------------------------------------------------
-// makeUnionModel — discriminated unions
+// makeModel — discriminated unions
 // ---------------------------------------------------------------------------
 
-const PaymentSchema = T.Union([
+const PaymentSchema = DiscriminatedUnion("kind", [
   T.Object({ kind: T.Literal("card"), id: T.Number(), cardNumber: T.String() }),
   T.Object({ kind: T.Literal("bank"), id: T.Number(), routing: T.String() }),
 ]);
 
-describe("makeUnionModel", () => {
+describe("makeModel", () => {
   test("exposes shared fields and the discriminator", () => {
-    const PaymentModel = makeUnionModel(PaymentSchema, "kind");
+    const PaymentModel = makeModel(PaymentSchema);
     const card = new PaymentModel({ kind: "card", id: 1, cardNumber: "4242" });
     expect(card.id).toBe(1);
     expect(card.kind).toBe("card");
@@ -208,7 +209,7 @@ describe("makeUnionModel", () => {
   });
 
   test("is() guards the variant and reveals its fields", () => {
-    const PaymentModel = makeUnionModel(PaymentSchema, "kind");
+    const PaymentModel = makeModel(PaymentSchema);
     const model = new PaymentModel({ kind: "card", id: 1, cardNumber: "4242" });
     expect(model.is("card")).toBe(true);
     expect(model.is("bank")).toBe(false);
@@ -220,7 +221,7 @@ describe("makeUnionModel", () => {
   });
 
   test("as() returns the narrowed instance or undefined", () => {
-    const PaymentModel = makeUnionModel(PaymentSchema, "kind");
+    const PaymentModel = makeModel(PaymentSchema);
     const model = new PaymentModel({ kind: "bank", id: 2, routing: "021" });
     const bank = model.as("bank");
     expect(bank).toBe(model); // same instance handed back
@@ -229,7 +230,7 @@ describe("makeUnionModel", () => {
   });
 
   test("variant is the same instance, following setData", () => {
-    const PaymentModel = makeUnionModel(PaymentSchema, "kind");
+    const PaymentModel = makeModel(PaymentSchema);
     const model = new PaymentModel({ kind: "card", id: 1, cardNumber: "4242" });
     expect(model.variant).toBe(model);
 
@@ -249,16 +250,21 @@ describe("makeUnionModel", () => {
     expect(Object.keys(model.toJSON())).not.toContain("variant");
   });
 
+  test("a union without a discriminator annotation is refused when the model is made", () => {
+    const Plain = T.Union([T.Object({ kind: T.Literal("a") }), T.Object({ kind: T.Literal("b") })]);
+    expect(() => makeModel(Plain as any)).toThrow(/DiscriminatedUnion/);
+  });
+
   test("a schema field named variant is refused when the model is made", () => {
-    const Clashing = T.Union([
+    const Clashing = DiscriminatedUnion("kind", [
       T.Object({ kind: T.Literal("a"), variant: T.String() }),
       T.Object({ kind: T.Literal("b") }),
     ]);
-    expect(() => makeUnionModel(Clashing, "kind")).toThrow(/reserve/);
+    expect(() => makeModel(Clashing)).toThrow(/reserve/);
   });
 
   test("toJSON emits only the active variant's fields", () => {
-    const PaymentModel = makeUnionModel(PaymentSchema, "kind");
+    const PaymentModel = makeModel(PaymentSchema);
     // foreign-variant keys exist on the instance (all observable) but are cleaned out
     const card = new PaymentModel({ kind: "card", id: 1, cardNumber: "4242", routing: "x" } as any);
     const json = card.toJSON();
@@ -268,14 +274,14 @@ describe("makeUnionModel", () => {
   });
 
   test("toJSON strips a foreign variant's field even when the record is invalid", () => {
-    const PaymentModel = makeUnionModel(PaymentSchema, "kind");
+    const PaymentModel = makeModel(PaymentSchema);
     // cardNumber is the wrong type, so the record matches no variant structurally
     const card = new PaymentModel({ kind: "card", id: 1, cardNumber: 42, routing: "x" } as any);
     expect(card.toJSON()).toEqual({ kind: "card", id: 1, cardNumber: 42 });
   });
 
   test("setData reactively switches variants and clears the previous variant", () => {
-    const PaymentModel = makeUnionModel(PaymentSchema, "kind");
+    const PaymentModel = makeModel(PaymentSchema);
     const model = new PaymentModel({ kind: "card", id: 1, cardNumber: "4242" });
 
     const seen: (string | undefined)[] = [];
@@ -291,14 +297,14 @@ describe("makeUnionModel", () => {
   });
 
   test("buildParams uses the shared key", () => {
-    const PaymentModel = makeUnionModel(PaymentSchema, "kind", { keys: ["id"] as const });
+    const PaymentModel = makeModel(PaymentSchema, { keys: ["id"] as const });
     const card = new PaymentModel({ kind: "card", id: 7, cardNumber: "4242" });
     expect(card.buildParams()).toEqual({ id: 7 });
   });
 
   test("reload replaces data via the keyed get fn", async () => {
     const getFn = vi.fn().mockResolvedValue({ kind: "card", id: 1, cardNumber: "9999" });
-    const PaymentModel = makeUnionModel(PaymentSchema, "kind", {
+    const PaymentModel = makeModel(PaymentSchema, {
       keys: ["id"] as const,
       get: getFn,
     });
@@ -309,7 +315,7 @@ describe("makeUnionModel", () => {
   });
 
   test("a subclass can add methods that use the guards", () => {
-    const PaymentModel = makeUnionModel(PaymentSchema, "kind");
+    const PaymentModel = makeModel(PaymentSchema);
     class Payment extends PaymentModel {
       describe() {
         if (this.is("card")) return `card ${this.cardNumber}`;
@@ -321,13 +327,13 @@ describe("makeUnionModel", () => {
   });
 
   test("static schema is the union", () => {
-    const PaymentModel = makeUnionModel(PaymentSchema, "kind");
+    const PaymentModel = makeModel(PaymentSchema);
     expect(PaymentModel.schema).toBe(PaymentSchema);
   });
 });
 
 // ---------------------------------------------------------------------------
-// makeUnionModel — unions of unions
+// makeModel — unions of unions
 // ---------------------------------------------------------------------------
 
 const CardSchema = T.Object({ kind: T.Literal("card"), id: T.Number(), cardNumber: T.String() });
@@ -338,11 +344,11 @@ const CashSchema = T.Object({ kind: T.Literal("cash"), id: T.Number(), note: T.S
 const ElectronicSchema = T.Union([CardSchema, WireSchema]);
 const ManualSchema = T.Union([BankSchema, CashSchema]);
 /** Two levels: a union whose every member is itself a union. */
-const NestedPaymentSchema = T.Union([ElectronicSchema, ManualSchema]);
+const NestedPaymentSchema = DiscriminatedUnion("kind", [ElectronicSchema, ManualSchema]);
 
-describe("makeUnionModel with a union of unions", () => {
+describe("makeModel with a union of unions", () => {
   test("makes every nested variant's fields observable", () => {
-    const PaymentModel = makeUnionModel(NestedPaymentSchema, "kind");
+    const PaymentModel = makeModel(NestedPaymentSchema);
     const card = new PaymentModel({ kind: "card", id: 1, cardNumber: "4242" });
 
     // A field from the *other* branch of the nesting has to exist and be observable, or `setData`
@@ -357,7 +363,7 @@ describe("makeUnionModel with a union of unions", () => {
   });
 
   test("toJSON cleans down to the active variant across nesting levels", () => {
-    const PaymentModel = makeUnionModel(NestedPaymentSchema, "kind");
+    const PaymentModel = makeModel(NestedPaymentSchema);
     const wire = new PaymentModel({
       kind: "wire",
       id: 3,
@@ -369,7 +375,7 @@ describe("makeUnionModel with a union of unions", () => {
   });
 
   test("is()/as() and the identity map work on nested variants", async () => {
-    const PaymentModel = makeUnionModel(NestedPaymentSchema, "kind", { keys: ["id"] as const });
+    const PaymentModel = makeModel(NestedPaymentSchema, { keys: ["id"] as const });
     const bank = PaymentModel.instantiate({ kind: "bank", id: 9, routing: "021" });
     expect(bank.is("bank")).toBe(true);
     expect(bank.is("card")).toBe(false);
@@ -384,8 +390,11 @@ describe("makeUnionModel with a union of unions", () => {
 
   test("handles arbitrary depth and object/union siblings", () => {
     // Three levels on one side, a bare object as a direct sibling on the other.
-    const DeepSchema = T.Union([T.Union([T.Union([ElectronicSchema]), CashSchema]), BankSchema]);
-    const PaymentModel = makeUnionModel(DeepSchema, "kind");
+    const DeepSchema = DiscriminatedUnion("kind", [
+      T.Union([T.Union([ElectronicSchema]), CashSchema]),
+      BankSchema,
+    ]);
+    const PaymentModel = makeModel(DeepSchema);
     const cash = new PaymentModel({ kind: "cash", id: 1, note: "petty", swift: "X" } as any);
 
     // Every leaf, however deep, contributed its properties.
@@ -401,18 +410,18 @@ describe("makeUnionModel with a union of unions", () => {
   });
 
   test("a variant reachable through two branches is not duplicated", () => {
-    const DupSchema = T.Union([
+    const DupSchema = DiscriminatedUnion("kind", [
       T.Union([CardSchema, BankSchema]),
       T.Union([CardSchema, CashSchema]),
     ]);
-    const PaymentModel = makeUnionModel(DupSchema, "kind");
+    const PaymentModel = makeModel(DupSchema);
     const card = new PaymentModel({ kind: "card", id: 1, cardNumber: "4242" });
     expect(Object.keys(card).sort()).toEqual(["cardNumber", "id", "kind", "note", "routing"]);
     expect(card.toJSON()).toEqual({ kind: "card", id: 1, cardNumber: "4242" });
   });
 
   test("static schema is the schema as given, nesting intact", () => {
-    const PaymentModel = makeUnionModel(NestedPaymentSchema, "kind");
+    const PaymentModel = makeModel(NestedPaymentSchema);
     // Flattening happens where `anyOf` is walked, not by rewriting the schema — so a schema shared
     // with a form or a store is still the same object.
     expect(PaymentModel.schema).toBe(NestedPaymentSchema);
@@ -640,11 +649,11 @@ describe("model identity", () => {
   });
 
   test("a union model is identity-mapped on its shared key", () => {
-    const PaymentSchema = T.Union([
+    const PaymentSchema = DiscriminatedUnion("kind", [
       T.Object({ kind: T.Literal("card"), id: T.Number(), cardNumber: T.String() }),
       T.Object({ kind: T.Literal("bank"), id: T.Number(), routing: T.String() }),
     ]);
-    const PaymentModel = makeUnionModel(PaymentSchema, "kind", { keys: ["id"] as const });
+    const PaymentModel = makeModel(PaymentSchema, { keys: ["id"] as const });
 
     const card = PaymentModel.instantiate({ kind: "card", id: 1, cardNumber: "4242" });
     const same = PaymentModel.instantiate({ kind: "bank", id: 1, routing: "021" });
@@ -814,11 +823,11 @@ describe("makeStore from a model class", () => {
   });
 
   test("a union model class is accepted too", async () => {
-    const PaymentSchema = T.Union([
+    const PaymentSchema = DiscriminatedUnion("kind", [
       T.Object({ kind: T.Literal("card"), id: T.Number(), cardNumber: T.String() }),
       T.Object({ kind: T.Literal("bank"), id: T.Number(), routing: T.String() }),
     ]);
-    const PaymentModel = makeUnionModel(PaymentSchema, "kind", { keys: ["id"] as const });
+    const PaymentModel = makeModel(PaymentSchema, { keys: ["id"] as const });
     const store = createStore(PaymentModel, {
       collections: {
         list: () => Promise.resolve([{ kind: "card" as const, id: 1, cardNumber: "4242" }]),
@@ -1270,11 +1279,11 @@ describe("field observability", () => {
   });
 
   test("a variant-specific field of a union may be annotated", () => {
-    const Schema = T.Union([
+    const Schema = DiscriminatedUnion("kind", [
       T.Object({ kind: T.Literal("card"), id: T.Number(), digits: T.Array(T.String()) }),
       T.Object({ kind: T.Literal("bank"), id: T.Number(), routing: T.String() }),
     ]);
-    const Model = makeUnionModel(Schema, "kind", {
+    const Model = makeModel(Schema, {
       keys: ["id"] as const,
       annotations: { digits: observable },
     });
@@ -1423,11 +1432,11 @@ describe("updateData", () => {
 });
 
 describe("updateData on a union", () => {
-  const PaymentSchema = T.Union([
+  const PaymentSchema = DiscriminatedUnion("kind", [
     T.Object({ kind: T.Literal("card"), id: T.Number(), digits: T.String(), label: T.String() }),
     T.Object({ kind: T.Literal("bank"), id: T.Number(), routing: T.String(), label: T.String() }),
   ]);
-  const Payment = makeUnionModel(PaymentSchema, "kind", { keys: ["id"] as const });
+  const Payment = makeModel(PaymentSchema, { keys: ["id"] as const });
   const card = () => ({ kind: "card", id: 1, digits: "4242", label: "Visa" }) as const;
 
   test("a shared field is patchable without narrowing", () => {

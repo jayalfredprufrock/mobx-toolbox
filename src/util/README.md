@@ -214,7 +214,27 @@ flattenVariants(Shape); // [Circle, Square, Triangle] — every leaf, at any dep
 type Leaf = UnionVariants<typeof Shape>; // Circle | Square | Triangle
 ```
 
-This is what lets `makeUnionModel` and `FormModel` accept a union of unions, and it is exported
+This is what lets `makeModel` and `FormModel` accept a union of unions, and it is exported
 because anything else introspecting one of this library's schemas needs the same treatment.
 `Value.Check` and `Value.Clean` already recurse on their own, so once the variant list is flat the
 nesting makes no difference anywhere.
+
+---
+
+## `DiscriminatedUnion` / `DiscriminatedUnionSchema`
+
+`T.Union` plus OpenAPI's `discriminator: { propertyName }` annotation, with the name kept in the
+type. `T.Union`'s own options don't reach its return type, so a hand-written annotation is invisible
+to TypeScript; this builder is what lets `makeModel` type `is`/`as`/`variant` from the schema alone.
+
+```ts
+import { DiscriminatedUnion } from "@jayalfredprufrock/mobx-toolbox/util";
+
+const Payment = DiscriminatedUnion("kind", [Card, Bank]);
+const _bad = DiscriminatedUnion("nope", [Card, Bank]); // ✗ not a field of every variant
+```
+
+`DiscriminatedUnionSchema<D>` is the shape, and it is structural: a schema from any builder that
+produces it (handshake's `TDiscriminatedUnion`, for one) is accepted without importing anything from
+here. Only the root union needs the annotation; nested groups can stay plain `T.Union`s.
+`discriminatorOf(schema)` reads the name back at runtime.

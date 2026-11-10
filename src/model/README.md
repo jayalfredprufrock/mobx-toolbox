@@ -506,17 +506,19 @@ different record entirely; a patched discriminator makes the record match no var
 emits a payload that is invalid against the schema. Neither is a no-op, and neither costs more than
 a comparison to catch.
 
-## Discriminated unions — `makeUnionModel`
+## Discriminated unions
 
-For a `T.Union` of objects, use `makeUnionModel(schema, discriminator, config?)`. It takes the discriminator property name and returns a model whose instance exposes the **shared** fields directly; variant-specific fields are reached through `variant` or the `is`/`as` guards. `makeModel` itself only accepts a single `T.Object`.
+`makeModel` also accepts a union of objects, built with `DiscriminatedUnion(propertyName, variants)` so the schema itself records which field tells the variants apart. The instance exposes the **shared** fields directly; variant-specific fields are reached through `variant` or the `is`/`as` guards.
+
+`DiscriminatedUnion` is `T.Union` plus OpenAPI's `discriminator: { propertyName }` annotation, kept in the type (`T.Union`'s own options don't reach its return type). Any schema of that shape works, whichever builder made it — handshake's `DiscriminatedUnion` included. A plain `T.Union` is refused: a type error, and a throw at runtime.
 
 ```ts
-const PaymentSchema = T.Union([
+const PaymentSchema = DiscriminatedUnion("kind", [
   T.Object({ kind: T.Literal("card"), id: T.Number(), cardNumber: T.String() }),
   T.Object({ kind: T.Literal("bank"), id: T.Number(), routing: T.String() }),
 ]);
 
-const PaymentModel = makeUnionModel(PaymentSchema, "kind", { keys: ["id"] });
+const PaymentModel = makeModel(PaymentSchema, { keys: ["id"] });
 const payment = new PaymentModel({ kind: "card", id: 1, cardNumber: "4242" });
 
 payment.id; // ✅ shared field
@@ -531,9 +533,9 @@ const card = payment.as("card"); // (this & CardVariant) | undefined
 if (card) card.cardNumber;
 ```
 
-### Why not just `makeModel(union)` with discriminator narrowing?
+### Why the instance isn't a union
 
-Because the resulting instance type would be a union, and **a union type cannot be a class base** (`class X extends Model {}` fails with TS2509). `makeUnionModel` keeps the base instance a single object type (shared fields + `is`/`as`), so models stay subclassable:
+Because **a union type cannot be a class base** (`class X extends Model {}` fails with TS2509). A union model keeps the base instance a single object type (shared fields + `is`/`as`), so models stay subclassable:
 
 ```ts
 class Payment extends PaymentModel {
@@ -628,25 +630,26 @@ flat union:
 ```ts
 const ElectronicSchema = T.Union([CardSchema, WireSchema]);
 const ManualSchema = T.Union([BankSchema, CashSchema]);
-const PaymentSchema = T.Union([ElectronicSchema, ManualSchema]);
+const PaymentSchema = DiscriminatedUnion("kind", [ElectronicSchema, ManualSchema]);
 
-const PaymentModel = makeUnionModel(PaymentSchema, "kind", { keys: ["id"] });
+const PaymentModel = makeModel(PaymentSchema, { keys: ["id"] });
 ```
 
 Nothing about it is a special case: `T.Static` already reads nesting as one flat union, and
-`makeUnionModel` flattens `anyOf` to match, so every variant at every depth contributes its fields.
+`makeModel` flattens `anyOf` to match, so every variant at every depth contributes its fields.
 `is`/`as`, `keys`, `setData` and `toJSON` behave exactly as they do on a flat union — as does
 `makeStore` over the same class. Two notes:
 
 - **The discriminator must be shared by every leaf variant**, not just by every top-level member. It
-  is one flat union as far as narrowing is concerned; there is no per-group discriminator.
+  is one flat union as far as narrowing is concerned; there is no per-group discriminator. Only the
+  root union needs the annotation — the groups inside it can stay plain `T.Union`s.
 - **`Model.schema` is the schema you passed**, nesting intact. Flattening happens where `anyOf` is
   walked, not by rewriting the schema, so a schema shared with a form or a store is still the same
   object.
 
 ### Things to know
 
-- **`keys`/`buildParams` are limited to shared fields.** `keyof` a union collapses to the keys present in every variant (e.g. `id`) — exactly what you want for a keyed resource. The `discriminator` argument must likewise be a shared key.
+- **`keys`/`buildParams` are limited to shared fields.** `keyof` a union collapses to the keys present in every variant (e.g. `id`) — exactly what you want for a keyed resource. The discriminator must likewise be a shared key; `DiscriminatedUnion` rejects one that isn't.
 - **All variants' fields are observable.** Every property across the union is made `observableRef` up front, so `setData` stays reactive even when it switches the active variant. `toJSON` emits only the fields of the variant the discriminator names, looked up from a table built once per class — so its cost tracks the variant, not the size of the union.
 - **`setData` switches variants cleanly.** It takes the full resource and reassigns every field, so moving between variants clears the previous variant's fields on the live instance (not just in `toJSON`).
 - **Reflection still sees every key.** `Object.keys`, spread, and `in` expose all union properties (inactive ones as `undefined`); only typed access (via the guards) and `toJSON` are variant-faithful. This is the deliberate trade for a subclassable, reactive model.
@@ -1300,10 +1303,10 @@ await user.delete(); // removed from every list over this model
 
 ```ts
 import type {
-  ModelSchema, // a TObject, or a TUnion of TObjects (discriminated union)
-  ModelConfig, // config object passed to makeModel / makeUnionModel
+  ModelSchema, // a TObject, or a union of TObjects (see DiscriminatedUnion)
+  ModelConfig, // config object passed to makeModel
   ModelConstructor, // the class returned by makeModel
-  UnionModelConstructor, // the class returned by makeUnionModel
+  UnionModelConstructor, // the class makeModel returns for a discriminated union
   ModelVariant, // one variant of a union model: ModelVariant<typeof Payment, "card">
   ModelListener, // what a store exposes to hear about mutations
   ModelEventType, // "created" | "updated" | "deleted"

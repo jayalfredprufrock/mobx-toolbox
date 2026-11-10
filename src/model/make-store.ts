@@ -323,7 +323,7 @@ export type StoreConstructor<M, MC, Cfg> = {
 // -----------------------------------------------------------------------------
 
 /**
- * A class produced by `makeModel`/`makeUnionModel`: it carries its own schema, so passing one to
+ * A class produced by `makeModel`: it carries its own schema, so passing one to
  * `makeStore` means not repeating the schema, and its identity map is wired up by default.
  */
 export type AnyModelClass = {

@@ -6,7 +6,12 @@ import {
   toJS,
   type AnnotationMapEntry,
 } from "mobx";
-import { flattenVariants, type UnionSchema } from "../util/union-schema";
+import {
+  discriminatorOf,
+  flattenVariants,
+  type DiscriminatedUnionSchema,
+  type UnionSchema,
+} from "../util/union-schema";
 import { WeakRefMap } from "../util/weak-ref-map";
 import * as T from "typebox";
 
@@ -28,8 +33,8 @@ export interface ModelListener {
 
 /**
  * Root schema for a model: a single object (`makeModel`) or a discriminated
- * union of objects (`makeUnionModel`) — nested at any depth, since a union of
- * unions is just a longer flat union. Shared by both factories and by
+ * union of objects (`DiscriminatedUnion`) — nested at any depth, since a union of
+ * unions is just a longer flat union. Shared by `makeModel` and by
  * `makeStore`, which accepts either.
  */
 export type ModelSchema = T.TObject | UnionSchema;
@@ -486,7 +491,7 @@ export type ModelConstructor<S extends ModelSchema, K, Cfg> = {
 // Shared class builder
 // -----------------------------------------------------------------------------
 
-// Builds the observable model class used by both makeModel and makeUnionModel.
+// Builds the observable model class for both object and union schemas.
 // Handles object and union schemas at runtime; the public factories layer the
 // appropriate types (and, for unions, the `is`/`as` guards) on top.
 function createModelClass(
@@ -859,7 +864,7 @@ function createModelClass(
 }
 
 // -----------------------------------------------------------------------------
-// makeModel (single object schemas)
+// makeModel
 // -----------------------------------------------------------------------------
 
 // No config means no identity, which is exactly what `keys: false` declares — so it resolves to the
@@ -869,15 +874,42 @@ export function makeModel<S extends T.TObject, K extends KeySpec<S>, Cfg extends
   schema: S,
   config: Cfg & { keys: K } & ParamsMustBeKeys<S, K, Cfg>,
 ): ModelConstructor<S, K, Cfg>;
-// Not generic, like makeUnionModel's: checking the overloads against a generic implementation
+export function makeModel<S extends DiscriminatedUnionSchema>(
+  schema: S,
+): UnionModelConstructor<S, DiscriminatorOf<S>, false, {}>;
+export function makeModel<
+  S extends DiscriminatedUnionSchema,
+  K extends KeySpec<S>,
+  Cfg extends ModelConfig<S, K>,
+>(
+  schema: S,
+  config: Cfg & { keys: K } & ParamsMustBeKeys<S, K, Cfg>,
+): UnionModelConstructor<S, DiscriminatorOf<S>, K, Cfg>;
+// Not generic: checking the overloads against a generic implementation
 // signature relates `ModelConfig<S, …>` generically, through TypeBox's `Static` — expensive.
-export function makeModel(schema: T.TObject, config?: ModelConfig<any, any>): any {
-  return createModelClass(schema, config);
+export function makeModel(schema: ModelSchema, config?: ModelConfig<any, any>): any {
+  if (!T.IsUnion(schema)) return createModelClass(schema, config);
+
+  const discriminator = discriminatorOf(schema);
+  if (discriminator === undefined) {
+    throw new Error(
+      `[makeModel] a union schema needs a discriminator, so the model can tell its variants apart. ` +
+        `Build it with \`DiscriminatedUnion("kind", [...])\` rather than \`T.Union([...])\`.`,
+    );
+  }
+  const ModelClass = createModelClass(schema, config, variantKeysOf(schema, discriminator));
+  addUnionMembers(ModelClass, schema, discriminator);
+  return ModelClass;
 }
 
 // -----------------------------------------------------------------------------
-// makeUnionModel (discriminated union schemas)
+// union models (discriminated union schemas)
 // -----------------------------------------------------------------------------
+
+// The discriminator a schema is annotated with, as a key of its resource. `never` when the name isn't
+// shared by every variant, which leaves `is`/`as` uncallable rather than wrongly typed.
+type DiscriminatorOf<S extends DiscriminatedUnionSchema> = S["discriminator"]["propertyName"] &
+  keyof Resource<S>;
 
 // Properties common to every variant (`keyof` a union resolves to shared keys).
 type SharedFields<R> = Pick<R, keyof R>;
@@ -889,7 +921,7 @@ type VariantFields<R, D extends keyof R, V> = Extract<R, Record<D, V>>;
 // single shared-fields instance type can't be. Distributes over `R`, the schema's variants.
 type Variants<Self, R> = R extends any ? Self & R : never;
 
-// The members makeUnionModel adds. An interface (not a type-alias literal) so the
+// The members a union model adds. An interface (not a type-alias literal) so the
 // polymorphic `this` in `is`/`as` is allowed; at a call site `this` resolves to
 // the full instance, so the guard reveals the variant's fields on it.
 interface UnionModelMembers<R, D extends keyof R, K, FN extends PropertyKey, KS> {
@@ -1017,36 +1049,19 @@ function variantKeysOf(
   return table;
 }
 
-export function makeUnionModel<S extends UnionSchema, D extends keyof Resource<S> & string>(
-  schema: S,
-  discriminator: D,
-): UnionModelConstructor<S, D, false, {}>;
-export function makeUnionModel<
-  S extends UnionSchema,
-  D extends keyof Resource<S> & string,
-  K extends KeySpec<S>,
-  Cfg extends ModelConfig<S, K>,
->(
-  schema: S,
-  discriminator: D,
-  config: Cfg & { keys: K } & ParamsMustBeKeys<S, K, Cfg>,
-): UnionModelConstructor<S, D, K, Cfg>;
-export function makeUnionModel(
-  schema: UnionSchema,
-  discriminator: string,
-  config?: ModelConfig<any, any>,
-): any {
+// Adds the union members (`discriminator`, `is`/`as`, `variant`) to a class built from a
+// discriminated union schema.
+function addUnionMembers(ModelClass: any, schema: UnionSchema, discriminator: string): void {
   // `variant` is a member of every union model, so a schema field by that name would be shadowed on
   // every instance — and its type left contradictory. Refuse it here, where the schema is in view.
   const clash = flattenVariants(schema).some((variant) => "variant" in variant.properties);
   if (clash) {
     throw new Error(
-      `[makeUnionModel] the schema declares a field named "variant", which union models reserve: ` +
+      `[makeModel] the schema declares a field named "variant", which union models reserve: ` +
         `\`model.variant\` is the instance typed as a union of its variants. Rename the field.`,
     );
   }
 
-  const ModelClass = createModelClass(schema, config, variantKeysOf(schema, discriminator));
   ModelClass.discriminator = discriminator;
 
   const proto = ModelClass.prototype as any;
@@ -1063,8 +1078,6 @@ export function makeUnionModel(
     },
     configurable: true,
   });
-
-  return ModelClass;
 }
 
 export type { AnnotationMapEntry };

@@ -9,7 +9,8 @@
  * `vp check` *is* the test.
  */
 import * as T from "typebox";
-import { makeUnionModel } from "../model/make-model";
+import { makeModel } from "../model/make-model";
+import { DiscriminatedUnion } from "../util/union-schema";
 import type {
   DiscriminatorKeys,
   DiscriminatorValue,
@@ -27,7 +28,7 @@ const Bank = T.Object({ method: T.Literal("bank"), holder: T.String(), routing: 
 
 const Electronic = T.Union([Card, Wire]);
 /** Two levels, with a bare object as a direct sibling of a union. */
-const Payment = T.Union([Electronic, Bank]);
+const Payment = DiscriminatedUnion("method", [Electronic, Bank]);
 type PaymentSchema = typeof Payment;
 
 /** Reached through the public config rather than the private mapped type it resolves to. */
@@ -41,9 +42,9 @@ assignableTo<Payload>({ method: "bank", holder: "Ada", routing: "021" });
 // @ts-expect-error `swift` belongs to the wire variant, not bank
 assignableTo<Payload>({ method: "bank", holder: "Ada", swift: "DEUTDEFF" });
 
-// --- makeUnionModel ---------------------------------------------------------
+// --- makeModel ---------------------------------------------------------
 
-const PaymentModel = makeUnionModel(Payment, "method", { keys: ["holder"] as const });
+const PaymentModel = makeModel(Payment, { keys: ["holder"] as const });
 const payment = new PaymentModel({ method: "card", holder: "Ada", cardNumber: "4242" });
 
 // A guard on a literal from either side of the nesting reveals that variant's fields.
@@ -56,8 +57,8 @@ payment.is("crypto");
 assignableTo<string>(payment.holder);
 assignableTo<{ holder: string }>(payment.buildParams());
 
-// @ts-expect-error `method` is a valid discriminator; `holder` is not a literal anywhere
-const _badDiscriminator = makeUnionModel(Payment, "nope");
+// @ts-expect-error the discriminator must be a field of every variant
+const _badDiscriminator = DiscriminatedUnion("nope", [Electronic, Bank]);
 
 // --- form types -------------------------------------------------------------
 

@@ -9,7 +9,8 @@
  */
 import * as T from "typebox";
 import type { LazyFetchOptions } from "../lazy/lazy";
-import { makeModel, makeUnionModel, type ModelVariant } from "./make-model";
+import { makeModel, type ModelVariant } from "./make-model";
+import { DiscriminatedUnion } from "../util/union-schema";
 
 const SurveySchema = T.Object({ id: T.String(), orgId: T.String(), title: T.String() });
 type Survey = { id: string; orgId: string; title: string };
@@ -213,12 +214,12 @@ void basePeek?.label;
 
 // --- a union model narrows through `variant` -----------------------------------
 
-const PaymentSchema = T.Union([
+const PaymentSchema = DiscriminatedUnion("kind", [
   T.Object({ kind: T.Literal("card"), id: T.Number(), cardNumber: T.String() }),
   T.Object({ kind: T.Literal("bank"), id: T.Number(), routing: T.String() }),
 ]);
 
-class Payment extends makeUnionModel(PaymentSchema, "kind", { keys: ["id"] }) {
+class Payment extends makeModel(PaymentSchema, { keys: ["id"] }) {
   get display(): string {
     return `#${this.id}`;
   }
@@ -290,11 +291,11 @@ void anyPayment;
 // only those. This holds even when nothing shared is patchable: that patch type must not collapse to
 // `{}`, which would accept anything.
 
-const LabeledSchema = T.Union([
+const LabeledSchema = DiscriminatedUnion("kind", [
   T.Object({ kind: T.Literal("card"), id: T.Number(), label: T.String(), digits: T.String() }),
   T.Object({ kind: T.Literal("bank"), id: T.Number(), label: T.String(), routing: T.String() }),
 ]);
-const Labeled = makeUnionModel(LabeledSchema, "kind", { keys: ["id"] as const });
+const Labeled = makeModel(LabeledSchema, { keys: ["id"] as const });
 declare const labeled: InstanceType<typeof Labeled>;
 
 // a shared field is patchable un-narrowed
@@ -310,11 +311,11 @@ labeled.updateData({ id: 2 });
 labeled.updateData({ nope: 1 });
 
 // Nothing shared is patchable: only the discriminator and the identity key are on every variant.
-const BareSchema = T.Union([
+const BareSchema = DiscriminatedUnion("kind", [
   T.Object({ kind: T.Literal("card"), id: T.Number(), digits: T.String() }),
   T.Object({ kind: T.Literal("bank"), id: T.Number(), routing: T.String() }),
 ]);
-const Bare = makeUnionModel(BareSchema, "kind", { keys: ["id"] as const });
+const Bare = makeModel(BareSchema, { keys: ["id"] as const });
 declare const bare: InstanceType<typeof Bare>;
 
 bare.updateData({});
@@ -362,7 +363,7 @@ void wideFromCase;
 
 // The same through a hand-written narrowing (`Model & Variant`) passed where a structural subset is
 // expected — with a shared non-discriminator field whose literal differs per variant.
-const BlockSchema = T.Union([
+const BlockSchema = DiscriminatedUnion("type", [
   T.Object({
     type: T.Literal("legal"),
     id: T.Number(),
@@ -376,10 +377,34 @@ const BlockSchema = T.Union([
     title: T.String(),
   }),
 ]);
-const Block = makeUnionModel(BlockSchema, "type", { keys: ["id"] as const });
+const Block = makeModel(BlockSchema, { keys: ["id"] as const });
 type BlockModel = InstanceType<typeof Block>;
 type LegalBlock = BlockModel & Extract<T.Static<typeof BlockSchema>, { type: "legal" }>;
 type PromptBlock = BlockModel & { title?: string };
 declare const legalBlock: LegalBlock;
 const promptBlock: PromptBlock = legalBlock;
 void promptBlock;
+
+// --- union schemas must carry their discriminator ----------------------------
+
+const PlainUnion = T.Union([
+  T.Object({ kind: T.Literal("a"), id: T.Number() }),
+  T.Object({ kind: T.Literal("b"), id: T.Number() }),
+]);
+// @ts-expect-error a plain union says nothing about which field tells its variants apart
+makeModel(PlainUnion);
+
+// Any schema of the annotated shape is accepted, whichever builder made it (handshake's included).
+type ForeignUnion = T.TUnion<
+  [T.TObject<{ kind: T.TLiteral<"a"> }>, T.TObject<{ kind: T.TLiteral<"b"> }>]
+> & {
+  discriminator: { propertyName: "kind" };
+};
+declare const foreign: ForeignUnion;
+const Foreign = makeModel(foreign);
+declare const foreignModel: InstanceType<typeof Foreign>;
+const _foreignKind: "a" | "b" = foreignModel.kind;
+void _foreignKind;
+foreignModel.is("a");
+// @ts-expect-error not a discriminator value
+foreignModel.is("c");

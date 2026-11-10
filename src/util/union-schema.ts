@@ -38,11 +38,11 @@ export type UnionVariants<T> =
  * throws. `Value.Check` and `Value.Clean` already recurse, so once the variant list is flat the
  * nesting makes no difference anywhere.
  */
-export function flattenVariants(schema: UnionMember): TObject[] {
+export function flattenVariants(schema: TSchema): TObject[] {
   const variants: TObject[] = [];
-  const visit = (member: UnionMember): void => {
+  const visit = (member: TSchema): void => {
     if (IsUnion(member)) for (const nested of member.anyOf) visit(nested);
-    else variants.push(member);
+    else variants.push(member as TObject);
   };
   visit(schema);
   return variants;
@@ -56,10 +56,10 @@ export function flattenVariants(schema: UnionMember): TObject[] {
  * Structural on purpose: a schema from any builder with this shape (handshake's
  * `TDiscriminatedUnion`, for one) is accepted as-is.
  */
-export type DiscriminatedUnionSchema<
+export type TDiscriminatedUnion<
   D extends string = string,
-  V extends UnionMember[] = UnionMember[],
-> = TUnion<V> & { discriminator: { propertyName: D } };
+  Types extends TSchema[] = TSchema[],
+> = TUnion<Types> & { discriminator: { propertyName: D } };
 
 /**
  * A variant list with nested unions spliced in place, as a tuple: the type-level counterpart of
@@ -92,7 +92,7 @@ type CommonLiteralKeys<S> = (S extends any ? (k: LiteralKeys<S>) => void : never
   : never;
 
 /**
- * Build a {@link DiscriminatedUnionSchema}: a union with the discriminator recorded on it. It's a
+ * Build a {@link TDiscriminatedUnion}: a union with the discriminator recorded on it. It's a
  * compile error unless `propertyName` is a `T.Literal` in every (leaf) variant. Variant groups
  * (`T.Union([...])`) are flattened, so the built schema's `anyOf` is always a flat list of objects.
  *
@@ -107,19 +107,20 @@ export function DiscriminatedUnion<
   propertyName: D,
   variants: [...V],
   options?: TSchemaOptions,
-): DiscriminatedUnionSchema<D, FlattenVariants<V>> {
+): TDiscriminatedUnion<D, FlattenVariants<V>> {
   return Union(variants.flatMap(flattenVariants), {
     ...options,
     discriminator: { propertyName },
-  }) as unknown as DiscriminatedUnionSchema<D, FlattenVariants<V>>;
+  }) as unknown as TDiscriminatedUnion<D, FlattenVariants<V>>;
 }
 
-/** The discriminator a schema is annotated with, or `undefined` for a plain union or an object. */
-export function discriminatorOf(schema: unknown): string | undefined {
-  if (!IsUnion(schema)) return undefined;
-  const name = (schema as { discriminator?: { propertyName?: unknown } }).discriminator
-    ?.propertyName;
-  return typeof name === "string" ? name : undefined;
+/** True when `schema` is a union carrying a `discriminator.propertyName`. */
+export function IsDiscriminatedUnion(schema: unknown): schema is TDiscriminatedUnion {
+  return (
+    IsUnion(schema) &&
+    typeof (schema as { discriminator?: { propertyName?: unknown } }).discriminator
+      ?.propertyName === "string"
+  );
 }
 
 /**

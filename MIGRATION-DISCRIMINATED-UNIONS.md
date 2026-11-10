@@ -161,7 +161,7 @@ Both now emit exactly the keys of the variant the discriminator names.
 
 - **`form.activeVariant`** (the selected variant's `TObject`, or `undefined`) can replace hand-written
   `form.fields.method.value === "card"` checks outside JSX, e.g. to show per-variant hints.
-- **`findVariant(flattenVariants(schema), name, value)`** and **`discriminatorOf(schema)`** in `/util` replace custom code
+- **`findVariant(flattenVariants(schema), name, value)`** and **`IsDiscriminatedUnion(schema)`** in `/util` replace custom code
   that walks `anyOf` to find a variant by its tag.
 - **One schema, three consumers.** If the project defines the same union separately for a handshake
   contract, a model and a form, consolidate on the contract's `DiscriminatedUnion` export.

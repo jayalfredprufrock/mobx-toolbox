@@ -4,7 +4,7 @@ import type { UnionVariants as Flat } from "../util/union-schema";
 import type { FormModel } from "./form.model";
 
 /** A single object, or a union of objects built with `DiscriminatedUnion`. */
-// Spelled out over a plain `TUnion` rather than as `DiscriminatedUnionSchema`: that one's recursive
+// Spelled out over a plain `TUnion` rather than as `TDiscriminatedUnion<string, UnionMember[]>`: that one's recursive
 // member type makes every generic `FormModel<T>` member expensive to resolve. Same shape either way.
 export type FormSchema = TObject | (TUnion & { discriminator: { propertyName: string } });
 

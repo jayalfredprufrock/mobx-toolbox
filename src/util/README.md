@@ -221,7 +221,7 @@ nesting makes no difference anywhere.
 
 ---
 
-## `DiscriminatedUnion` / `DiscriminatedUnionSchema`
+## `DiscriminatedUnion` / `TDiscriminatedUnion` / `IsDiscriminatedUnion`
 
 `T.Union` plus OpenAPI's `discriminator: { propertyName }` annotation, with the name kept in the
 type. `T.Union`'s own options don't reach its return type, so a hand-written annotation is invisible
@@ -234,10 +234,10 @@ const Payment = DiscriminatedUnion("kind", [Card, Bank]);
 const _bad = DiscriminatedUnion("nope", [Card, Bank]); // ✗ not a `T.Literal` in every variant
 ```
 
-`DiscriminatedUnionSchema<D>` is the shape, and it is structural: a schema from any builder that
+`TDiscriminatedUnion<D>` is the shape, and it is structural: a schema from any builder that
 produces it (handshake's `TDiscriminatedUnion`, for one) is accepted without importing anything from
 here. The tag must be a `T.Literal` in every leaf variant (a compile error otherwise). Variant groups
 (`T.Union([...])`) are flattened, so the built `anyOf` is always flat.
-`discriminatorOf(schema)` reads the name back at runtime, and `findVariant(variants, name, value)`
+`IsDiscriminatedUnion(schema)` recognises one at runtime (then read `schema.discriminator.propertyName`), and `findVariant(variants, name, value)`
 returns the variant whose tag literal equals `value` — pass it `flattenVariants(schema)`, worked out
 once. It's how `makeModel` and `FormModel` find the active variant.

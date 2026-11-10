@@ -7,10 +7,11 @@ import {
   type AnnotationMapEntry,
 } from "mobx";
 import {
-  discriminatorOf,
+  IsDiscriminatedUnion,
   findVariant,
   flattenVariants,
-  type DiscriminatedUnionSchema,
+  type TDiscriminatedUnion,
+  type UnionMember,
   type UnionSchema,
 } from "../util/union-schema";
 import { WeakRefMap } from "../util/weak-ref-map";
@@ -875,11 +876,11 @@ export function makeModel<S extends T.TObject, K extends KeySpec<S>, Cfg extends
   schema: S,
   config: Cfg & { keys: K } & ParamsMustBeKeys<S, K, Cfg>,
 ): ModelConstructor<S, K, Cfg>;
-export function makeModel<S extends DiscriminatedUnionSchema>(
+export function makeModel<S extends TDiscriminatedUnion<string, UnionMember[]>>(
   schema: S,
 ): UnionModelConstructor<S, DiscriminatorOf<S>, false, {}>;
 export function makeModel<
-  S extends DiscriminatedUnionSchema,
+  S extends TDiscriminatedUnion<string, UnionMember[]>,
   K extends KeySpec<S>,
   Cfg extends ModelConfig<S, K>,
 >(
@@ -891,13 +892,13 @@ export function makeModel<
 export function makeModel(schema: ModelSchema, config?: ModelConfig<any, any>): any {
   if (!T.IsUnion(schema)) return createModelClass(schema, config);
 
-  const discriminator = discriminatorOf(schema);
-  if (discriminator === undefined) {
+  if (!IsDiscriminatedUnion(schema)) {
     throw new Error(
       `[makeModel] a union schema needs a discriminator, so the model can tell its variants apart. ` +
         `Build it with \`DiscriminatedUnion("kind", [...])\` rather than \`T.Union([...])\`.`,
     );
   }
+  const discriminator = schema.discriminator.propertyName;
   const ModelClass = createModelClass(schema, config, flattenVariants(schema));
   addUnionMembers(ModelClass, schema, discriminator);
   return ModelClass;
@@ -909,8 +910,8 @@ export function makeModel(schema: ModelSchema, config?: ModelConfig<any, any>): 
 
 // The discriminator a schema is annotated with, as a key of its resource. `never` when the name isn't
 // shared by every variant, which leaves `is`/`as` uncallable rather than wrongly typed.
-type DiscriminatorOf<S extends DiscriminatedUnionSchema> = S["discriminator"]["propertyName"] &
-  keyof Resource<S>;
+type DiscriminatorOf<S extends TDiscriminatedUnion<string, UnionMember[]>> =
+  S["discriminator"]["propertyName"] & keyof Resource<S>;
 
 // Properties common to every variant (`keyof` a union resolves to shared keys).
 type SharedFields<R> = Pick<R, keyof R>;

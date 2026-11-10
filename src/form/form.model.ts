@@ -4,7 +4,7 @@ import { makeAutoObservable } from "mobx";
 import type { FormConfig, FormFields, FormSchema, RawFormFields, StaticOrAny } from "./form.types";
 import { FormFieldModel } from "./form-field.model";
 import {
-  discriminatorOf,
+  IsDiscriminatedUnion,
   flattenVariants,
   findVariant,
   type UnionSchema,
@@ -73,14 +73,14 @@ export class FormModel<T extends FormSchema = TObject, V = StaticOrAny<T>> {
 
     const root = schema as TSchema;
     if (IsUnion(root)) {
-      this.discriminator = discriminatorOf(root);
-      if (this.discriminator === undefined) {
+      if (!IsDiscriminatedUnion(root)) {
         throw new Error(
           `[FormModel] a union schema needs a discriminator, so the form can tell which variant is ` +
             `selected. Build it with \`DiscriminatedUnion("kind", [...])\` rather than \`T.Union([...])\`.`,
         );
       }
-      this.variants = flattenVariants(root as UnionSchema);
+      this.discriminator = root.discriminator.propertyName;
+      this.variants = flattenVariants(root);
     }
 
     makeAutoObservable<this, "variants">(this, {

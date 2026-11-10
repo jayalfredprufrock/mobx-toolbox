@@ -8,8 +8,8 @@ import {
 } from "mobx";
 import {
   discriminatorOf,
+  findVariant,
   flattenVariants,
-  variantsByTag,
   type DiscriminatedUnionSchema,
   type UnionSchema,
 } from "../util/union-schema";
@@ -498,7 +498,7 @@ export type ModelConstructor<S extends ModelSchema, K, Cfg> = {
 function createModelClass(
   schema: ModelSchema,
   config?: ModelConfig<any, any>,
-  variantKeys?: Map<unknown, readonly string[]>,
+  variants?: readonly T.TObject[],
 ): any {
   // `keys: false` opts out of identity, and no config at all means the same thing. `keys: []` is a
   // different declaration: a resource with no identifying fields is a singleton, so it maps to one
@@ -724,12 +724,12 @@ function createModelClass(
     toJSON(): any {
       const data = this as any;
       // For a union, emit only the keys of the variant the discriminator names — a stale field left
-      // over from a previous variant is dropped. Picked by lookup rather than matched structurally:
+      // over from a previous variant is dropped. Found by its tag rather than matched structurally:
       // structural matching costs a full union check per call, and gives up (returning everything)
       // when the record satisfies no variant, which is exactly when a stale field is likeliest.
-      const names =
-        (variantKeys && variantKeys.get(data[(this.constructor as any).discriminator])) ??
-        propertyNames;
+      const discriminator = (this.constructor as { discriminator?: string }).discriminator;
+      const variant = variants && findVariant(variants, discriminator!, data[discriminator!]);
+      const names = variant ? Object.keys(variant.properties) : propertyNames;
       const snapshot = names.reduce(
         (obj, key) => {
           if (data[key] !== undefined) obj[key] = toJS(data[key]);
@@ -898,7 +898,7 @@ export function makeModel(schema: ModelSchema, config?: ModelConfig<any, any>): 
         `Build it with \`DiscriminatedUnion("kind", [...])\` rather than \`T.Union([...])\`.`,
     );
   }
-  const ModelClass = createModelClass(schema, config, variantKeysOf(schema, discriminator));
+  const ModelClass = createModelClass(schema, config, flattenVariants(schema));
   addUnionMembers(ModelClass, schema, discriminator);
   return ModelClass;
 }
@@ -1028,19 +1028,6 @@ export type ModelVariant<
   C extends AnyUnionModelClass,
   V extends InstanceType<C>["variant"][C["discriminator"] & keyof InstanceType<C>["variant"]],
 > = Extract<InstanceType<C>["variant"], Record<C["discriminator"], V>>;
-
-// Each discriminator value mapped to the keys of the variant it names, so `toJSON` picks a variant
-// by lookup. Built once per class.
-function variantKeysOf(
-  schema: UnionSchema,
-  discriminator: string,
-): Map<unknown, readonly string[]> {
-  const keys = new Map<unknown, readonly string[]>();
-  for (const [tag, variant] of variantsByTag(schema, discriminator)) {
-    keys.set(tag, Object.keys(variant.properties));
-  }
-  return keys;
-}
 
 // Adds the union members (`discriminator`, `is`/`as`, `variant`) to a class built from a
 // discriminated union schema.

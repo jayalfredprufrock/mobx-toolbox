@@ -6,7 +6,7 @@ import { FormFieldModel } from "./form-field.model";
 import {
   discriminatorOf,
   flattenVariants,
-  variantsByTag,
+  findVariant,
   type UnionSchema,
 } from "../util/union-schema";
 
@@ -53,7 +53,7 @@ export class FormModel<T extends FormSchema = TObject, V = StaticOrAny<T>> {
   readonly validator: Validator<T, V>;
   /** The union's discriminator field, or `undefined` for an object schema. */
   readonly discriminator: string | undefined;
-  private readonly variants: Map<unknown, TObject> | undefined;
+  private readonly variants: readonly TObject[] | undefined;
 
   // TODO: maybe refactor into a "state" property?
   submitting = false;
@@ -80,7 +80,7 @@ export class FormModel<T extends FormSchema = TObject, V = StaticOrAny<T>> {
             `selected. Build it with \`DiscriminatedUnion("kind", [...])\` rather than \`T.Union([...])\`.`,
         );
       }
-      this.variants = variantsByTag(root as UnionSchema, this.discriminator);
+      this.variants = flattenVariants(root as UnionSchema);
     }
 
     makeAutoObservable<this, "variants">(this, {
@@ -130,7 +130,11 @@ export class FormModel<T extends FormSchema = TObject, V = StaticOrAny<T>> {
   get activeVariant(): TObject | undefined {
     if (!this.variants) return undefined;
     const fields = this.rawFields as Record<string, FormFieldModel<TSchema>>;
-    return this.variants.get(fields[this.discriminator!]?.submitValue);
+    return findVariant(
+      this.variants,
+      this.discriminator!,
+      fields[this.discriminator!]?.submitValue,
+    );
   }
 
   get valid(): boolean {

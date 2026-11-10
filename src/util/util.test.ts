@@ -2,7 +2,7 @@ import { describe, expect, test } from "vite-plus/test";
 import { autorun, runInAction } from "mobx";
 import * as T from "typebox";
 import { mutable } from "./mutable";
-import { DiscriminatedUnion } from "./union-schema";
+import { DiscriminatedUnion, findVariant } from "./union-schema";
 import { WeakRefMap } from "./weak-ref-map";
 
 // ---------------------------------------------------------------------------
@@ -155,5 +155,21 @@ describe("DiscriminatedUnion", () => {
     const schema = DiscriminatedUnion("kind", [T.Union([A, T.Union([B])]), C]);
     expect(schema.anyOf).toEqual([A, B, C]);
     expect(schema.discriminator).toEqual({ propertyName: "kind" });
+  });
+});
+
+describe("findVariant", () => {
+  const Cat = T.Object({ kind: T.Literal("cat"), meow: T.Boolean() });
+  const Dog = T.Object({ kind: T.Literal("dog"), bark: T.Number() });
+  const Loose = T.Object({ kind: T.String() });
+
+  test("returns the variant whose tag literal matches", () => {
+    expect(findVariant([Cat, Dog], "kind", "dog")).toBe(Dog);
+  });
+
+  test("returns undefined for an unknown or missing value", () => {
+    expect(findVariant([Cat, Dog], "kind", "fish")).toBeUndefined();
+    // A non-literal tag has no `const`, so a missing value mustn't match it by `undefined === undefined`.
+    expect(findVariant([Loose, Cat], "kind", undefined)).toBeUndefined();
   });
 });

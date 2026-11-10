@@ -238,5 +238,6 @@ const _bad = DiscriminatedUnion("nope", [Card, Bank]); // ✗ not a `T.Literal` 
 produces it (handshake's `TDiscriminatedUnion`, for one) is accepted without importing anything from
 here. The tag must be a `T.Literal` in every leaf variant (a compile error otherwise). Variant groups
 (`T.Union([...])`) are flattened, so the built `anyOf` is always flat.
-`discriminatorOf(schema)` reads the name back at runtime, and `variantsByTag(schema, name)` maps each
-discriminator value to its variant — the lookup `makeModel` and `FormModel` use to find the active one.
+`discriminatorOf(schema)` reads the name back at runtime, and `findVariant(variants, name, value)`
+returns the variant whose tag literal equals `value` — pass it `flattenVariants(schema)`, worked out
+once. It's how `makeModel` and `FormModel` find the active variant.

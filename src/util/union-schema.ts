@@ -1,4 +1,5 @@
 import {
+  IsLiteral,
   IsUnion,
   Union,
   type Static,
@@ -84,4 +85,22 @@ export function discriminatorOf(schema: unknown): string | undefined {
   const name = (schema as { discriminator?: { propertyName?: unknown } }).discriminator
     ?.propertyName;
   return typeof name === "string" ? name : undefined;
+}
+
+/**
+ * Each value the discriminator can take, mapped to the variant it names — the lookup that lets a
+ * consumer pick the active variant from one field instead of matching the whole record against the
+ * union. Nested unions are flattened. A variant whose discriminator isn't a literal (or a union of
+ * literals) has no entry; if two variants claim a value, the later one wins.
+ */
+export function variantsByTag(schema: UnionSchema, discriminator: string): Map<unknown, TObject> {
+  const table = new Map<unknown, TObject>();
+  for (const variant of flattenVariants(schema)) {
+    const tag = variant.properties[discriminator];
+    const literals = tag && IsUnion(tag) ? tag.anyOf : [tag];
+    for (const literal of literals) {
+      if (literal && IsLiteral(literal)) table.set(literal.const, variant);
+    }
+  }
+  return table;
 }

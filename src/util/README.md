@@ -237,4 +237,5 @@ const _bad = DiscriminatedUnion("nope", [Card, Bank]); // ✗ not a field of eve
 `DiscriminatedUnionSchema<D>` is the shape, and it is structural: a schema from any builder that
 produces it (handshake's `TDiscriminatedUnion`, for one) is accepted without importing anything from
 here. Only the root union needs the annotation; nested groups can stay plain `T.Union`s.
-`discriminatorOf(schema)` reads the name back at runtime.
+`discriminatorOf(schema)` reads the name back at runtime, and `variantsByTag(schema, name)` maps each
+discriminator value to its variant — the lookup `makeModel` and `FormModel` use to find the active one.

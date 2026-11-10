@@ -3,7 +3,10 @@ import type { FormFieldModel } from "./form-field.model";
 import type { UnionVariants as Flat } from "../util/union-schema";
 import type { FormModel } from "./form.model";
 
-export type FormSchema = TObject | TUnion;
+/** A single object, or a union of objects built with `DiscriminatedUnion`. */
+// Spelled out over a plain `TUnion` rather than as `DiscriminatedUnionSchema`: that one's recursive
+// member type makes every generic `FormModel<T>` member expensive to resolve. Same shape either way.
+export type FormSchema = TObject | (TUnion & { discriminator: { propertyName: string } });
 
 /** `Static<T>`, except `any` stays `any` — so `FormModel<any>` still accepts every form. */
 export type StaticOrAny<T extends TSchema> = 0 extends 1 & T ? any : Static<T>;
@@ -30,6 +33,11 @@ export interface FormFieldConfig<T extends TSchema = TSchema, V = StaticOrAny<T>
   name: string;
   schema: T;
   initialValue?: V;
+  /**
+   * For a field of a discriminated-union form: the active variant's schema for this field, or `null`
+   * when the active variant doesn't have it. Read reactively. Set by `FormModel`.
+   */
+  variantSchema?: () => TSchema | null;
 }
 
 type UnionToIntersection<U> = (U extends unknown ? (k: U) => void : never) extends (
@@ -102,16 +110,6 @@ type FormInitialValues<T extends FormSchema, Val = StaticOrAny<T>> =
       : never;
 
 // --- discriminated-union variant narrowing (used by <FormWhen>) ---
-
-/** Keys that are typed as a literal in at least one variant — valid discriminators. */
-export type DiscriminatorKeys<T extends TUnion> =
-  T extends TUnion<infer V> ? LiteralKeys<Flat<V[number]>> : never;
-
-type LiteralKeys<O> = O extends TObject
-  ? {
-      [K in keyof O["properties"]]: O["properties"][K] extends TLiteral ? K : never;
-    }[keyof O["properties"]]
-  : never;
 
 /** The literal values a given discriminator key can take across all variants. */
 export type DiscriminatorValue<T extends TUnion, D extends PropertyKey> =

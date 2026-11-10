@@ -9,6 +9,7 @@ import {
 import {
   discriminatorOf,
   flattenVariants,
+  variantsByTag,
   type DiscriminatedUnionSchema,
   type UnionSchema,
 } from "../util/union-schema";
@@ -1028,25 +1029,17 @@ export type ModelVariant<
   V extends InstanceType<C>["variant"][C["discriminator"] & keyof InstanceType<C>["variant"]],
 > = Extract<InstanceType<C>["variant"], Record<C["discriminator"], V>>;
 
-/**
- * Each discriminator value mapped to the keys of the variant it names, so `toJSON` picks a variant
- * by lookup. Built once per class.
- */
+// Each discriminator value mapped to the keys of the variant it names, so `toJSON` picks a variant
+// by lookup. Built once per class.
 function variantKeysOf(
   schema: UnionSchema,
   discriminator: string,
 ): Map<unknown, readonly string[]> {
-  const table = new Map<unknown, readonly string[]>();
-  for (const variant of flattenVariants(schema)) {
-    const tag = variant.properties[discriminator];
-    const literals = tag && T.IsUnion(tag) ? tag.anyOf : [tag];
-    for (const literal of literals) {
-      if (literal && T.IsLiteral(literal)) {
-        table.set(literal.const, Object.keys(variant.properties));
-      }
-    }
+  const keys = new Map<unknown, readonly string[]>();
+  for (const [tag, variant] of variantsByTag(schema, discriminator)) {
+    keys.set(tag, Object.keys(variant.properties));
   }
-  return table;
+  return keys;
 }
 
 // Adds the union members (`discriminator`, `is`/`as`, `variant`) to a class built from a

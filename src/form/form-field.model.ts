@@ -8,6 +8,9 @@ import type { FormFieldConfig, StaticOrAny } from "./form.types";
 // TODO: should also allow for "id", defaulting to name
 // TODO: probably shouldn't assume value is of correct type, maybe unknown?
 
+// Validators for variant schemas, compiled on first use and shared by every form over the same schema.
+const variantValidators = new WeakMap<T.TSchema, Validator<T.TSchema, unknown>>();
+
 export class FormFieldModel<T extends T.TSchema = T.TSchema, V = StaticOrAny<T>> {
   readonly name: string;
   readonly schema: T;
@@ -30,10 +33,32 @@ export class FormFieldModel<T extends T.TSchema = T.TSchema, V = StaticOrAny<T>>
    */
   error: string | undefined = undefined;
 
+  /**
+   * The schema this field is judged against right now. For a field of a discriminated-union form,
+   * that's the active variant's own schema for it, so requiredness and constraints follow whichever
+   * variant is selected; `null` when the active variant has no such field. Otherwise it's `schema`.
+   */
+  get activeSchema(): T.TSchema | null {
+    return this.config.variantSchema ? this.config.variantSchema() : this.schema;
+  }
+
+  private get activeValidator(): Validator<T.TSchema, unknown> | null {
+    const schema = this.activeSchema;
+    if (schema === null) return null;
+    if (schema === this.schema) return this.validator as Validator<T.TSchema, unknown>;
+    let validator = variantValidators.get(schema);
+    if (!validator) variantValidators.set(schema, (validator = Schema.Compile(schema)));
+    return validator;
+  }
+
   get valid(): boolean {
+    const schema = this.activeSchema;
+    // Not a field of the active variant: it isn't submitted, so nothing about it — not even a stale
+    // manual error — can be wrong.
+    if (schema === null) return true;
     if (this.error) return false;
-    if (this.submitValue === undefined && T.IsOptional(this.schema)) return true;
-    return this.validator.Check(this.submitValue);
+    if (this.submitValue === undefined && T.IsOptional(schema)) return true;
+    return this.activeValidator!.Check(this.submitValue);
   }
 
   /** The value differs from `initialValue`. Value-based: undoing an edit makes the field clean again. */
@@ -69,27 +94,28 @@ export class FormFieldModel<T extends T.TSchema = T.TSchema, V = StaticOrAny<T>>
     // user just made, and a field like a file picker may never be "touched" at all.
     if (this.error) return this.error;
     if (this.valid || !this.touched) return "";
+    const schema = this.activeSchema as any;
     // TODO: revisit this, now that .Errors returns success/fail
     const value = this.submitValue;
-    const [_, errors] = this.validator.Errors(value);
+    const [_, errors] = this.activeValidator!.Errors(value);
     const error = errors.at(0);
 
     if (!error) return "";
 
-    if (!T.IsOptional(this.schema) && (value === undefined || value === "")) {
+    if (!T.IsOptional(schema) && (value === undefined || value === "")) {
       return "This field is required.";
     }
 
-    if ("errorMessage" in this.schema) {
-      if (typeof this.schema.errorMessage === "string") {
-        return this.schema.errorMessage;
-      } else if (typeof this.schema.errorMessage === "function") {
-        return this.schema.errorMessage(value, this.schema);
+    if ("errorMessage" in schema) {
+      if (typeof schema.errorMessage === "string") {
+        return schema.errorMessage;
+      } else if (typeof schema.errorMessage === "function") {
+        return schema.errorMessage(value, schema);
       }
     }
 
-    if (T.IsString(this.schema) && "format" in this.schema) {
-      return `Please enter a valid ${String(this.schema.format)}`;
+    if (T.IsString(schema) && "format" in schema) {
+      return `Please enter a valid ${String(schema.format)}`;
     }
 
     return error.message;

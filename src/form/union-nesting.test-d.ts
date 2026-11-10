@@ -11,8 +11,9 @@
 import * as T from "typebox";
 import { makeModel } from "../model/make-model";
 import { DiscriminatedUnion } from "../util/union-schema";
+import type { FormWhenProps } from "./components/form-when";
+import type { FormModel } from "./form.model";
 import type {
-  DiscriminatorKeys,
   DiscriminatorValue,
   FormConfig,
   FormFields,
@@ -80,10 +81,6 @@ assignableTo<InitialValues>({ wallet: "0x" });
 
 // --- FormWhen narrowing -----------------------------------------------------
 
-assignableTo<DiscriminatorKeys<PaymentSchema>>("method");
-// @ts-expect-error not a literal on any variant
-assignableTo<DiscriminatorKeys<PaymentSchema>>("holder");
-
 // Literals from both the nested union and the bare sibling.
 assignableTo<DiscriminatorValue<PaymentSchema, "method">>("card");
 assignableTo<DiscriminatorValue<PaymentSchema, "method">>("wire");
@@ -95,3 +92,22 @@ assignableTo<DiscriminatorValue<PaymentSchema, "method">>("crypto");
 type Wired = MatchVariant<PaymentSchema, "method", "wire">;
 assignableTo<keyof Wired["properties"]>("swift");
 assignableTo<T.Static<Wired>>({ method: "wire", holder: "Ada", swift: "DEUTDEFF" });
+
+// FormWhen reads the discriminator off the schema, so only the value is given — and checked.
+declare const paymentForm: FormModel<PaymentSchema>;
+assignableTo<FormWhenProps<PaymentSchema, "wire">>({
+  form: paymentForm,
+  value: "wire",
+  children: (fields) => {
+    assignableTo<string | undefined>(fields.swift.value);
+    // @ts-expect-error `routing` belongs to the bank variant
+    void fields.routing;
+    return null;
+  },
+});
+assignableTo<FormWhenProps<PaymentSchema, "crypto">>({
+  form: paymentForm,
+  // @ts-expect-error no such variant
+  value: "crypto",
+  children: () => null,
+});

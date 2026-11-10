@@ -238,14 +238,14 @@ For a union form, only the active variant's fields count. If you switch variants
 
 ## Discriminated unions
 
-`FormModel` accepts a `T.Union` of objects as its root schema, not just a single `T.Object`. The fields of every variant are merged into one field map, and any field shared across variants (most importantly the discriminator) is unioned — so the discriminator field validates against, and a `<select>` can offer, every variant's literal.
+`FormModel` accepts a union of objects as its root schema, not just a single `T.Object`, built with `DiscriminatedUnion(propertyName, variants)` (from `/util`) so the schema records which field selects the variant. A plain `T.Union` is refused. The fields of every variant are merged into one field map, and any field shared across variants (most importantly the discriminator) is unioned — so the discriminator field validates against, and a `<select>` can offer, every variant's literal.
 
 For a union, `form.fields` exposes only the **shared** fields (those present in every variant, including the discriminator); variant-specific fields are reached through `<FormWhen>` (typed, narrowed) or `form.rawFields` (the lower-level escape hatch holding every field across all variants). Both views point at the same underlying field instances — prefer `<FormWhen>`; reach for `rawFields` only for imperative/non-React access.
 
-Because a union form can't be validated field-by-field (the inactive variant's required fields would always fail), `form.valid` validates the **assembled object** against the full union schema, and `form.toJSON()` runs `Value.Clean` so the submitted payload matches exactly one variant — stray values left over from a previously-selected variant are dropped. This guarantees `handleSubmit` receives a valid `Static<T>`.
+The discriminator field's value picks the **active variant** (`form.activeVariant`), and each field is judged against that variant's own schema for it — so a field required by one variant and optional in another is required exactly when its variant is selected, and its error message says so. A field the active variant doesn't have is never invalid, even with a stale manual error on it. `form.toJSON()` emits only the active variant's fields, so values left over from a previously-selected variant are dropped. `form.valid` also checks the assembled object against the whole union, which keeps the form invalid until a variant is selected; together these guarantee `handleSubmit` receives a valid `Static<T>`.
 
 ```ts
-const PaymentSchema = T.Union([
+const PaymentSchema = DiscriminatedUnion("method", [
   T.Object({
     method: T.Literal("card"),
     holder: T.String({ minLength: 1 }),
@@ -265,15 +265,15 @@ const form = useForm(PaymentSchema, {
 });
 ```
 
-Variants can be grouped and the groups composed to any depth — `T.Union([Electronic, Manual])`,
-where each of those is itself a union. A union of unions is treated as the one flat union of leaf
+Variants can be grouped and the groups composed to any depth — `DiscriminatedUnion("method", [Electronic, Manual])`,
+where each of those is a plain `T.Union`; only the root needs the annotation. A union of unions is treated as the one flat union of leaf
 variants that `T.Static` already reads it as, so field merging, `fields`/`rawFields`, `<FormWhen>`
-narrowing and `toJSON` cleaning all behave identically. The discriminator has to be shared by every
+narrowing and `toJSON` all behave identically. The discriminator has to be shared by every
 leaf variant, not just by every top-level member.
 
 ### `<FormWhen>`
 
-Render variant-specific fields without manual conditionals or casts. `FormWhen` renders its children only while the discriminator `field` holds `value`, passing the **fields narrowed to that variant** (`fields.cardNumber` exists in the `card` block; `fields.routing` does not). The form itself is already in scope, so the render prop only hands you the fields. Stack one per variant:
+Render variant-specific fields without manual conditionals or casts. `FormWhen` renders its children only while the form's discriminator field holds `value`, passing the **fields narrowed to that variant** (`fields.cardNumber` exists in the `card` block; `fields.routing` does not). The form itself is already in scope, so the render prop only hands you the fields. Stack one per variant:
 
 ```tsx
 <MobxForm form={form}>
@@ -284,17 +284,17 @@ Render variant-specific fields without manual conditionals or casts. `FormWhen` 
     <option value="bank">Bank</option>
   </select>
 
-  <FormWhen form={form} field="method" value="card">
+  <FormWhen form={form} value="card">
     {(fields) => <input {...fields.cardNumber.props()} />}
   </FormWhen>
 
-  <FormWhen form={form} field="method" value="bank">
+  <FormWhen form={form} value="bank">
     {(fields) => <input {...fields.routing.props()} />}
   </FormWhen>
 </MobxForm>
 ```
 
-`field` is constrained to the union's literal-typed (discriminator) keys and `value` to that key's literals, so typos are compile errors. The form must be passed as a prop (not read from context) so the union type is preserved for narrowing.
+The discriminator comes from the schema, so only `value` is given, and it is constrained to the discriminator's literals — typos are compile errors. The form must be passed as a prop (not read from context) so the union type is preserved for narrowing.
 
 ## React helpers
 

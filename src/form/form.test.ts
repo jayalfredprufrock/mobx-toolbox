@@ -4,6 +4,7 @@ import { autorun } from "mobx";
 import { FormFieldModel } from "./form-field.model";
 import { FormModel } from "./form.model";
 import type { FormConfig } from "./form.types";
+import { DiscriminatedUnion } from "../util/union-schema";
 
 // ---------------------------------------------------------------------------
 // FormFieldModel
@@ -370,7 +371,7 @@ describe("FormModel", () => {
 // FormModel — discriminated unions
 // ---------------------------------------------------------------------------
 
-const PaymentSchema = T.Union([
+const PaymentSchema = DiscriminatedUnion("method", [
   T.Object({
     method: T.Literal("card"),
     holder: T.String({ minLength: 1 }),
@@ -465,7 +466,7 @@ describe("FormModel (discriminated union)", () => {
       holder: T.String({ minLength: 1 }),
       routing: T.String({ minLength: 4 }),
     });
-    const Nested = T.Union([T.Union([Card]), T.Union([Bank])]);
+    const Nested = DiscriminatedUnion("method", [T.Union([Card]), T.Union([Bank])]);
 
     const form = new FormModel(Nested, {
       handleSubmit: vi.fn().mockResolvedValue(undefined),
@@ -969,5 +970,63 @@ describe("passwords", () => {
     });
     form.fields.password.setValue("hunter2 ");
     expect(form.fields.password.dirty).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// fields judged against the active variant
+// ---------------------------------------------------------------------------
+
+describe("FormModel (active variant)", () => {
+  // `reference` is required (and longer) on a wire, optional on a cheque.
+  const TransferSchema = DiscriminatedUnion("method", [
+    T.Object({ method: T.Literal("wire"), reference: T.String({ minLength: 6 }) }),
+    T.Object({ method: T.Literal("cheque"), reference: T.Optional(T.String()) }),
+  ]);
+  const makeForm = (initialValues?: Partial<T.Static<typeof TransferSchema>>) =>
+    new FormModel(TransferSchema, {
+      handleSubmit: vi.fn().mockResolvedValue(undefined),
+      initialValues,
+    });
+
+  test("a field's requiredness follows the selected variant", () => {
+    const form = makeForm({ method: "cheque" });
+    const reference = form.fields.reference;
+    reference.setTouched(true);
+    expect(reference.valid).toBe(true);
+    expect(form.valid).toBe(true);
+
+    form.fields.method.setValue("wire");
+    expect(reference.valid).toBe(false);
+    expect(reference.errorMessage).toBe("This field is required.");
+    expect(form.valid).toBe(false);
+  });
+
+  test("a field's constraints follow the selected variant", () => {
+    const form = makeForm({ method: "wire", reference: "abc" });
+    expect(form.fields.reference.valid).toBe(false);
+
+    form.fields.method.setValue("cheque");
+    expect(form.fields.reference.valid).toBe(true);
+  });
+
+  test("activeVariant tracks the discriminator field", () => {
+    const form = makeForm();
+    expect(form.activeVariant).toBeUndefined();
+    form.fields.method.setValue("wire");
+    expect(form.activeVariant).toBe(TransferSchema.anyOf[0]);
+  });
+
+  test("with no variant selected the form is invalid, and keeps every field's value", () => {
+    const form = makeForm({ reference: "abcdef" } as any);
+    expect(form.valid).toBe(false);
+    expect(form.toJSON()).toEqual({ method: undefined, reference: "abcdef" });
+  });
+
+  test("a plain union is refused when the form is made", () => {
+    const Plain = T.Union([T.Object({ kind: T.Literal("a") }), T.Object({ kind: T.Literal("b") })]);
+    expect(() => new FormModel(Plain as any, { handleSubmit: vi.fn() })).toThrow(
+      /DiscriminatedUnion/,
+    );
   });
 });

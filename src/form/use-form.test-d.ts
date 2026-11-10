@@ -8,6 +8,7 @@
 import * as T from "typebox";
 import type { FormModel } from "./form.model";
 import { useForm } from "./use-form";
+import { DiscriminatedUnion } from "../util/union-schema";
 
 type Equal<A, B> =
   (<X>() => X extends A ? 1 : 2) extends <X>() => X extends B ? 1 : 2 ? true : false;
@@ -18,7 +19,7 @@ const Login = T.Object({
   remember: T.Optional(T.Boolean()),
 });
 
-const Payment = T.Union([
+const Payment = DiscriminatedUnion("method", [
   T.Object({ method: T.Literal("card"), cardNumber: T.String() }),
   T.Object({ method: T.Literal("wire"), swift: T.String() }),
 ]);

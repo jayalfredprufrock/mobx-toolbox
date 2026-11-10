@@ -1,18 +1,22 @@
-import * as Value from "typebox/value";
 import Schema, { type Validator } from "typebox/schema";
 import { IsUnion, Union, type TObject, type TSchema } from "typebox";
 import { makeAutoObservable } from "mobx";
 import type { FormConfig, FormFields, FormSchema, RawFormFields, StaticOrAny } from "./form.types";
 import { FormFieldModel } from "./form-field.model";
-import { flattenVariants, type UnionSchema } from "../util/union-schema";
+import {
+  discriminatorOf,
+  flattenVariants,
+  variantsByTag,
+  type UnionSchema,
+} from "../util/union-schema";
 
 // Flatten a schema's fields into a single property map. For a discriminated
 // union this merges the properties of every variant — nested unions included, as
 // `flattenVariants` collapses them — unioning the schemas of any field that appears
 // in more than one variant (which naturally turns the discriminator into a union of
 // its literals).
-function resolveProperties(schema: FormSchema): Record<string, TSchema> {
-  if (!IsUnion(schema)) return schema.properties;
+function resolveProperties(schema: TSchema): Record<string, TSchema> {
+  if (!IsUnion(schema)) return (schema as TObject).properties;
 
   const groups: Record<string, TSchema[]> = {};
   for (const variant of flattenVariants(schema as UnionSchema)) {
@@ -39,20 +43,6 @@ function resolveProperties(schema: FormSchema): Record<string, TSchema> {
 // { field: message } map and recognised in the catch — would collapse that into one step and keep it
 // out of `submitError`.
 
-// TODO: discriminator-aware union forms (considered 2026-09-01, deferred).
-// `resolveProperties` unions each key's schema across variants and never reads `required`, so a
-// field validates against the loosest schema of any variant and knows nothing about being required
-// by the active one. Whole-object `valid` keeps *submit* correct, but a union form can be invalid
-// with no field-level error anywhere pointing at the culprit — `validate()` clears every field's
-// error and then only asks the whole-object question.
-// Fixing it needs the *active* variant, and structural matching (what `Value.Clean` does) can't
-// supply it: mid-edit a half-filled form matches no variant, which is exactly when field-level
-// errors matter most. A named discriminator can, from the moment that one field is set — so
-// `discriminator?: D` on `FormConfig` plus `FormModel<T, D = never>` (defaulted, to keep existing
-// annotations compiling), re-pointing each field at the active variant's own schema.
-// No second class needed: unlike `makeUnionModel`, nothing here puts the resource union in a
-// base-class position, so the TS2509 problem that forced that separate factory doesn't apply here.
-
 export class FormModel<T extends FormSchema = TObject, V = StaticOrAny<T>> {
   /** Shared fields only (for unions); every field for a plain object schema. */
   readonly fields: FormFields<T, V>;
@@ -61,6 +51,9 @@ export class FormModel<T extends FormSchema = TObject, V = StaticOrAny<T>> {
   readonly config: FormConfig<T, V>;
   readonly schema: T;
   readonly validator: Validator<T, V>;
+  /** The union's discriminator field, or `undefined` for an object schema. */
+  readonly discriminator: string | undefined;
+  private readonly variants: Map<unknown, TObject> | undefined;
 
   // TODO: maybe refactor into a "state" property?
   submitting = false;
@@ -78,22 +71,46 @@ export class FormModel<T extends FormSchema = TObject, V = StaticOrAny<T>> {
     // Type-only casts, for the same reason as in FormFieldModel.
     this.validator = Schema.Compile(schema as TSchema) as unknown as Validator<T, V>;
 
-    makeAutoObservable(this, {
+    const root = schema as TSchema;
+    if (IsUnion(root)) {
+      this.discriminator = discriminatorOf(root);
+      if (this.discriminator === undefined) {
+        throw new Error(
+          `[FormModel] a union schema needs a discriminator, so the form can tell which variant is ` +
+            `selected. Build it with \`DiscriminatedUnion("kind", [...])\` rather than \`T.Union([...])\`.`,
+        );
+      }
+      this.variants = variantsByTag(root as UnionSchema, this.discriminator);
+    }
+
+    makeAutoObservable<this, "variants">(this, {
       fields: false,
       rawFields: false,
       schema: false,
       config: false,
       validator: false,
+      discriminator: false,
+      variants: false,
     });
 
-    const initialValues = config?.initialValues as Record<string, unknown> | undefined;
-    const fields = Object.entries(resolveProperties(schema)).reduce(
+    const initialValues = (config as { initialValues?: Record<string, unknown> } | undefined)
+      ?.initialValues;
+    const fields = Object.entries(resolveProperties(root)).reduce(
       (fields, [fieldName, fieldSchema]) => {
         // An explicit type argument: inferring it through `initialValue?: Static<T>` is expensive.
         fields[fieldName] = new FormFieldModel<TSchema>({
           name: fieldName,
           schema: fieldSchema,
           initialValue: initialValues?.[fieldName],
+          // Judged against the active variant's own schema for the field. With no variant selected
+          // yet, against the merged one — the discriminator then reports itself as required.
+          variantSchema: this.variants
+            ? () => {
+                const variant = this.activeVariant;
+                if (!variant) return fieldSchema;
+                return (variant.properties[fieldName] as TSchema | undefined) ?? null;
+              }
+            : undefined,
         });
         return fields;
       },
@@ -106,20 +123,24 @@ export class FormModel<T extends FormSchema = TObject, V = StaticOrAny<T>> {
     this.fields = fields as unknown as FormFields<T, V>;
   }
 
+  /**
+   * For a union form, the variant the discriminator field currently selects; `undefined` until it
+   * holds one of the union's values, and always for an object schema.
+   */
+  get activeVariant(): TObject | undefined {
+    if (!this.variants) return undefined;
+    const fields = this.rawFields as Record<string, FormFieldModel<TSchema>>;
+    return this.variants.get(fields[this.discriminator!]?.submitValue);
+  }
+
   get valid(): boolean {
-    // A union form can't be validated field-by-field — fields belonging to the
-    // inactive variant would fail — so validate the assembled object instead.
-    if (IsUnion(this.schema)) {
-      const data = this.toJSON() as Record<string, unknown>;
-      // Manual errors still have to block, but only for fields the active variant actually has:
-      // `toJSON` has already dropped the others, so a stale error on an inactive field can't wedge
-      // a submit that doesn't include it.
-      const blocked = Object.values<FormFieldModel<TSchema>>(this.fields).some(
-        (field) => field.error && field.name in data,
-      );
-      return !blocked && this.validator.Check(data);
-    }
-    return Object.values(this.fields).every((field) => field.valid);
+    const fields = Object.values<FormFieldModel<TSchema>>(this.rawFields);
+    // A union form's fields each judge themselves against the active variant, and one the variant
+    // lacks is never invalid — so a stale error on it can't wedge a submit that doesn't include it.
+    if (!fields.every((field) => field.valid)) return false;
+    // The whole-object check catches what no single field can: no variant selected yet, and any
+    // constraint the schema places on the object itself.
+    return this.variants ? this.validator.Check(this.toJSON()) : true;
   }
 
   /**
@@ -128,11 +149,7 @@ export class FormModel<T extends FormSchema = TObject, V = StaticOrAny<T>> {
    */
   get dirty(): boolean {
     const fields = Object.values<FormFieldModel<TSchema>>(this.fields);
-    if (IsUnion(this.schema)) {
-      const data = this.toJSON() as Record<string, unknown>;
-      return fields.some((field) => field.dirty && field.name in data);
-    }
-    return fields.some((field) => field.dirty);
+    return fields.some((field) => field.dirty && this.submits(field));
   }
 
   props(): any {
@@ -242,19 +259,19 @@ export class FormModel<T extends FormSchema = TObject, V = StaticOrAny<T>> {
     return this.valid;
   }
 
-  toJSON(): Partial<V> {
-    const data = Object.values(this.fields).reduce(
-      (fields, field) => {
-        fields[field.name] = field.toJSON();
-        return fields;
-      },
-      {} as Record<string, unknown>,
-    );
+  // Whether a field is part of what gets submitted: every field of an object form; for a union form,
+  // the active variant's fields — or every field while none is selected, so nothing is lost before
+  // the user picks one (the submit is blocked until they do).
+  private submits(field: FormFieldModel<TSchema>): boolean {
+    const variant = this.activeVariant;
+    return !variant || field.name in variant.properties;
+  }
 
-    // Drop fields belonging to the inactive variant so submitted data matches
-    // the selected member of the union exactly.
-    if (IsUnion(this.schema)) {
-      return Value.Clean(this.schema, data) as Partial<V>;
+  toJSON(): Partial<V> {
+    const data: Record<string, unknown> = {};
+    for (const field of Object.values<FormFieldModel<TSchema>>(this.rawFields)) {
+      // Another variant's fields are dropped, so the payload matches the selected variant exactly.
+      if (this.submits(field)) data[field.name] = field.toJSON();
     }
     return data as Partial<V>;
   }

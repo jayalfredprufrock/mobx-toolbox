@@ -66,12 +66,17 @@ export type DiscriminatedUnionSchema<
  * `variants.flatMap(flattenVariants)`. A tuple (not `UnionVariants<...>[]`) because TypeBox's
  * `Static` only resolves a union's members from a tuple.
  */
-export type FlattenVariants<V extends TSchema[]> = V extends [
+export type FlattenVariants<V extends TSchema[]> = [Extract<V[number], TUnion>] extends [never]
+  ? V
+  : FlattenInto<V, []>;
+
+/** Tail-recursive (accumulator) so long variant lists don't hit TypeScript's depth limit. */
+type FlattenInto<V extends TSchema[], Acc extends TSchema[]> = V extends [
   infer F extends TSchema,
   ...infer R extends TSchema[],
 ]
-  ? [...(F extends TUnion<infer N> ? FlattenVariants<N> : [F]), ...FlattenVariants<R>]
-  : [];
+  ? FlattenInto<R, F extends TUnion<infer N> ? [...Acc, ...FlattenVariants<N>] : [...Acc, F]>
+  : Acc;
 
 /** Keys of an object schema whose property schema is a literal. */
 type LiteralKeys<S> =

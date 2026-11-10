@@ -58,12 +58,18 @@ import { DiscriminatedUnion } from "@jayalfredprufrock/mobx-toolbox/util";
 const PaymentSchema = DiscriminatedUnion("kind", [Card, Bank]);
 ```
 
-- The first argument is the discriminator: the field every variant types as a `T.Literal` (or a
-  union of literals). For a model, it's the string that was passed to `makeUnionModel`. For a form,
+- The first argument is the discriminator: the field every variant types as a `T.Literal`. For a model, it's the string that was passed to `makeUnionModel`. For a form,
   it's the field the old `<FormWhen field="…">` named — or, if there was none, the literal-typed
   field shared by every variant.
-- It must be a field of **every leaf variant**; otherwise it's a type error at the builder.
-- **Nested unions:** only the root gets the annotation. `DiscriminatedUnion("kind", [Electronic, Manual])`
+- It must be a `T.Literal` in **every leaf variant**; otherwise it's a type error at the builder.
+- **A variant tagged with several literals** (`kind: T.Union([T.Literal("a"), T.Literal("b")])`) is
+  rejected. Split it into one variant per literal, each with the same other fields. If the two must
+  stay one type in your code, keep a shared `T.Object` for the fields and spread its `properties`
+  into each variant.
+- **Variant groups are flattened.** `DiscriminatedUnion` splices nested `T.Union`s into one flat
+  `anyOf`, so options set on a group (`$id`, `description`, …) are dropped. Move anything that matters
+  onto the variants or the outer union.
+- **Nested unions:** pass the groups as-is; the builder flattens them. `DiscriminatedUnion("kind", [Electronic, Manual])`
   where `Electronic = T.Union([Card, Wire])` is correct; don't convert the inner groups.
 - **Schemas from handshake:** `DiscriminatedUnion` / `TDiscriminatedUnion` from
   `@jayalfredprufrock/handshake/typebox` produce the same shape and are accepted as-is. If the

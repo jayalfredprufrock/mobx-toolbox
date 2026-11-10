@@ -420,12 +420,12 @@ describe("makeModel with a union of unions", () => {
     expect(card.toJSON()).toEqual({ kind: "card", id: 1, cardNumber: "4242" });
   });
 
-  test("static schema is the schema as given, nesting intact", () => {
+  test("static schema is the schema as given", () => {
     const PaymentModel = makeModel(NestedPaymentSchema);
-    // Flattening happens where `anyOf` is walked, not by rewriting the schema — so a schema shared
-    // with a form or a store is still the same object.
+    // makeModel doesn't rewrite the schema, so one shared with a form or a store is the same
+    // object. `DiscriminatedUnion` itself flattens variant groups.
     expect(PaymentModel.schema).toBe(NestedPaymentSchema);
-    expect(PaymentModel.schema.anyOf).toHaveLength(2);
+    expect(PaymentModel.schema.anyOf).toHaveLength(4);
   });
 });
 

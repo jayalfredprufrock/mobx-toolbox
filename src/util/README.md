@@ -231,11 +231,12 @@ to TypeScript; this builder is what lets `makeModel` type `is`/`as`/`variant` fr
 import { DiscriminatedUnion } from "@jayalfredprufrock/mobx-toolbox/util";
 
 const Payment = DiscriminatedUnion("kind", [Card, Bank]);
-const _bad = DiscriminatedUnion("nope", [Card, Bank]); // ✗ not a field of every variant
+const _bad = DiscriminatedUnion("nope", [Card, Bank]); // ✗ not a `T.Literal` in every variant
 ```
 
 `DiscriminatedUnionSchema<D>` is the shape, and it is structural: a schema from any builder that
 produces it (handshake's `TDiscriminatedUnion`, for one) is accepted without importing anything from
-here. Only the root union needs the annotation; nested groups can stay plain `T.Union`s.
+here. The tag must be a `T.Literal` in every leaf variant (a compile error otherwise). Variant groups
+(`T.Union([...])`) are flattened, so the built `anyOf` is always flat.
 `discriminatorOf(schema)` reads the name back at runtime, and `variantsByTag(schema, name)` maps each
 discriminator value to its variant — the lookup `makeModel` and `FormModel` use to find the active one.

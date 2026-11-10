@@ -2,8 +2,9 @@ import {
   IsLiteral,
   IsUnion,
   Union,
-  type Static,
+  type TLiteral,
   type TObject,
+  type TSchema,
   type TSchemaOptions,
   type TUnion,
 } from "typebox";
@@ -37,7 +38,7 @@ export type UnionVariants<T> =
  * throws. `Value.Check` and `Value.Clean` already recurse, so once the variant list is flat the
  * nesting makes no difference anywhere.
  */
-export function flattenVariants(schema: UnionSchema): TObject[] {
+export function flattenVariants(schema: UnionMember): TObject[] {
   const variants: TObject[] = [];
   const visit = (member: UnionMember): void => {
     if (IsUnion(member)) for (const nested of member.anyOf) visit(nested);
@@ -61,9 +62,34 @@ export type DiscriminatedUnionSchema<
 > = TUnion<V> & { discriminator: { propertyName: D } };
 
 /**
- * Build a {@link DiscriminatedUnionSchema}: `T.Union(variants)` with the discriminator recorded on it.
- * `T.Union`'s own options don't reach its return type, which is why this exists — the literal name
- * has to survive into the type for `is`/`as`/`variant` to be typed from the schema alone.
+ * A variant list with nested unions spliced in place, as a tuple: the type-level counterpart of
+ * `variants.flatMap(flattenVariants)`. A tuple (not `UnionVariants<...>[]`) because TypeBox's
+ * `Static` only resolves a union's members from a tuple.
+ */
+export type FlattenVariants<V extends TSchema[]> = V extends [
+  infer F extends TSchema,
+  ...infer R extends TSchema[],
+]
+  ? [...(F extends TUnion<infer N> ? FlattenVariants<N> : [F]), ...FlattenVariants<R>]
+  : [];
+
+/** Keys of an object schema whose property schema is a literal. */
+type LiteralKeys<S> =
+  S extends TObject<infer P>
+    ? { [K in keyof P]: P[K] extends TLiteral ? K : never }[keyof P] & string
+    : never;
+
+/** Intersection of a union's members' literal keys: keys that are a literal in EVERY variant. */
+type CommonLiteralKeys<S> = (S extends any ? (k: LiteralKeys<S>) => void : never) extends (
+  k: infer K,
+) => void
+  ? K & string
+  : never;
+
+/**
+ * Build a {@link DiscriminatedUnionSchema}: a union with the discriminator recorded on it. It's a
+ * compile error unless `propertyName` is a `T.Literal` in every (leaf) variant. Variant groups
+ * (`T.Union([...])`) are flattened, so the built schema's `anyOf` is always a flat list of objects.
  *
  * ```ts
  * const Payment = DiscriminatedUnion("kind", [Card, Bank]);
@@ -71,12 +97,16 @@ export type DiscriminatedUnionSchema<
  */
 export function DiscriminatedUnion<
   const V extends UnionMember[],
-  D extends keyof Static<TUnion<V>> & string,
->(propertyName: D, variants: [...V], options?: TSchemaOptions): DiscriminatedUnionSchema<D, V> {
-  return Union(variants, {
+  D extends CommonLiteralKeys<UnionVariants<V[number]>>,
+>(
+  propertyName: D,
+  variants: [...V],
+  options?: TSchemaOptions,
+): DiscriminatedUnionSchema<D, FlattenVariants<V>> {
+  return Union(variants.flatMap(flattenVariants), {
     ...options,
     discriminator: { propertyName },
-  }) as DiscriminatedUnionSchema<D, V>;
+  }) as unknown as DiscriminatedUnionSchema<D, FlattenVariants<V>>;
 }
 
 /** The discriminator a schema is annotated with, or `undefined` for a plain union or an object. */

@@ -640,12 +640,11 @@ Nothing about it is a special case: `T.Static` already reads nesting as one flat
 `is`/`as`, `keys`, `setData` and `toJSON` behave exactly as they do on a flat union — as does
 `makeStore` over the same class. Two notes:
 
-- **The discriminator must be shared by every leaf variant**, not just by every top-level member. It
-  is one flat union as far as narrowing is concerned; there is no per-group discriminator. Only the
-  root union needs the annotation — the groups inside it can stay plain `T.Union`s.
-- **`Model.schema` is the schema you passed**, nesting intact. Flattening happens where `anyOf` is
-  walked, not by rewriting the schema, so a schema shared with a form or a store is still the same
-  object.
+- **The discriminator must be a `T.Literal` in every leaf variant**, not just in every top-level
+  member. There is no per-group discriminator; `DiscriminatedUnion` flattens the groups into one
+  flat `anyOf`.
+- **`Model.schema` is the schema you passed**, not a copy, so a schema shared with a form or a store
+  is still the same object. Hand-built nested unions are flattened where `anyOf` is walked.
 
 ### Things to know
 

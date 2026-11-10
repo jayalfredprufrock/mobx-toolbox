@@ -266,10 +266,10 @@ const form = useForm(PaymentSchema, {
 ```
 
 Variants can be grouped and the groups composed to any depth — `DiscriminatedUnion("method", [Electronic, Manual])`,
-where each of those is a plain `T.Union`; only the root needs the annotation. A union of unions is treated as the one flat union of leaf
+where each of those is a plain `T.Union`; the builder flattens them into one flat `anyOf`. A union of unions is treated as the one flat union of leaf
 variants that `T.Static` already reads it as, so field merging, `fields`/`rawFields`, `<FormWhen>`
-narrowing and `toJSON` all behave identically. The discriminator has to be shared by every
-leaf variant, not just by every top-level member.
+narrowing and `toJSON` all behave identically. The discriminator has to be a `T.Literal` in every
+leaf variant, not just in every top-level member.
 
 ### `<FormWhen>`
 

@@ -1,6 +1,8 @@
 import { describe, expect, test } from "vite-plus/test";
 import { autorun, runInAction } from "mobx";
+import * as T from "typebox";
 import { mutable } from "./mutable";
+import { DiscriminatedUnion } from "./union-schema";
 import { WeakRefMap } from "./weak-ref-map";
 
 // ---------------------------------------------------------------------------
@@ -142,5 +144,16 @@ describe("WeakRefMap", () => {
     const fresh = { id: 1 };
     map.add(1, fresh);
     expect(map.get(1)).toBe(fresh);
+  });
+});
+
+describe("DiscriminatedUnion", () => {
+  test("nested variant groups produce a flat anyOf", () => {
+    const A = T.Object({ kind: T.Literal("a") });
+    const B = T.Object({ kind: T.Literal("b") });
+    const C = T.Object({ kind: T.Literal("c") });
+    const schema = DiscriminatedUnion("kind", [T.Union([A, T.Union([B])]), C]);
+    expect(schema.anyOf).toEqual([A, B, C]);
+    expect(schema.discriminator).toEqual({ propertyName: "kind" });
   });
 });

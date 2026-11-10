@@ -267,6 +267,13 @@ describe("makeUnionModel", () => {
     expect(Object.getPrototypeOf(json)).toBe(Object.prototype);
   });
 
+  test("toJSON strips a foreign variant's field even when the record is invalid", () => {
+    const PaymentModel = makeUnionModel(PaymentSchema, "kind");
+    // cardNumber is the wrong type, so the record matches no variant structurally
+    const card = new PaymentModel({ kind: "card", id: 1, cardNumber: 42, routing: "x" } as any);
+    expect(card.toJSON()).toEqual({ kind: "card", id: 1, cardNumber: 42 });
+  });
+
   test("setData reactively switches variants and clears the previous variant", () => {
     const PaymentModel = makeUnionModel(PaymentSchema, "kind");
     const model = new PaymentModel({ kind: "card", id: 1, cardNumber: "4242" });

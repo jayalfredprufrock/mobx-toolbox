@@ -9,7 +9,6 @@ import {
 import { flattenVariants, type UnionSchema } from "../util/union-schema";
 import { WeakRefMap } from "../util/weak-ref-map";
 import * as T from "typebox";
-import * as Value from "typebox/value";
 
 // -----------------------------------------------------------------------------
 // Public structural contract
@@ -63,8 +62,8 @@ const SINGLETON_KEY = "\u0000singleton";
 /**
  * Every property name across the schema. For a union this is the merged set of
  * all variants' keys, so all of them are made observable up front — that keeps
- * `setData` reactive even when it switches the active variant. `toJSON` runs
- * `Value.Clean` to emit only the keys of the variant the data currently matches.
+ * `setData` reactive even when it switches the active variant. `toJSON` picks
+ * only the keys of the variant its discriminator names.
  */
 function getPropertyNames(schema: ModelSchema): string[] {
   if (!T.IsUnion(schema)) return Object.keys(schema.properties);
@@ -490,7 +489,11 @@ export type ModelConstructor<S extends ModelSchema, K, Cfg> = {
 // Builds the observable model class used by both makeModel and makeUnionModel.
 // Handles object and union schemas at runtime; the public factories layer the
 // appropriate types (and, for unions, the `is`/`as` guards) on top.
-function createModelClass(schema: ModelSchema, config?: ModelConfig<any, any>): any {
+function createModelClass(
+  schema: ModelSchema,
+  config?: ModelConfig<any, any>,
+  variantKeys?: Map<unknown, readonly string[]>,
+): any {
   // `keys: false` opts out of identity, and no config at all means the same thing. `keys: []` is a
   // different declaration: a resource with no identifying fields is a singleton, so it maps to one
   // instance under a fixed key rather than to none.
@@ -498,7 +501,6 @@ function createModelClass(schema: ModelSchema, config?: ModelConfig<any, any>): 
   const hasIdentity = Array.isArray(keySpec);
   const keys = (hasIdentity ? keySpec : []) as readonly PropertyKey[];
   const isSingleton = hasIdentity && keys.length === 0;
-  const isUnion = T.IsUnion(schema);
   const propertyNames = getPropertyNames(schema);
 
   // Per-field observability overrides, resolved once here rather than per instance. A name that is
@@ -679,8 +681,8 @@ function createModelClass(schema: ModelSchema, config?: ModelConfig<any, any>): 
       //   is invalid against the schema.
       //
       // The other two need no guard, because nothing downstream is fooled: an unknown field is
-      // ignored by `toJSON`, and a foreign variant's field is stripped by its `Value.Clean` — which
-      // that call already exists to do. Checking either would cost a schema or variant lookup per
+      // ignored by `toJSON`, and a foreign variant's field is dropped by its variant lookup — which
+      // that lookup already exists to do. Checking either would cost a schema or variant lookup per
       // key to prevent a no-op.
       const identifying = (key: string): boolean => key === discriminator || keys.includes(key);
 
@@ -715,16 +717,21 @@ function createModelClass(schema: ModelSchema, config?: ModelConfig<any, any>): 
 
     toJSON(): any {
       const data = this as any;
-      const snapshot = propertyNames.reduce(
+      // For a union, emit only the keys of the variant the discriminator names — a stale field left
+      // over from a previous variant is dropped. Picked by lookup rather than matched structurally:
+      // structural matching costs a full union check per call, and gives up (returning everything)
+      // when the record satisfies no variant, which is exactly when a stale field is likeliest.
+      const names =
+        (variantKeys && variantKeys.get(data[(this.constructor as any).discriminator])) ??
+        propertyNames;
+      const snapshot = names.reduce(
         (obj, key) => {
           if (data[key] !== undefined) obj[key] = toJS(data[key]);
           return obj;
         },
         {} as Record<string, any>,
       );
-      // For a union, strip any fields not belonging to the variant the current
-      // data matches (e.g. a stale field left over from a previous variant).
-      return isUnion ? Value.Clean(schema, snapshot) : snapshot;
+      return snapshot;
     }
   }
 
@@ -989,6 +996,27 @@ export type ModelVariant<
   V extends InstanceType<C>["variant"][C["discriminator"] & keyof InstanceType<C>["variant"]],
 > = Extract<InstanceType<C>["variant"], Record<C["discriminator"], V>>;
 
+/**
+ * Each discriminator value mapped to the keys of the variant it names, so `toJSON` picks a variant
+ * by lookup. Built once per class.
+ */
+function variantKeysOf(
+  schema: UnionSchema,
+  discriminator: string,
+): Map<unknown, readonly string[]> {
+  const table = new Map<unknown, readonly string[]>();
+  for (const variant of flattenVariants(schema)) {
+    const tag = variant.properties[discriminator];
+    const literals = tag && T.IsUnion(tag) ? tag.anyOf : [tag];
+    for (const literal of literals) {
+      if (literal && T.IsLiteral(literal)) {
+        table.set(literal.const, Object.keys(variant.properties));
+      }
+    }
+  }
+  return table;
+}
+
 export function makeUnionModel<S extends UnionSchema, D extends keyof Resource<S> & string>(
   schema: S,
   discriminator: D,
@@ -1018,7 +1046,7 @@ export function makeUnionModel(
     );
   }
 
-  const ModelClass = createModelClass(schema, config);
+  const ModelClass = createModelClass(schema, config, variantKeysOf(schema, discriminator));
   ModelClass.discriminator = discriminator;
 
   const proto = ModelClass.prototype as any;

@@ -495,7 +495,7 @@ itself is never patchable — changing variant replaces the whole record, so it 
 The types are the whole guard for variant fields. TypeScript's excess-property checking only
 reaches fresh object literals, so a widened `Record<string, unknown>` can smuggle a foreign
 variant's field through — and that is left unguarded on purpose, because nothing downstream is
-fooled: `toJSON` strips any field outside the active variant, which is what its `Value.Clean` call
+fooled: `toJSON` strips any field outside the active variant, which is what its per-variant key lookup
 already exists to do.
 
 Two things _are_ re-checked at runtime, because they are the ones that survive to do damage: an
@@ -647,7 +647,7 @@ Nothing about it is a special case: `T.Static` already reads nesting as one flat
 ### Things to know
 
 - **`keys`/`buildParams` are limited to shared fields.** `keyof` a union collapses to the keys present in every variant (e.g. `id`) — exactly what you want for a keyed resource. The `discriminator` argument must likewise be a shared key.
-- **All variants' fields are observable.** Every property across the union is made `observableRef` up front, so `setData` stays reactive even when it switches the active variant. `toJSON` runs `Value.Clean` to emit only the active variant's fields.
+- **All variants' fields are observable.** Every property across the union is made `observableRef` up front, so `setData` stays reactive even when it switches the active variant. `toJSON` emits only the fields of the variant the discriminator names, looked up from a table built once per class — so its cost tracks the variant, not the size of the union.
 - **`setData` switches variants cleanly.** It takes the full resource and reassigns every field, so moving between variants clears the previous variant's fields on the live instance (not just in `toJSON`).
 - **Reflection still sees every key.** `Object.keys`, spread, and `in` expose all union properties (inactive ones as `undefined`); only typed access (via the guards) and `toJSON` are variant-faithful. This is the deliberate trade for a subclassable, reactive model.
 
@@ -1377,7 +1377,7 @@ import type {
 
 **`updateData`'s union patch type is derived from `this`, not from the schema.** That is what makes narrowing flow into it: un-narrowed, `keyof this` exposes only the shared fields, and `is`/`as` widen `this` to a variant so its fields become patchable.
 
-**`updateData` re-checks only the identity keys and the discriminator at runtime, not every field.** Excess-property checking does not reach a widened patch object, so something has to hold underneath — but only where the failure survives. An unknown field is ignored by `toJSON` and a foreign variant's field is stripped by its `Value.Clean`, so guarding those would cost a lookup per key to prevent a no-op. A patched identity key desyncs the identity map from `buildParams`, and a patched discriminator serializes a payload invalid against the schema. Those two are guarded, and the check runs over the whole patch before any assignment, because a mobx action batches notifications but does not roll back.
+**`updateData` re-checks only the identity keys and the discriminator at runtime, not every field.** Excess-property checking does not reach a widened patch object, so something has to hold underneath — but only where the failure survives. An unknown field is ignored by `toJSON` and a foreign variant's field is dropped by its variant lookup, so guarding those would cost a lookup per key to prevent a no-op. A patched identity key desyncs the identity map from `buildParams`, and a patched discriminator serializes a payload invalid against the schema. Those two are guarded, and the check runs over the whole patch before any assignment, because a mobx action batches notifications but does not roll back.
 
 **A subclass can annotate only the members it adds, never a schema field.** Mobx forbids re-annotating, so `makeObservable(this, { tags: observable })` for a field the base already annotated throws "Cannot apply 'observable'". Changing a schema field's annotation is what the `annotations` config option is for. The reverse also holds: `annotations` reaches only schema fields, because it is applied by the base constructor — which runs before any subclass field initializer exists.
 

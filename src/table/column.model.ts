@@ -21,6 +21,12 @@ import { compareValues, getPath, titleCase } from "./util";
 
 const DEFAULT_MIN_WIDTH = 120;
 
+/**
+ * Width a selection column gets when its def doesn't set one: room for a checkbox and its padding.
+ * A flex share would hand a fixed-size control a fraction of the table.
+ */
+export const SELECTION_COLUMN_WIDTH = 44;
+
 /** Key assigned to a selection column when its def doesn't supply one. */
 export const SELECTION_COLUMN_KEY = "__selection__";
 
@@ -47,10 +53,15 @@ export class ColumnModel {
     return this.table.columnWidths.get(this) ?? 0;
   }
 
-  /** Fixed pixel width when the column isn't flexible (manual override or an explicit number). */
+  /**
+   * Fixed pixel width when the column isn't flexible: a manual override, an explicit number, or
+   * {@link SELECTION_COLUMN_WIDTH} for a selection column with no `width` of its own.
+   */
   get fixedWidth(): number | undefined {
     if (this.manualWidth !== undefined) return this.manualWidth;
-    return typeof this.config.width === "number" ? this.config.width : undefined;
+    if (typeof this.config.width === "number") return this.config.width;
+    if (this.config.width === undefined && this.selection) return SELECTION_COLUMN_WIDTH;
+    return undefined;
   }
 
   /** Flex weight (the `N` in `"Nfr"`); `0` when fixed. An unspecified width means `1fr`. */
@@ -71,8 +82,9 @@ export class ColumnModel {
     return this.config.maxWidth ?? Number.POSITIVE_INFINITY;
   }
 
+  /** Whether header UIs should offer resizing. Defaults to true, except on a selection column. */
   get resizable(): boolean {
-    return this.config.resizable !== false;
+    return this.config.resizable ?? !this.selection;
   }
 
   /**

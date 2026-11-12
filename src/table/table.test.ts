@@ -388,6 +388,28 @@ describe("columnWidths", () => {
     expect(table.virtualWidth).toBe(1000);
   });
 
+  test("a selection column defaults to a fixed 44px instead of a flex share", () => {
+    const table = makeTable([{ a: 1 }], { columns: [{ selection: true }, "a"] }, { width: 1000 });
+    expect(table.orderedColumns.map((c) => c.width)).toEqual([44, 956]);
+    expect(table.orderedColumns[0]!.grow).toBe(0);
+  });
+
+  test("a selection column is not resizable unless its def says so", () => {
+    const table = makeTable([{ a: 1 }], { columns: [{ selection: true }, "a"] });
+    expect(table.orderedColumns.map((c) => c.resizable)).toEqual([false, true]);
+    const opted = makeTable([{ a: 1 }], { columns: [{ selection: true, resizable: true }, "a"] });
+    expect(opted.orderedColumns[0]!.resizable).toBe(true);
+  });
+
+  test("a selection column's own width still wins", () => {
+    const table = makeTable(
+      [{ a: 1, b: 2 }],
+      { columns: [{ selection: true, width: "1fr", minWidth: 10 }, "a"] },
+      { width: 1000 },
+    );
+    expect(table.orderedColumns.map((c) => c.width)).toEqual([500, 500]);
+  });
+
   test("a floating-point overshoot is absorbed, so virtualWidth equals width exactly", () => {
     // six equal 1fr shares of 100px sum to 100.00000000000001
     const keys = ["a", "b", "c", "d", "e", "f"];

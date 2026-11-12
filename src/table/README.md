@@ -646,6 +646,10 @@ Add `{ selection: true }` to `columns` and render the two selection parts:
 }
 ```
 
+The column is a fixed **44px** (`SELECTION_COLUMN_WIDTH`) and not resizable unless its def says
+otherwise — a checkbox doesn't grow, so it shouldn't take a flex share of the table or offer a
+resize handle.
+
 The default control is a native `<input type="checkbox">`. Register your own once on `<Table.Root checkbox={MyCheckbox}>` (it receives `{ checked, indeterminate?, onChange }`), or pass a render-prop to a single `<Table.SelectionCell>` / `<Table.SelectAll>`.
 
 Selection is keyed by **row id**, not row reference, so it survives sorting, filtering, and `appendRows`. Read it via `table.selectedRows` / `table.selectedIds`.

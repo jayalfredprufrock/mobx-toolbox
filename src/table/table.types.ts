@@ -647,7 +647,8 @@ export interface ComputedColumnDef<T> extends BaseColumnDef<T> {
 /**
  * The built-in row-selection column. Rendered by `<Table.SelectionCell>` (body) and
  * `<Table.SelectionHeaderCell>` (header), so it needs no `render`/`value`. `key` is optional —
- * the table assigns one when omitted.
+ * the table assigns one when omitted, `width` defaults to a fixed 44px
+ * (`SELECTION_COLUMN_WIDTH`) rather than a flex share, and `resizable` defaults to false.
  */
 export interface SelectionColumnDef {
   selection: true;

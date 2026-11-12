@@ -1177,9 +1177,11 @@ Points worth checking by hand as you port:
   loop over `facets` reading `count` re-tallies per facet. In tests or event handlers, read
   `column.facetCounts` once or wrap the loop in `runInAction`.
 - ⚠️ **A declared `options` list is the whole domain.** Values in the rows but not declared, and
-  blank, are not listed. (Previously `counts: true` with `options` appended them.) The exception is
-  a `BucketFilter` (any filter with a `project`): it always lists "(Blank)" when some row's value is
-  missing or falls outside every bucket, since its options can't anticipate that.
+  blank, are not listed. (Previously `counts: true` with `options` appended them.) For a
+  `BucketFilter` that means its labels only: to name the values outside every bucket, end with an
+  unbounded catch-all bucket (`{ label: "Other" }`), which now also claims non-numeric values. To
+  offer "(Blank)", append `{ value: BLANK, blank: true, count: column.facetCounts?.get(BLANK) ?? 0 }`
+  where you draw the list — the filter already matches it.
 - **`count` is an own enumerable getter**, so spreads and `toEqual` see it — including on facets that
   previously had none. Assertions written as `toEqual([{ value: "a" }])` need either the counts or
   `column.facetDomain`.

@@ -317,7 +317,8 @@ export interface Bucket {
 export interface BucketFilterOptions {
   /**
    * The buckets, in the order a filter UI should list them. The first whose range contains a value
-   * wins, so overlapping buckets resolve by declaration order rather than being an error.
+   * wins, so overlapping buckets resolve by declaration order rather than being an error. A last
+   * bucket with no bounds is a catch-all that names everything the others missed.
    */
   buckets: readonly Bucket[];
   matchMode?: SetMatchMode;

@@ -15,6 +15,10 @@ import { isBlank } from "./util";
  * number don't both claim it. The first matching bucket wins, which is what makes overlapping
  * definitions resolve by declaration order instead of being an error nobody can act on.
  *
+ * A bucket with neither bound is a catch-all: last in the list, it names whatever the others
+ * missed — including a non-blank value that isn't a number at all. Without one, such values keep
+ * themselves, and since the filter's domain is just the labels, they get no facet.
+ *
  * Exported because the projection is useful without the filter: the same function labels a value
  * for a cell renderer or a chart legend, and reusing it is what keeps the table and the filter
  * agreeing on which bucket a score is in.
@@ -25,14 +29,18 @@ export const bucketProjection =
     // blanks stay blank — a missing score is not a low one, and `facetValues` gives it its own facet
     if (isBlank(value)) return value;
     const n = typeof value === "number" ? value : Number(value);
-    if (!Number.isFinite(n)) return value;
+    // NaN fails every bounds check, so testing it against bounded buckets would land it in the
+    // first one; only a catch-all can honestly claim a value that isn't a number
+    if (!Number.isFinite(n)) {
+      return buckets.find((b) => b.min === undefined && b.max === undefined)?.label ?? value;
+    }
     for (const bucket of buckets) {
       if (bucket.min !== undefined && n < bucket.min) continue;
       if (bucket.max !== undefined && n >= bucket.max) continue;
       return bucket.label;
     }
-    // outside every bucket: hand back the raw value rather than inventing a label, so it shows up
-    // in the facet list as itself instead of vanishing
+    // outside every bucket and no catch-all: hand back the raw value rather than inventing a label.
+    // It is not listed as a facet (the domain is the labels), but it still matches a raw selection.
     return value;
   };
 

@@ -595,10 +595,23 @@ describe("BucketFilter", () => {
     expect([95, 85, 75, 65, 55].map(grade)).toEqual(["A", "B", "C", "D", "F"]);
   });
 
-  test("a value outside every bucket keeps itself rather than vanishing", () => {
+  test("without a catch-all, a value outside every bucket keeps itself", () => {
     const sparse = bucketProjection([{ label: "mid", min: 10, max: 20 }]);
     expect(sparse(15)).toBe("mid");
     expect(sparse(99)).toBe(99);
+    expect(sparse("n/a")).toBe("n/a");
+  });
+
+  test("an unbounded last bucket names everything the others missed", () => {
+    const grade = bucketProjection([{ label: "mid", min: 10, max: 20 }, { label: "Other" }]);
+    expect([15, 99, -5, "n/a"].map(grade)).toEqual(["mid", "Other", "Other", "Other"]);
+    // a missing value is not an unmatched one
+    expect(grade(null)).toBe(null);
+  });
+
+  test("a non-number skips bounded buckets rather than landing in the first", () => {
+    const grade = bucketProjection([{ label: "low", max: 10 }, { label: "Other" }]);
+    expect(grade("n/a")).toBe("Other");
   });
 });
 

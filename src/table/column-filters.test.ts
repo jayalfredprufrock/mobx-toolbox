@@ -851,31 +851,38 @@ describe("BucketFilter on a column", () => {
   test("facets list the projected domain, not every distinct score", () => {
     // the reason `project` is on the interface: the table walks rows itself and never calls matches
     const { table } = build();
-    expect(table.column("score")?.facetDomain).toEqual(["A", "B", "C", "D", "F", BLANK]);
-  });
-
-  test("a bucket domain lists blank only when some row lands there", () => {
-    const table = new TableModel({
-      data: students.filter((s) => s.score !== null),
-      columns: [
-        { key: "score", filter: new BucketFilter({ buckets: grades }) },
-      ] as ColumnsDef<Student>,
-      getRowId: (s: Student) => s.id,
-    });
     expect(table.column("score")?.facetDomain).toEqual(["A", "B", "C", "D", "F"]);
   });
 
-  test("counts tally per bucket, and blanks stay their own facet", () => {
+  test("counts tally per bucket; a declared domain lists no blank", () => {
     const { table } = build();
     expect(table.column("score")?.facets).toEqual([
       { value: "A", count: 1 },
       { value: "B", count: 2 },
       { value: "C", count: 1 },
       { value: "D", count: 0 },
+      // a missing score is not a low one — it is counted under BLANK, which is not listed
       { value: "F", count: 1 },
-      // a missing score is not a low one
-      { value: BLANK, blank: true, count: 1 },
     ]);
+    expect(table.column("score")?.facetCounts?.get(BLANK)).toBe(1);
+  });
+
+  test("a catch-all bucket is listed, counted and selectable like any other", () => {
+    const filter = new BucketFilter({
+      buckets: [{ label: "B+", min: 80 }, { label: "Other" }],
+    });
+    const table = new TableModel({
+      data: students,
+      columns: [{ key: "score", filter }, "name"] as ColumnsDef<Student>,
+      getRowId: (s: Student) => s.id,
+    });
+    expect(table.column("score")?.facets).toEqual([
+      { value: "B+", count: 3 },
+      // 72 and 55 — the null score stays blank
+      { value: "Other", count: 2 },
+    ]);
+    filter.toggle("Other");
+    expect(ids(table.clientFilteredRows)).toEqual([4, 5]);
   });
 
   test("counts cross-filter like any other set filter", () => {
@@ -897,7 +904,6 @@ describe("BucketFilter on a column", () => {
       { value: "C", count: 0 },
       { value: "D", count: 0 },
       { value: "F", count: 0 },
-      { value: BLANK, blank: true, count: 0 },
     ]);
   });
 

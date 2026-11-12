@@ -309,9 +309,22 @@ a checkbox list, so facets, counts, blanks, match modes and serialization all al
 popover narrowing by `instanceof SetFilter` renders it with no changes. `options` is derived from the
 labels rather than declared twice, so the two can't drift.
 
-A blank stays blank rather than falling into the bottom bucket — a missing score is not a low one —
-so it gets its own `(Blank)` facet as usual. A value outside every bucket keeps itself, appearing in
-the facet list as the raw number instead of vanishing.
+A blank stays blank rather than falling into the bottom bucket — a missing score is not a low one.
+The labels are the whole facet list, so neither blank nor a value outside every bucket is listed. To
+name the values the buckets miss, end with a bucket that has no bounds — it catches every number the
+others didn't place, and any non-blank value that isn't a number:
+
+```ts
+new BucketFilter({
+  buckets: [
+    { label: "A", min: 90 },
+    { label: "B", min: 80, max: 90 },
+    { label: "Other" }, // listed, counted and selectable like any label
+  ],
+});
+```
+
+To offer "(Blank)", add it where you draw the list — see Facets in the `table` docs.
 
 `bucketOf(value)` reports which bucket a value fell in, and `bucketProjection(buckets)` is exported
 on its own: the same function labels a value for a cell renderer or a chart legend, and reusing it is

@@ -876,21 +876,30 @@ declares a named option instead.
 ### Facets
 
 `column.facets` is the value domain to render as a checkbox list — `[]` when the column has no
-filter. Three cost tiers, chosen by the filter rather than configured on the column:
+filter. Each entry is `{ value, count, blank? }`, and **`count` is a lazy getter**: the cross-filtered
+tally behind it runs only once something reads a count. A checkbox list that shows no numbers never
+pays for it; one that does pays without configuring anything.
 
-| tier    | how                                 | walk                                 | gives                   |
-| ------- | ----------------------------------- | ------------------------------------ | ----------------------- |
-| static  | `new SetFilter({ options: [...] })` | none                                 | a fixed list, no counts |
-| values  | `new SetFilter()` — the default     | `rows`, invalidated by `rows` alone  | a discovered list       |
-| counted | `new SetFilter({ counts: true })`   | `rows` × every _other_ active filter | the list plus counts    |
+Underneath are two computeds, both public:
+
+| computed             | walk                                 | invalidated by                |
+| -------------------- | ------------------------------------ | ----------------------------- |
+| `column.facetDomain` | `rows`, or none if `options` given   | `rows` alone                  |
+| `column.facetCounts` | `rows` × every _other_ active filter | `rows` and every other filter |
 
 The walk itself is not what costs — running every other filter per row is, plus the invalidation
-storm where one toggle dirties every other column's facets. That is what `counts` gates. The default
-tier still populates checkboxes, so a bare `new SetFilter()` works.
+storm where one toggle dirties every other column's counts. Keeping that in its own computed is what
+lets it be skipped.
 
-Ordering is declared `options` first in declaration order, then discovered values sorted by value,
+The domain is declared `options` in declaration order when the filter has them — taken at its word,
+so neither undeclared values nor blank are listed — otherwise discovered values sorted by value,
 blank last. (Insertion order alone would be first-appearance-in-rows, which reshuffles the list every
 time the table is sorted.)
+
+⚠️ An unobserved computed is not cached, so **reading `count` outside a reaction or action
+re-tallies on every read**. In an `observer` render or inside an action it is one scan per column,
+however many facets you read. In a plain loop — a test, an event handler — read
+`column.facetCounts` once (a value missing from it counts zero), or wrap the loop in `runInAction`.
 
 A count means "how many rows carry this value", among rows passing every _other_ filter — so it
 previews what picking it gives you. Counts are cross-filtered by every other active filter, never by
@@ -1032,8 +1041,8 @@ that very filter_:
 - It **never walks the rows.** A walk would discover only the values that survived the current
   selection, so the list would collapse to what is already chosen and could never be widened again.
   Declare `options` on the filter to give it a domain — without one, its facet list is empty.
-- It **never carries counts**, even with `counts: true`. They would be counts of an already-filtered
-  set, describing the current selection rather than the alternatives.
+- It **never carries counts**: `facetCounts` and every `facet.count` are `undefined`. They would be
+  counts of an already-filtered set, describing the current selection rather than the alternatives.
 
 Server filters are also excluded from every _other_ column's cross-filter tally, since they are
 already applied to `rows`. That falls out of the partition rather than being a special case.

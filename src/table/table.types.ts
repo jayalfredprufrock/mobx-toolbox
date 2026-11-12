@@ -361,8 +361,6 @@ export interface ColumnFilter {
    * one. Better a compile error than a facet that silently selects nothing.
    */
   readonly options?: readonly SetFilterValue[];
-  /** Whether facets should carry cross-filtered counts — the expensive tier. */
-  readonly counts?: boolean;
   /**
    * Groups raw values before comparing them (scores into grades). `matches` applies it itself; the
    * table applies it when walking rows for facets, so the list offers projected values rather than

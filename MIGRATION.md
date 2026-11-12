@@ -1168,10 +1168,21 @@ Points worth checking by hand as you port:
   zero counts out of a popover — that is where someone goes to undo an over-narrowed filter, and
   dropping them strands a ticked value with no checkbox to untick. A standing rail can drop them
   with `facets.filter((f) => (f.count ?? 1) > 0 || filter.has(f.value))`.
-- **Facets have three cost tiers.** `new SetFilter()` discovers values with one row walk;
-  `{ options: [...] }` skips the walk entirely; `{ counts: true }` adds cross-filtered counts and is
-  the expensive one — O(rows × other active filters), recomputed on any toggle. Don't reach for
-  `counts` by default.
+- **Facet counts are lazy — there is no `counts` option.** Delete `counts: true` from every
+  `SetFilter`/`BucketFilter` (it is now a type error). `facet.count` is a getter backed by
+  `column.facetCounts`, so the cross-filtered tally (O(rows × other active filters)) runs only for
+  columns whose counts are actually read. `new SetFilter()` discovers values with one row walk;
+  `{ options: [...] }` skips it.
+- ⚠️ **Read counts inside a reaction or action.** An unobserved computed is not cached, so a plain
+  loop over `facets` reading `count` re-tallies per facet. In tests or event handlers, read
+  `column.facetCounts` once or wrap the loop in `runInAction`.
+- ⚠️ **A declared `options` list is the whole domain.** Values in the rows but not declared, and
+  blank, are not listed. (Previously `counts: true` with `options` appended them.) A `BucketFilter`
+  therefore no longer offers a "(Blank)" facet for out-of-range or missing values; their count is
+  still in `column.facetCounts.get(BLANK)`.
+- **`count` is an own enumerable getter**, so spreads and `toEqual` see it — including on facets that
+  previously had none. Assertions written as `toEqual([{ value: "a" }])` need either the counts or
+  `column.facetDomain`.
 - **Blanks are just a selected value.** `null`, `undefined`, `""` and `[]` all normalise to `BLANK`,
   which sits inside `selected` like anything else. If you have special-cased "no value" state in a
   filter UI, delete it. `facet.blank` is the render hint for the "(Blank)" label.

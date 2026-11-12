@@ -131,10 +131,10 @@ describe("ColumnModel.setConfig", () => {
 
   test("facets follow a patched value", () => {
     const table = makeTable([{ key: "name", filter: () => new SetFilter() }]);
-    expect(table.column("name")?.facets).toEqual([{ value: "a" }, { value: "b" }]);
+    expect(table.column("name")?.facetDomain).toEqual(["a", "b"]);
 
     table.column("name")?.setConfig({ value: (row: RowData) => `${row.name as string}!` });
-    expect(table.column("name")?.facets).toEqual([{ value: "a!" }, { value: "b!" }]);
+    expect(table.column("name")?.facetDomain).toEqual(["a!", "b!"]);
   });
 
   test("the three unswappable options are rejected at the type level", () => {

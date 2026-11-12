@@ -222,111 +222,114 @@ export class ColumnModel {
    * A filter with a `project` (a `BucketFilter`, say) lists its *projected* domain — grades rather
    * than scores — while the column goes on showing and sorting the raw value.
    *
-   * Three cost tiers, chosen by the filter rather than configured here:
+   * The domain comes from {@link facetDomain}, and each entry's `count` is a getter over
+   * {@link facetCounts}. The two are separate computeds so that counting is paid for only by
+   * whoever reads a count: a checkbox list that never shows numbers never runs the cross-filter.
    *
-   * | tier | when | walk |
-   * | --- | --- | --- |
-   * | static | `options` declared, `counts` falsy | none |
-   * | values | the default | `rows`, invalidated by `rows` alone |
-   * | counted | `counts: true` | `rows` narrowed by every *other* active filter |
-   *
-   * The walk itself is not what costs — running every other filter per row is, plus the
-   * invalidation storm where one toggle dirties every other column's facets. That is what `counts`
-   * gates, and why the default tier still populates a checkbox list.
-   *
-   * Ordering is declared `options` first in declaration order, then discovered values sorted by
-   * value, blank last. Insertion order alone would be first-appearance-in-rows, which reshuffles
-   * the list every time the table is sorted.
-   *
-   * A count means "how many rows carry this value", among rows passing every *other* filter — so it
-   * previews what picking it gives you. Under a set filter's `"all"` mode, where each pick narrows
-   * instead of widening, it is the size of the intersection with the current selection instead.
+   * `count` is `undefined` only in server mode, which never counts. Otherwise it is "how many rows
+   * carry this value", among rows passing every *other* filter — so it previews what picking it
+   * gives you. Under a set filter's `"all"` mode, where each pick narrows instead of widening, it is
+   * the size of the intersection with the current selection instead.
    *
    * Zero-count entries are kept: a popover is exactly where you go to undo an over-narrowed filter.
    * A standing facet rail drops them at the call site —
-   * `facets.filter((f) => f.count > 0 || filter.has(f.value))`.
+   * `facets.filter((f) => (f.count ?? 1) > 0 || filter.has(f.value))`.
+   *
+   * **Reading counts outside a reaction or action recomputes the tally on every read**, since an
+   * unobserved computed is not cached. In a render or an action that is one scan per column; in a
+   * plain loop (a test, an event handler) read {@link facetCounts} once, or wrap the loop in
+   * `runInAction`.
    */
   get facets(): Facet[] {
-    const filter = this.filter;
-    if (!filter) return [];
-
-    // server mode never counts: `rows` are already narrowed by this very filter, so any tally
-    // would describe the current selection rather than what selecting something else would give
-    const counts = filter.counts === true && this.filterMode !== "server";
-    const tally = this.facetScan;
-    const declared = filter.options;
-
-    // static tier: the domain was declared and no counts were asked for, so the rows are never read
-    if (!tally) return (declared ?? []).map((value) => ({ value }));
-
-    const facets: Facet[] = [];
-    const seen = new Set<SetFilterValue>();
-
-    for (const value of declared ?? []) {
-      seen.add(value);
-      facets.push(counts ? { value, count: tally.get(value) ?? 0 } : { value });
-    }
-
-    const discovered = [...tally.keys()]
-      .filter((value) => value !== BLANK && !seen.has(value))
-      .sort(compareValues);
-    for (const value of discovered) {
-      facets.push(counts ? { value, count: tally.get(value) ?? 0 } : { value });
-    }
-
-    // blank is offered only where the walk actually found one, so the static tier never shows it
-    const blanks = tally.get(BLANK);
-    if (blanks !== undefined) {
-      facets.push(
-        counts ? { value: BLANK, blank: true, count: blanks } : { value: BLANK, blank: true },
-      );
-    }
-
-    return facets;
+    const counts = () => this.facetCounts;
+    return this.facetDomain.map((value) => {
+      // a getter, not a field, so building the list never forces the tally — but an own enumerable
+      // one, so a spread or `toEqual` still sees `count`
+      const facet: Facet = {
+        value,
+        get count() {
+          const tally = counts();
+          return tally && (tally.get(value) ?? 0);
+        },
+      };
+      if (value === BLANK) facet.blank = true;
+      return facet;
+    });
   }
 
-  // The one pass over the rows behind `facets`. `undefined` marks the static tier — a declared
-  // domain with no counts asked for, where there is nothing to discover.
-  private get facetScan(): Map<SetFilterValue, number> | undefined {
+  /**
+   * The values `facets` lists, in order. Two tiers, chosen by the filter rather than configured
+   * here:
+   *
+   * | tier | when | walk |
+   * | --- | --- | --- |
+   * | static | `options` declared, or server mode | none |
+   * | values | the default | `rows`, invalidated by `rows` alone |
+   *
+   * A declared domain is taken at its word: values in the rows but not in `options` are not
+   * listed, and neither is blank. Otherwise discovered values are sorted, blank last — insertion
+   * order alone would be first-appearance-in-rows, which reshuffles the list every time the table
+   * is sorted.
+   *
+   * Server mode is always static. Walking would discover only the values that survived the current
+   * selection, so the list would collapse to what is already chosen and could never be widened
+   * again. A server-mode filter without `options` therefore has an empty facet list.
+   */
+  get facetDomain(): SetFilterValue[] {
     const filter = this.filter;
-    if (!filter) return undefined;
-    // Server mode is always the static tier. Walking would discover only the values that survived
-    // the current selection, so the list would collapse to what is already chosen and could never
-    // be widened again. A server-mode filter without `options` therefore has an empty facet list.
-    if (this.filterMode === "server") return undefined;
-    if (filter.options && !filter.counts) return undefined;
+    if (!filter) return [];
+    if (filter.options) return [...filter.options];
+    if (this.filterMode === "server") return [];
+
+    const found = new Set<SetFilterValue>();
+    for (const row of this.table.rows) {
+      // `matches` projects internally, but the walk has to project for itself, or the list would
+      // offer raw values that select nothing (see ValueFilter.project)
+      for (const value of this.facetKeys(row)) found.add(value);
+    }
+    const values = [...found].filter((value) => value !== BLANK).sort(compareValues);
+    if (found.has(BLANK)) values.push(BLANK);
+    return values;
+  }
+
+  /**
+   * Cross-filtered row counts per facet value — what `facet.count` reads. `undefined` in server
+   * mode, where `rows` are already narrowed by this very filter, so any tally would describe the
+   * current selection rather than what selecting something else would give.
+   *
+   * This is the expensive part: it runs every *other* active filter per row and so depends on all
+   * of them, which is why it is its own computed and never read unless a count is. A value absent
+   * from the map counts zero.
+   */
+  get facetCounts(): ReadonlyMap<SetFilterValue, number> | undefined {
+    const filter = this.filter;
+    if (!filter || this.filterMode === "server") return undefined;
 
     // The cross-filter deliberately keeps the *other* filters and the search: a row those already
     // exclude must not be counted, or the tally would promise rows that selecting the value could
     // never surface.
-    const cross =
-      filter.counts === true ? this.table.filterPredicateExcluding(this.key) : undefined;
+    const cross = this.table.filterPredicateExcluding(this.key);
 
     // When picks intersect (a set filter in "all" mode) each extra one *narrows*, so a count of
     // "rows carrying this value" answers a question the filter is no longer asking — it would read
     // higher than the row count you actually get. Fold this column's own filter back in, and the
     // count becomes the size of the intersection with what is already picked.
-    //
-    // Gated on `counts`, not on `cross`: `filterPredicateExcluding` is undefined whenever no *other*
-    // filter is active, which is exactly the lone-filter case this still has to cover.
-    const intersecting = filter.counts === true && filter.intersecting === true;
+    const intersecting = filter.intersecting === true;
 
     const tally = new Map<SetFilterValue, number>();
     for (const row of this.table.rows) {
-      // Every row contributes its *keys* — only the count is gated by the cross-filter. Skipping
-      // excluded rows outright would build the domain out of the surviving rows, so a value found
-      // only in excluded ones would vanish from the list instead of sitting there at zero. If it
-      // were currently selected there would then be no way to untick it short of clearing
-      // everything: the funnel still narrows, but the checkbox is gone.
-      const raw = this.config.value(row);
-      const counted = (!cross || cross(row)) && (!intersecting || filter.matches(raw));
-      // `matches` projects internally, so it gets the raw value — but the walk has to project for
-      // itself, or the list would offer raw values that select nothing (see ValueFilter.project).
-      for (const value of facetValues(filter.project ? filter.project(raw) : raw)) {
-        tally.set(value, (tally.get(value) ?? 0) + (counted ? 1 : 0));
-      }
+      if (cross && !cross(row)) continue;
+      if (intersecting && !filter.matches(this.config.value(row))) continue;
+      for (const value of this.facetKeys(row)) tally.set(value, (tally.get(value) ?? 0) + 1);
     }
     return tally;
+  }
+
+  // The facet values one row contributes, projected the way `matches` sees them.
+  private facetKeys(row: RowData): Set<SetFilterValue> {
+    const raw = this.config.value(row);
+    const project = this.filter?.project;
+    return facetValues(project ? project(raw) : raw);
   }
 
   // The rendered pinned block this column belongs to (outer-edge-first), or undefined when unpinned.
@@ -340,7 +343,7 @@ export class ColumnModel {
     this.table = table;
     this.config = config;
 
-    makeObservable<this, "facetScan">(this, {
+    makeObservable<this, "facetKeys">(this, {
       config: observableRef,
       pinned: observable,
       hidden: observable,
@@ -357,7 +360,9 @@ export class ColumnModel {
       sortDirection: computed,
       sortIndex: computed,
       facets: computed,
-      facetScan: computed,
+      facetDomain: computed,
+      facetCounts: computed,
+      facetKeys: false,
       filterCondition: computed,
 
       setPinned: action,

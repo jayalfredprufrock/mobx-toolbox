@@ -294,23 +294,21 @@ describe("facets", () => {
     expect(table.column("category")?.facets).toEqual([]);
   });
 
-  test("values tier: discovers the domain, sorted, blank last, no counts", () => {
+  test("values tier: discovers the domain, sorted, blank last", () => {
     const table = makeTable([{ key: "category", filter: new SetFilter() }]);
-    expect(table.column("category")?.facets).toEqual([
-      { value: "a" },
-      { value: "b" },
-      { value: "c" },
-      { value: BLANK, blank: true },
+    expect(table.column("category")?.facetDomain).toEqual(["a", "b", "c", BLANK]);
+    // the blank entry carries its render hint; no other entry does
+    expect(table.column("category")?.facets.map((f) => f.blank)).toEqual([
+      undefined,
+      undefined,
+      undefined,
+      true,
     ]);
   });
 
   test("values tier flattens array columns into distinct values", () => {
     const table = makeTable([{ key: "tags", filter: new SetFilter() }]);
-    expect(table.column("tags")?.facets).toEqual([
-      { value: "x" },
-      { value: "y" },
-      { value: BLANK, blank: true },
-    ]);
+    expect(table.column("tags")?.facetDomain).toEqual(["x", "y", BLANK]);
   });
 
   test("static tier: declared options in declaration order, no walk, so no blank", () => {
@@ -318,25 +316,55 @@ describe("facets", () => {
     const table = makeTable([{ key: "category", filter }]);
 
     // "z" is not in the data and "b"/"c" are — a declared domain is taken at its word
-    expect(table.column("category")?.facets).toEqual([{ value: "z" }, { value: "a" }]);
+    expect(table.column("category")?.facetDomain).toEqual(["z", "a"]);
   });
 
-  test("counted tier: tallies, keeps declared order, and retains zero counts", () => {
-    const filter = new SetFilter({ options: ["x", "zzz"], counts: true });
+  test("counts over a declared domain keep declared order and retain zero counts", () => {
+    const filter = new SetFilter({ options: ["x", "zzz"] });
     const table = makeTable([{ key: "tags", filter }]);
 
     expect(table.column("tags")?.facets).toEqual([
       { value: "x", count: 2 },
       // kept, not dropped: a popover is where you go to undo an over-narrowed filter
       { value: "zzz", count: 0 },
-      { value: "y", count: 2 },
-      { value: BLANK, blank: true, count: 2 },
     ]);
+  });
+
+  test("reading the domain alone never subscribes to the other filters", () => {
+    const category = new SetFilter();
+    const tags = new SetFilter();
+    const table = makeTable([
+      { key: "category", filter: category },
+      { key: "tags", filter: tags },
+    ]);
+
+    let runs = 0;
+    observe(() => {
+      runs++;
+      table.column("tags")?.facets.map((f) => f.value);
+    });
+    expect(runs).toBe(1);
+
+    // a checkbox list that shows no numbers must not pay for the cross-filter
+    category.toggle("a");
+    expect(runs).toBe(1);
+  });
+
+  test("facetCounts is the same tally the facet getters read", () => {
+    const category = new SetFilter({ selected: ["a"] });
+    const table = makeTable([
+      { key: "category", filter: category },
+      { key: "tags", filter: new SetFilter() },
+    ]);
+    const column = table.column("tags")!;
+    expect(Object.fromEntries(column.facetCounts!)).toEqual(
+      Object.fromEntries(column.facets.map((f) => [f.value, f.count])),
+    );
   });
 
   test("counted tier cross-filters by every *other* filter", () => {
     const category = new SetFilter();
-    const tags = new SetFilter({ counts: true });
+    const tags = new SetFilter();
     const table = makeTable([
       { key: "category", filter: category },
       { key: "tags", filter: tags },
@@ -363,7 +391,7 @@ describe("facets", () => {
     // filtering — funnel active, no checkbox to untick. Declared `options` masked this, which is
     // why the zero-count test above did not catch it.
     const category = new SetFilter();
-    const tags = new SetFilter({ counts: true });
+    const tags = new SetFilter();
     const table = makeTable([
       { key: "category", filter: category },
       { key: "tags", filter: tags },
@@ -381,8 +409,7 @@ describe("facets", () => {
     expect(tags.has("y")).toBe(true);
   });
 
-  test("zero counts do not leak into the uncounted tiers", () => {
-    // `cross` is only set when counts were asked for, so the default tier still walks every row
+  test("the domain is built from every row, whatever the other filters exclude", () => {
     const category = new SetFilter({ selected: ["c"] });
     const tags = new SetFilter();
     const table = makeTable([
@@ -390,15 +417,11 @@ describe("facets", () => {
       { key: "tags", filter: tags },
     ]);
 
-    expect(table.column("tags")?.facets).toEqual([
-      { value: "x" },
-      { value: "y" },
-      { value: BLANK, blank: true },
-    ]);
+    expect(table.column("tags")?.facetDomain).toEqual(["x", "y", BLANK]);
   });
 
   test("a counted column's own filter never narrows its own facets", () => {
-    const tags = new SetFilter({ counts: true });
+    const tags = new SetFilter();
     const table = makeTable([{ key: "tags", filter: tags }]);
 
     tags.toggle("x");
@@ -411,7 +434,7 @@ describe("facets", () => {
   });
 
   test("counted tier respects a data-only column and the search", () => {
-    const tags = new SetFilter({ counts: true });
+    const tags = new SetFilter();
     const table = makeTable([
       { key: "tags", filter: tags },
       {
@@ -433,7 +456,7 @@ describe("facets", () => {
 
   test("facets are reactive to rows and to other filters", () => {
     const category = new SetFilter();
-    const tags = new SetFilter({ counts: true });
+    const tags = new SetFilter();
     const table = makeTable([
       { key: "category", filter: category },
       { key: "tags", filter: tags },
@@ -455,7 +478,7 @@ describe("facets", () => {
   });
 
   test('counts follow matchMode "all", where each pick narrows', () => {
-    const tags = new SetFilter({ counts: true, multiValue: true, matchMode: "all" });
+    const tags = new SetFilter({ multiValue: true, matchMode: "all" });
     const table = makeTable([{ key: "tags", filter: tags }]);
 
     tags.toggle("x"); // rows 1 and 5
@@ -471,7 +494,7 @@ describe("facets", () => {
 
   test('every "all"-mode count predicts the row count you get by ticking it', () => {
     // the invariant the bug broke: a count that does not match what happens when you click it
-    const tags = new SetFilter({ counts: true, multiValue: true, matchMode: "all" });
+    const tags = new SetFilter({ multiValue: true, matchMode: "all" });
     const table = makeTable([{ key: "tags", filter: tags }]);
     tags.toggle("x");
 
@@ -489,7 +512,7 @@ describe("facets", () => {
 
   test('an "any"-mode count still means "rows carrying this value"', () => {
     // the default semantic is unchanged: picking widens, so the own filter stays out of the tally
-    const tags = new SetFilter({ counts: true });
+    const tags = new SetFilter();
     const table = makeTable([{ key: "tags", filter: tags }]);
 
     tags.toggle("x");
@@ -501,7 +524,7 @@ describe("facets", () => {
   });
 
   test("switching matchMode reshapes the counts reactively", () => {
-    const tags = new SetFilter({ counts: true, multiValue: true });
+    const tags = new SetFilter({ multiValue: true });
     const table = makeTable([{ key: "tags", filter: tags }]);
     tags.toggle("x");
 
@@ -518,8 +541,8 @@ describe("facets", () => {
 
   test('an empty selection under "all" counts like "any"', () => {
     // matches() passes everything while inactive, so the extra gate is a no-op
-    const anyMode = new SetFilter({ counts: true });
-    const allMode = new SetFilter({ counts: true, multiValue: true, matchMode: "all" });
+    const anyMode = new SetFilter();
+    const allMode = new SetFilter({ multiValue: true, matchMode: "all" });
     const a = makeTable([{ key: "tags", filter: anyMode }]);
     const b = makeTable([{ key: "tags", filter: allMode }]);
 
@@ -551,7 +574,7 @@ describe("facets", () => {
 describe("all four filter kinds on one table", () => {
   const build = () => {
     const category = new SetFilter();
-    const tags = new SetFilter({ counts: true });
+    const tags = new SetFilter();
     const score = new DateFilter();
     const name = new TextFilter();
     const table = makeTable([
@@ -759,12 +782,7 @@ describe("filter factories", () => {
   test("facets, predicate and filterable all see the resolved filter", () => {
     const table = makeTable(columns);
     expect(table.column("category")?.filterable).toBe(true);
-    expect(table.column("category")?.facets).toEqual([
-      { value: "a" },
-      { value: "b" },
-      { value: "c" },
-      { value: BLANK, blank: true },
-    ]);
+    expect(table.column("category")?.facetDomain).toEqual(["a", "b", "c", BLANK]);
 
     filterOf(table, "score", DateFilter).setRange(25, undefined);
     expect(ids(table.clientFilteredRows)).toEqual([3, 4, 5]);
@@ -800,8 +818,8 @@ describe("BucketFilter on a column", () => {
     { label: "F", max: 60 },
   ];
 
-  const build = (opts: { counts?: boolean } = {}) => {
-    const filter = new BucketFilter({ buckets: grades, counts: opts.counts });
+  const build = () => {
+    const filter = new BucketFilter({ buckets: grades });
     const table = new TableModel({
       data: students,
       columns: [{ key: "score", filter }, "name"] as ColumnsDef<Student>,
@@ -833,31 +851,25 @@ describe("BucketFilter on a column", () => {
   test("facets list the projected domain, not every distinct score", () => {
     // the reason `project` is on the interface: the table walks rows itself and never calls matches
     const { table } = build();
-    expect(table.column("score")?.facets).toEqual([
-      { value: "A" },
-      { value: "B" },
-      { value: "C" },
-      { value: "D" },
-      { value: "F" },
-    ]);
+    expect(table.column("score")?.facetDomain).toEqual(["A", "B", "C", "D", "F"]);
   });
 
-  test("counts tally per bucket, and blanks stay their own facet", () => {
-    const { table } = build({ counts: true });
+  test("counts tally per bucket; a declared domain lists no blank", () => {
+    const { table } = build();
     expect(table.column("score")?.facets).toEqual([
       { value: "A", count: 1 },
       { value: "B", count: 2 },
       { value: "C", count: 1 },
       { value: "D", count: 0 },
+      // a missing score is not a low one — it is counted under BLANK, which is not listed
       { value: "F", count: 1 },
-      // a missing score is not a low one
-      { value: BLANK, blank: true, count: 1 },
     ]);
+    expect(table.column("score")?.facetCounts?.get(BLANK)).toBe(1);
   });
 
   test("counts cross-filter like any other set filter", () => {
     const name = new SetFilter();
-    const filter = new BucketFilter({ buckets: grades, counts: true });
+    const filter = new BucketFilter({ buckets: grades });
     const table = new TableModel({
       data: students,
       columns: [
@@ -874,7 +886,6 @@ describe("BucketFilter on a column", () => {
       { value: "C", count: 0 },
       { value: "D", count: 0 },
       { value: "F", count: 0 },
-      { value: BLANK, blank: true, count: 0 },
     ]);
   });
 

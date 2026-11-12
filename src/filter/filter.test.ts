@@ -189,14 +189,9 @@ describe("SetFilter", () => {
     expect(filter.matchMode).toBe("any");
   });
 
-  test("options and counts are config, not state", () => {
-    const bare = new SetFilter();
-    expect(bare.options).toBeUndefined();
-    expect(bare.counts).toBe(false);
-
-    const configured = new SetFilter({ options: ["a", "b"], counts: true });
-    expect(configured.options).toEqual(["a", "b"]);
-    expect(configured.counts).toBe(true);
+  test("options are config, not state", () => {
+    expect(new SetFilter().options).toBeUndefined();
+    expect(new SetFilter({ options: ["a", "b"] }).options).toEqual(["a", "b"]);
   });
 
   test("multiValue is declared config and gates nothing", () => {

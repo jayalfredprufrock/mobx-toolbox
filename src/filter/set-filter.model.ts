@@ -47,9 +47,6 @@ export class SetFilter implements ValueFilter {
    */
   readonly project: ((value: unknown) => unknown) | undefined;
 
-  /** Whether facet counts were asked for. See {@link SetFilterOptions.counts}. */
-  readonly counts: boolean;
-
   /**
    * Whether the values are arrays, and so whether a UI should offer `"all"` as a match mode.
    * `"none"` is not gated by it. Advisory only — see {@link SetFilterOptions.multiValue}.
@@ -99,7 +96,6 @@ export class SetFilter implements ValueFilter {
   constructor(options?: SetFilterOptions) {
     this.options = options?.options;
     this.project = options?.project;
-    this.counts = options?.counts === true;
     this.multiValue = options?.multiValue === true;
     if (options?.matchMode) this.matchMode = options.matchMode;
     if (options?.selected) for (const v of options.selected) this.selected.add(v);

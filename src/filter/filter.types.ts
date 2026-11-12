@@ -179,12 +179,12 @@ export interface ValueFilter {
 /**
  * One entry in a set filter's value domain.
  *
- * `count` is present only when counts were asked for (`counts: true`) — an absent count means
- * "not counted", never "zero".
+ * `count` is computed lazily on read — reading it is what pays for the cross-filtered tally. It is
+ * `undefined` only where nothing is counted (a server-mode column), never as a stand-in for zero.
  */
 export interface Facet {
-  value: SetFilterValue;
-  count?: number;
+  readonly value: SetFilterValue;
+  readonly count?: number | undefined;
   /**
    * Render hint: this entry stands for missing/empty values. Present so a view can show it
    * differently (italic "(Blank)", pinned last) without ever comparing against the `BLANK`
@@ -201,11 +201,6 @@ export interface SetFilterOptions {
    * rows walked to discover one. See `ColumnModel.facets` for the three tiers.
    */
   options?: readonly SetFilterValue[];
-  /**
-   * Opt into cross-filtered facet counts. Off by default because it is the expensive tier —
-   * O(rows x other active filters), recomputed whenever *any* filter is toggled.
-   */
-  counts?: boolean;
   /**
    * Declares that this filter's values are arrays, which is what makes `matchMode: "all"` mean
    * anything — so a UI should gate the "all" option on this. `"none"` needs no such gate: excluding
@@ -248,8 +243,8 @@ export type DateUnit = "s" | "ms" | "auto";
 export type DateLike = Date | number | string;
 
 /**
- * Note the absence of `options` and `counts`: a date range has no discrete domain to enumerate and
- * no facet list to count, so a `counts: true` here is a type error rather than a runtime no-op.
+ * Note the absence of `options`: a date range has no discrete domain to enumerate, so declaring
+ * one here is a type error rather than a runtime no-op.
  */
 export interface DateFilterOptions {
   min?: DateLike;
@@ -325,14 +320,13 @@ export interface BucketFilterOptions {
    * wins, so overlapping buckets resolve by declaration order rather than being an error.
    */
   buckets: readonly Bucket[];
-  counts?: boolean;
   matchMode?: SetMatchMode;
   selected?: Iterable<SetFilterValue>;
   /** View props your components read; see {@link SetFilterProps}. */
   props?: BucketFilterProps;
 }
 
-/** As with {@link NumberFilterOptions}, no `options`/`counts`: free text has no enumerable domain. */
+/** As with {@link NumberFilterOptions}, no `options`: free text has no enumerable domain. */
 export interface TextFilterOptions {
   /** Initial query text. */
   text?: string;

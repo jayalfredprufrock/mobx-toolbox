@@ -3,9 +3,9 @@
  *
  * Two things are worth pinning down at the type level rather than at runtime:
  *
- * 1. Faceting is a set-filter concept. A `counts: true` on a numeric range has no meaning, and the
- *    whole reason `options`/`counts` live in `SetFilterOptions` instead of on the column def is that
- *    it makes the meaningless combination a type error instead of a silent no-op.
+ * 1. Faceting is a set-filter concept. Declared `options` on a numeric range have no meaning, and
+ *    the whole reason `options` lives in `SetFilterOptions` instead of on the column def is that it
+ *    makes the meaningless combination a type error instead of a silent no-op.
  * 3. View props are open for augmentation, so declaring what your components need is checked at
  *    every construction site.
  * 2. `table` must never need to import a filter class. It declares `ColumnFilter` structurally, so
@@ -57,19 +57,19 @@ assignableTo<ColumnFilter>(new SetFilter());
 assignableTo<ColumnFilter>(new DateFilter());
 assignableTo<ColumnFilter>(new TextFilter());
 
+// counts are read lazily off facets, not opted into
+// @ts-expect-error
+new SetFilter({ counts: true });
+
 // --- faceting belongs to SetFilter alone -----------------------------------
 
-assignableTo<SetFilter>(new SetFilter({ options: ["a", "b"], counts: true, multiValue: true }));
+assignableTo<SetFilter>(new SetFilter({ options: ["a", "b"], multiValue: true }));
 
-// @ts-expect-error -- a numeric range has no discrete domain to count
-new DateFilter({ counts: true });
-// @ts-expect-error -- nor one to enumerate
+// @ts-expect-error -- a numeric range has no discrete domain to enumerate
 new DateFilter({ options: [1, 2] });
 // @ts-expect-error -- nor is a range multi-valued; there is no any/all to offer
 new DateFilter({ multiValue: true });
 // @ts-expect-error -- free text has no enumerable domain either
-new TextFilter({ counts: true });
-// @ts-expect-error
 new TextFilter({ options: ["a"] });
 
 // --- every filter can serialize itself for a server ------------------------

@@ -156,13 +156,13 @@ describe('facet counts under "none"', () => {
     Object.fromEntries(table.column("status")!.facets.map((f) => [f.value, f.count]));
 
   test("with nothing selected, counts are the plain tally", () => {
-    const filter = new SetFilter({ counts: true, matchMode: "none" });
+    const filter = new SetFilter({ matchMode: "none" });
     const table = build(filter);
     expect(counts(table)).toEqual({ draft: 2, live: 3, archived: 1 });
   });
 
   test("a count is what excluding that value would remove", () => {
-    const filter = new SetFilter({ counts: true, matchMode: "none", selected: ["draft"] });
+    const filter = new SetFilter({ matchMode: "none", selected: ["draft"] });
     const table = build(filter);
 
     // 4 rows currently pass (live + archived). Excluding "live" too would drop 3 of them.
@@ -175,7 +175,7 @@ describe('facet counts under "none"', () => {
   });
 
   test("an already-excluded value counts zero, and is still listed so it can be unticked", () => {
-    const filter = new SetFilter({ counts: true, matchMode: "none", selected: ["draft"] });
+    const filter = new SetFilter({ matchMode: "none", selected: ["draft"] });
     const table = build(filter);
 
     // true: excluding it again removes nothing
@@ -193,7 +193,6 @@ describe('facet counts under "none"', () => {
       { id: 3, tags: ["b"] },
     ];
     const filter = new SetFilter({
-      counts: true,
       multiValue: true,
       matchMode: "all",
       selected: ["a"],

@@ -142,7 +142,7 @@ describe("built-in search", () => {
   });
 
   test("narrows the counted-facet tally like any other filter", () => {
-    const secret = new SetFilter({ counts: true });
+    const secret = new SetFilter();
     const table = makeTable(["first", { key: "secret", filter: secret }]);
 
     expect(table.column("secret")?.facets).toEqual([

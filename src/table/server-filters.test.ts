@@ -220,12 +220,14 @@ describe("server-mode facets", () => {
     ]);
   });
 
-  test("never carries counts, even when asked for", () => {
-    const filter = new SetFilter({ options: ["info", "error"], counts: true });
+  test("never carries counts", () => {
+    const filter = new SetFilter({ options: ["info", "error"] });
     const table = makeTable([{ key: "level", filter, filterMode: "server" }]);
 
     // counting an already-narrowed set would describe the current selection, not the alternatives
     expect(table.column("level")?.facets).toEqual([{ value: "info" }, { value: "error" }]);
+    expect(table.column("level")?.facets.map((f) => f.count)).toEqual([undefined, undefined]);
+    expect(table.column("level")?.facetCounts).toBeUndefined();
   });
 
   test("without options the facet list is empty", () => {
@@ -236,7 +238,7 @@ describe("server-mode facets", () => {
   test("a client column's counted facets ignore server filters", () => {
     // those are already applied to `rows`, so counting them again would narrow twice
     const level = new SetFilter({ options: ["error"] });
-    const message = new SetFilter({ counts: true });
+    const message = new SetFilter();
     const table = makeTable([
       { key: "level", filter: level, filterMode: "server" },
       { key: "message", filter: message },

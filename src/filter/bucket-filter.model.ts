@@ -84,7 +84,6 @@ export class BucketFilter extends SetFilter {
       // the labels *are* the domain, derived rather than declared twice so they cannot drift
       options: buckets.map((b) => b.label as SetFilterValue),
       project: bucketProjection(buckets),
-      counts: options.counts,
       matchMode: options.matchMode,
       selected: options.selected,
       props: options.props,

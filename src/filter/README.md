@@ -94,7 +94,6 @@ tags.matches(["urgent", "backlog"]); // true
 | `select(vs?)`     |                                             | Replace the whole selection; no args clears it. |
 | `setMatchMode(m)` |                                             |                                                 |
 | `options`         | `readonly SetFilterValue[] \| undefined`    | Declared domain. Config, not state.             |
-| `counts`          | `boolean`                                   | Opt into facet counts. Config, not state.       |
 | `multiValue`      | `boolean`                                   | Values are arrays. Config, not state.           |
 | `intersecting`    | `boolean`                                   | `matchMode !== "any"`. Derived, not config.     |
 | `value`           | `{ selected: SetFilterValue[]; matchMode }` |                                                 |
@@ -171,15 +170,17 @@ in one UI.
 `intersecting` is a boolean rather than the mode itself so that the rule for deciding it stays here,
 with the filter that has the modes. Whoever computes facets never has to know what `"all"` means.
 
-### `options` and `counts`
+### `options`
 
-Both are configuration for whoever computes facets — a list of values with tallies. They live here
-rather than on a table column def because faceting is a _set-filter_ concept, not a table one: a
-numeric range's equivalent would be a histogram (buckets, not values) and free text has no domain at
-all. `DateFilterOptions` and `TextFilterOptions` therefore don't declare them, so a meaningless
-`counts: true` on a range is a compile error rather than a silent no-op.
+Configuration for whoever computes facets — a declared value domain, which also spares the walk that
+would otherwise discover one. It lives here rather than on a table column def because faceting is a
+_set-filter_ concept, not a table one: a numeric range's equivalent would be a histogram (buckets,
+not values) and free text has no domain at all. `DateFilterOptions` and `TextFilterOptions` therefore
+don't declare it, so a meaningless `options` on a range is a compile error rather than a silent
+no-op.
 
-See `ColumnModel.facets` in the `table` docs for the three cost tiers these select.
+There is no option for counts: they are computed lazily, when a facet's `count` is read. See
+`ColumnModel.facets` in the `table` docs.
 
 ## `DateFilter`
 
@@ -513,8 +514,8 @@ interface FilterCondition {
 }
 
 interface Facet {
-  value: SetFilterValue;
-  count?: number;
+  readonly value: SetFilterValue;
+  readonly count?: number | undefined; // lazy getter
   blank?: boolean;
 }
 ```
@@ -522,6 +523,7 @@ interface Facet {
 `Facet` is produced by whoever walks the data — see `ColumnModel.facets` in `table`. `value` is a
 `SetFilterValue` rather than `unknown` because that is what a facet genuinely is —
 `facetValues` stringifies anything else — so `filter.toggle(facet.value)` needs no cast. `count` is
-present only when counts were asked for; an absent count means "not counted", never "zero".
+a getter that tallies on first read, so reading it is what pays for counting. It is `undefined` only
+where nothing is counted (a server-mode column), never as a stand-in for zero.
 `blank` is a render hint (italic "(Blank)", pinned last) so a view never has to compare against the
 sentinel itself.

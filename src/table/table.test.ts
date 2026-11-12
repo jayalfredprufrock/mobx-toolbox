@@ -388,6 +388,33 @@ describe("columnWidths", () => {
     expect(table.virtualWidth).toBe(1000);
   });
 
+  test("a floating-point overshoot is absorbed, so virtualWidth equals width exactly", () => {
+    // six equal 1fr shares of 100px sum to 100.00000000000001
+    const keys = ["a", "b", "c", "d", "e", "f"];
+    const table = makeTable(
+      [Object.fromEntries(keys.map((k) => [k, 1]))],
+      { columns: keys.map((key) => ({ key, minWidth: 1 })) },
+      { width: 100 },
+    );
+    expect(table.virtualWidth).toBe(100);
+    expect(table.virtualWidth > table.width).toBe(false);
+  });
+
+  test("a genuine overflow is left alone", () => {
+    const table = makeTable(
+      [{ a: 1, b: 2 }],
+      {
+        columns: [
+          { key: "a", minWidth: 80 },
+          { key: "b", minWidth: 80 },
+        ],
+      },
+      { width: 100 },
+    );
+    expect(table.orderedColumns.map((c) => c.width)).toEqual([80, 80]);
+    expect(table.virtualWidth).toBe(160);
+  });
+
   test("a manual width is treated as fixed and reflows the flex columns", () => {
     const table = makeTable([{ a: 1, b: 2, c: 3 }], {}, { width: 900 });
     expect(table.orderedColumns.map((c) => c.width)).toEqual([300, 300, 300]);

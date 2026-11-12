@@ -30,6 +30,9 @@ import type {
 } from "./table.types";
 import { isLazy, isPaged } from "./is-lazy";
 
+/** Below this, a column total that misses `width` is floating-point noise, not a real overflow. */
+const ROUNDING_TOLERANCE = 1e-6;
+
 export class TableModel {
   readonly config?: TableConfig<any>;
 
@@ -206,9 +209,10 @@ export class TableModel {
    * (`"Nfr"`, default `1fr`) and share the remaining space by weight, clamped to
    * [minWidth, maxWidth] via a freeze-redistribute pass (a column that hits a clamp is frozen
    * and its share is re-split among the others). Any leftover slack — every flex column capped
-   * at its max — is absorbed by the last column so the columns always fill the viewport (this
-   * also soaks up sub-pixel rounding). When the minimums don't fit, the total exceeds the
-   * viewport and the table scrolls horizontally.
+   * at its max — is absorbed by the last column so the columns always fill the viewport. So is a
+   * floating-point overshoot (equal `fr` shares can sum a hair past `width`), which is what lets
+   * `virtualWidth > width` mean "the table genuinely scrolls horizontally" with no tolerance of
+   * your own. When the minimums don't fit, the total exceeds the viewport and the table scrolls.
    */
   get columnWidths(): Map<ColumnModel, number> {
     const cols = this.orderedColumns;
@@ -263,19 +267,25 @@ export class TableModel {
       }
     }
 
-    // no-gap: absorb any leftover (underfill) into the last column, even past its max
-    const used = cols.reduce((sum, c) => sum + (result.get(c) ?? 0), 0);
-    const slack = this.width - used;
-    if (slack > 0) {
-      const sink = cols[cols.length - 1]!;
-      result.set(sink, (result.get(sink) ?? 0) + slack);
-    }
+    // No gap, no overshoot: the last column absorbs any underfill (even past its max) and any
+    // rounding overshoot. It is sized as `width` minus the others, summed in the order
+    // `virtualWidth` sums them, so the total lands on `width` itself rather than within a ulp.
+    const sink = cols[cols.length - 1]!;
+    const others = cols.slice(0, -1).reduce((sum, c) => sum + (result.get(c) ?? 0), 0);
+    const slack = this.width - others - (result.get(sink) ?? 0);
+    if (slack > -ROUNDING_TOLERANCE) result.set(sink, this.width - others);
 
     return result;
   }
 
+  /**
+   * Sum of the column widths. Exactly `width` whenever the columns fit, so `virtualWidth > width`
+   * is a safe test for horizontal overflow — see {@link columnWidths}.
+   */
   get virtualWidth(): number {
-    return this.orderedColumns.reduce((sum, col) => sum + col.width, 0);
+    const sum = this.orderedColumns.reduce((total, col) => total + col.width, 0);
+    // `others + (width - others)` can still land a ulp off `width` in floating point
+    return Math.abs(sum - this.width) <= ROUNDING_TOLERANCE ? this.width : sum;
   }
 
   get virtualHeight(): number {

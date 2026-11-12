@@ -42,27 +42,17 @@ export interface TableGutterProps extends HTMLAttributes<HTMLDivElement> {
  * error states in practice, since both render an overlay across the viewport and there are no rows
  * to scroll past to reach this.
  *
- * **Entirely ungated** — unlike `<Table.Empty>` / `<Table.Loading>` / `<Table.Error>`, which render
- * the states the table can evaluate for itself. What goes here is what the *source* knows, so the
- * condition is yours:
- *
- * ```tsx
- * <Table.Footer>
- *   {feed.loadingMore ? <Spinner /> : feed.hasMore ? null : <EndOfResults total={feed.total} />}
- * </Table.Footer>
- * ```
- *
  * Reach the source through `table.pages` when all you have is the model:
  *
  * ```tsx
- * const FooterStatus = observer(() => {
+ * const GutterStatus = observer(() => {
  *   const { pages } = useTableContext();
  *   if (!pages) return null;
  *   return pages.loadingMore ? <Spinner /> : pages.hasMore ? null : <EndOfResults />;
  * });
  * ```
  *
- * Rendering `null` children still occupies the strip. Skip the element entirely for no footer at
+ * Rendering `null` children still occupies the strip. Skip the element entirely for no gutter at
  * all — a table with nothing to say below its rows shouldn't reserve a row's worth of space.
  *
  * Sticky-left at the visible width, like every other table-wide surface, so it stays put under

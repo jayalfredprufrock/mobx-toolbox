@@ -1231,6 +1231,12 @@ The client and server sets are **disjoint**: a server-mode filter is never evalu
 nothing is applied twice. Client filters still narrow what the server returns, because the table
 filters over `rows` without replacing them.
 
+- ⚠️ **The table no longer snaps columns or pads its scroll container.** `<Table.Scroll>` used to set
+  `scroll-snap-type`, plus `scroll-padding-left` for the pinned columns, and unpinned headers set
+  `scroll-snap-align`. The padding made focusing anything in a pinned cell (a selection checkbox)
+  scroll the table. To keep snapping, and to keep focus in scrolled columns clear of the pinned
+  ones, add the CSS under "Horizontal snapping and focus under pinned columns" in the table README;
+  it reads the new `--table-pinned-left` / `--table-pinned-right` variables.
 - ⚠️ **A server-mode column's facets never walk the rows and never carry counts.** Both would be
   computed over rows that filter already narrowed — the list would collapse to whatever is selected
   and could never be widened. Declare `options` on the filter; without one, the facet list is empty.

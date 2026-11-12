@@ -1615,12 +1615,45 @@ Every variable the library touches is an **output**: two of them are what you co
 | `--table-row-height`    | `.table-viewport` | The configured row height                                              |
 | `--table-header-height` | `.table-viewport` | The header's box — `headerHeight`, or `rowHeight` by default           |
 | `--table-scroll-width`  | `.table-scroll`   | The scrolling box's visible content width, vertical scrollbar excluded |
+| `--table-pinned-left`   | `.table-scroll`   | Total width of the left-pinned columns (`0px` when none)               |
+| `--table-pinned-right`  | `.table-scroll`   | Total width of the right-pinned columns (`0px` when none)              |
 
-The library reads `--table-scroll-width` itself for the pieces that pin horizontally — `<Table.Gutter>`, `<Table.Expansion>`, `<Table.Overlay>` and the rounded header background layer. The other two exist for you.
+The library reads `--table-scroll-width` itself for the pieces that pin horizontally — `<Table.Gutter>`, `<Table.Expansion>`, `<Table.Overlay>` and the rounded header background layer. The rest exist for you.
 
 `--table-pinned-bg` is the one variable you may want to **set**, and it is a colour rather than a measurement — see above. It has a working default, so nothing breaks if you leave it alone.
 
 `--table-header-height` is what you want for anything that has to line up with where the rows start — insetting a custom scrollbar so it doesn't run up behind the header, for instance. Set the value through `headerHeight` rather than defining the variable yourself: `<Table.Header>` renders at exactly what is published here, so a definition of your own would move the header without moving the overlay with it. It is what the config says whether or not a header is rendered — see [Header height](#header-height).
+
+### Horizontal snapping and focus under pinned columns
+
+The library doesn't snap columns or offset scrolling for pinned columns — both are yours to opt into,
+and both take only CSS:
+
+```css
+/* snap scrolled columns to just right of the left-pinned ones */
+.table-scroll {
+  scroll-snap-type: x proximity;
+}
+.table-scroll [role="columnheader"]:not([data-pinned]) {
+  scroll-snap-align: start;
+  scroll-margin-left: var(--table-pinned-left);
+}
+
+/* bring focused content in unpinned cells out from under the pinned columns, on both sides */
+.table-scroll [role="cell"]:not([data-pinned]) * {
+  scroll-margin-left: var(--table-pinned-left);
+  scroll-margin-right: var(--table-pinned-right);
+}
+```
+
+Use `scroll-margin` on the elements, never `scroll-padding` on `.table-scroll`. Padding on the
+container applies to _every_ scroll-into-view, so focusing a control inside a pinned cell — a
+selection checkbox — would scroll the table to clear the strip that control lives in. A margin only
+offsets the elements that carry it, and nothing in a pinned cell does.
+
+`scroll-margin` isn't inherited, which is why the focus rule targets the descendants of a cell rather
+than the cell: the browser reads the margin of whatever is being scrolled into view. The rows are
+virtualized, so the `*` only ever matches what is on screen.
 
 ## Empty, loading and error slots
 

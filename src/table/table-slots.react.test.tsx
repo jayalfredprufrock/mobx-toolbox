@@ -634,6 +634,37 @@ describe("Table.Scroll is the scrollport, and the parts know which box they belo
     expect(viewport.style.flexDirection).toBe("column");
   });
 
+  test("it publishes the pinned widths and sets no snapping or scroll padding", async () => {
+    const table = sized({
+      data: [{ id: 1, name: "alpha", note: "x", tag: "y" }],
+      columns: [
+        { key: "name", width: 100, pinned: "left" },
+        { key: "note", width: 70, pinned: "left" },
+        "tag",
+        { key: "id", width: 50, pinned: "right" },
+      ],
+    });
+    const container = await mount(
+      <Table.Root table={table}>
+        <Table.Scroll>
+          <Table.Header>
+            {(column) => <Table.ColumnHeader column={column}>{column.key}</Table.ColumnHeader>}
+          </Table.Header>
+        </Table.Scroll>
+      </Table.Root>,
+    );
+    const scroller = container.querySelector('[role="table"]') as HTMLElement;
+
+    expect(scroller.style.getPropertyValue("--table-pinned-left")).toBe("170px");
+    expect(scroller.style.getPropertyValue("--table-pinned-right")).toBe("50px");
+    // padding on the container made focusing a pinned control scroll the table
+    expect(scroller.style.scrollPaddingLeft).toBe("");
+    expect(scroller.style.scrollSnapType).toBe("");
+    for (const header of container.querySelectorAll<HTMLElement>('[role="columnheader"]')) {
+      expect(header.style.scrollSnapAlign).toBe("");
+    }
+  });
+
   test("a part that needs the scrollport says so instead of rendering blank", async () => {
     // without <Table.Scroll> no width is ever measured, so the gate never opens and the table is
     // simply empty — no message, nothing in the DOM, every symptom pointing at the data

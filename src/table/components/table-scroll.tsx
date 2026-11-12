@@ -6,6 +6,9 @@ import { useResize } from "../../react-util/useResize";
 import { TableScrollportProvider, useTableContext } from "../table.context";
 import { useScroll } from "../use-scroll";
 
+const pinnedWidth = (columns: readonly { width: number }[]): number =>
+  columns.reduce((sum, c) => sum + c.width, 0);
+
 export type TableScrollProps = ComponentPropsWithRef<"div">;
 
 /**
@@ -93,8 +96,13 @@ export const TableScroll: FC<TableScrollProps> = observer(
               // shadows (`@container scroll-state(scrollable: …)`) needs the container
               // declared here or those consumer rules silently never match
               containerType: "scroll-state",
-              scrollSnapType: "x proximity",
-              scrollPaddingLeft: `${table.leftPinnedRenderedColumns.reduce((sum, c) => sum + c.width, 0)}px`,
+              // No scroll-snap or scroll-padding here: padding on the container applies to every
+              // scroll-into-view, so focusing something *inside* the pinned strip scrolled the
+              // table to clear it. Snapping and focus offsets are opt-in consumer CSS keyed off
+              // these two (see "Horizontal snapping" in the table README), set per element with
+              // scroll-margin so pinned cells are left alone.
+              "--table-pinned-left": `${pinnedWidth(table.leftPinnedRenderedColumns)}px`,
+              "--table-pinned-right": `${pinnedWidth(table.rightPinnedRenderedColumns)}px`,
               width: "100%",
               // this box's visible content width, vertical scrollbar already excluded — what
               // everything pinned horizontally is sized against, including the rounded header

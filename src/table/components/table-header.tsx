@@ -125,7 +125,6 @@ export const TableColumnHeader: FC<TableColumnHeaderProps> = observer(
         className={className}
         style={{
           ...pinnedCellStyle(column),
-          scrollSnapAlign: column.pinned ? undefined : "start",
           ...style,
         }}
       >

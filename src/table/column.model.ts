@@ -264,10 +264,14 @@ export class ColumnModel {
    * | tier | when | walk |
    * | --- | --- | --- |
    * | static | `options` declared, or server mode | none |
+   * | blank-probe | `options` declared alongside a `project` | `rows`, until the first blank |
    * | values | the default | `rows`, invalidated by `rows` alone |
    *
    * A declared domain is taken at its word: values in the rows but not in `options` are not
-   * listed, and neither is blank. Otherwise discovered values are sorted, blank last — insertion
+   * listed, and neither is blank. The one exception is a projected domain (a `BucketFilter`'s
+   * labels): its options describe what the projection *produces*, and a raw value it cannot place
+   * — missing, or outside every bucket — lands in blank, which no declaration can anticipate. So
+   * that filter's rows are probed for a blank, and it is appended when found. Otherwise discovered values are sorted, blank last — insertion
    * order alone would be first-appearance-in-rows, which reshuffles the list every time the table
    * is sorted.
    *
@@ -278,8 +282,14 @@ export class ColumnModel {
   get facetDomain(): SetFilterValue[] {
     const filter = this.filter;
     if (!filter) return [];
-    if (filter.options) return [...filter.options];
-    if (this.filterMode === "server") return [];
+    if (this.filterMode === "server") return filter.options ? [...filter.options] : [];
+    if (filter.options) {
+      const values = [...filter.options];
+      if (filter.project && this.table.rows.some((row) => this.facetKeys(row).has(BLANK))) {
+        values.push(BLANK);
+      }
+      return values;
+    }
 
     const found = new Set<SetFilterValue>();
     for (const row of this.table.rows) {

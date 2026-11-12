@@ -892,7 +892,8 @@ storm where one toggle dirties every other column's counts. Keeping that in its 
 lets it be skipped.
 
 The domain is declared `options` in declaration order when the filter has them — taken at its word,
-so neither undeclared values nor blank are listed — otherwise discovered values sorted by value,
+so neither undeclared values nor blank are listed, except that a projected domain (a
+`BucketFilter`) still lists blank when a row's value is missing or fits no bucket — otherwise discovered values sorted by value,
 blank last. (Insertion order alone would be first-appearance-in-rows, which reshuffles the list every
 time the table is sorted.)
 

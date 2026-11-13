@@ -3,6 +3,7 @@ import type { Facet, FilterCondition, SetFilterValue } from "../filter/filter.ty
 // Two pure functions, imported from the module rather than the `../filter` barrel so no filter class
 // is ever reachable from `src/table/index.ts`. `facetValues` in particular *must* be the same
 // function `SetFilter.matches` uses, or the facet list would offer a value that selects no rows.
+import { SetFilter } from "../filter/set-filter.model";
 import { BLANK, facetValues } from "../filter/util";
 import type { TableModel } from "./table.model";
 import type {
@@ -202,6 +203,9 @@ export class ColumnModel {
    * columns filtering client-side over one page of a server-driven dataset.
    */
   get filterMode(): FilterMode {
+    // Selection is client state — no server knows which rows this user ticked — so a selection
+    // column's filter is always applied here, whatever the table's mode.
+    if (this.selection) return "client";
     return this.config.filterMode ?? this.table.filterMode;
   }
 
@@ -491,9 +495,13 @@ export class ColumnModel {
     };
     const key = ColumnModel.keyOf(def);
     // the raw accessor: computed columns bring their own `value`; field columns resolve the key
-    // as a (dot-)path. Selection columns have no value (rendered via <Table.SelectionCell>).
+    // as a (dot-)path. A selection column's value is whether the row is selected, which is what
+    // lets a filter on it narrow to a "selected only" view.
     const value =
-      config.value ?? (config.selection ? (): null => null : (row: RowData) => getPath(row, key));
+      config.value ??
+      (config.selection
+        ? (row: RowData): boolean => table.isRowSelected(row)
+        : (row: RowData) => getPath(row, key));
 
     return new ColumnModel(table, {
       ...config,
@@ -505,7 +513,12 @@ export class ColumnModel {
       // does not already have, so this runs once per column: each table gets its own filter and a
       // remount starts clean, while `setData`/`setColumns` — which preserve the `ColumnModel` —
       // leave the user's selection alone.
-      filter: typeof filter === "function" ? filter() : filter,
+      // A selection column always gets a filter — its value is a boolean, so there is only one
+      // sensible kind — which is what `TableModel.selectedOnly` drives. Inactive, it costs nothing.
+      filter:
+        typeof filter === "function"
+          ? filter()
+          : (filter ?? (config.selection ? new SetFilter() : undefined)),
     });
   }
 }

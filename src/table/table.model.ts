@@ -12,6 +12,7 @@ import {
   type IReactionDisposer,
 } from "mobx";
 import { ColumnModel } from "./column.model";
+import { SetFilter } from "../filter/set-filter.model";
 import { TableSearchFilter } from "./search-filter.model";
 import type { LazyArray, LazyPages } from "../lazy/lazy";
 import type {
@@ -734,6 +735,30 @@ export class TableModel {
     return this.allColumns.some((c) => c.selection);
   }
 
+  /** The built-in selection column, if the table has one. */
+  get selectionColumn(): ColumnModel | undefined {
+    return this.allColumns.find((c) => c.selection);
+  }
+
+  /**
+   * Whether the table is narrowed to the selected rows. Backed by the selection column's filter,
+   * so it composes into `filterPredicate`, counts in `activeColumnFilters`, and
+   * `clearColumnFilters()` turns it off. Live: a row unchecked while this is on drops out. Always
+   * `false` without a selection column.
+   */
+  get selectedOnly(): boolean {
+    return this.selectionColumn?.filter?.active === true;
+  }
+
+  /** Narrow to the selected rows, or stop. A no-op without a selection column. */
+  setSelectedOnly(selectedOnly: boolean): void {
+    const filter = this.selectionColumn?.filter;
+    if (!filter) return;
+    if (!selectedOnly) filter.clear();
+    else if (filter instanceof SetFilter) filter.select([true]);
+    else filter.setValue?.(true);
+  }
+
   get gridTemplateColumns(): string {
     const cols: string[] = [];
     cols.push(...this.leftPinnedRenderedColumns.map((c) => `${c.width}px`));
@@ -902,6 +927,8 @@ export class TableModel {
       visualColumns: computed,
       displayRowIndexMap: computed,
       selectable: computed,
+      selectionColumn: computed,
+      selectedOnly: computed,
       gridTemplateColumns: computed,
       atEnd: computed,
       selectedRows: computed,
@@ -932,6 +959,7 @@ export class TableModel {
       toggleRow: actionBound,
       selectAllRows: actionBound,
       clearSelection: actionBound,
+      setSelectedOnly: actionBound,
       toggleRowExpanded: actionBound,
       collapseAllRows: actionBound,
       toggleAllRows: actionBound,

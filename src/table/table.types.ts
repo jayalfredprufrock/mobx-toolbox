@@ -663,4 +663,9 @@ export interface SelectionColumnDef {
   minWidth?: number;
   maxWidth?: number;
   resizable?: boolean;
+  /**
+   * Replaces the built-in `SetFilter` that `TableModel.setSelectedOnly` drives. Rarely needed: the
+   * value is a boolean (`true` for a selected row). Always client-mode. See BaseColumnDef.filter.
+   */
+  filter?: ColumnFilter | (() => ColumnFilter);
 }

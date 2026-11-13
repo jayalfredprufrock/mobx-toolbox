@@ -176,6 +176,65 @@ describe("column filters", () => {
     expect(selection?.filterable).toBe(false);
   });
 
+  test("setSelectedOnly narrows to the selected rows, live", () => {
+    const table = makeTable([{ selection: true }, "category"]);
+    table.toggleRow(people[1]!);
+    table.toggleRow(people[3]!);
+
+    const seen: number[][] = [];
+    observe(() => seen.push(ids(table.clientFilteredRows)));
+    expect(table.selectedOnly).toBe(false);
+    expect(seen.at(-1)).toEqual([1, 2, 3, 4, 5]);
+
+    table.setSelectedOnly(true);
+    expect(table.selectedOnly).toBe(true);
+    expect(seen.at(-1)).toEqual([2, 4]);
+    expect(table.activeColumnFilters).toEqual([table.selectionColumn]);
+
+    table.toggleRow(people[3]!);
+    expect(seen.at(-1)).toEqual([2]);
+
+    table.setSelectedOnly(false);
+    expect(seen.at(-1)).toEqual([1, 2, 3, 4, 5]);
+  });
+
+  test("clearColumnFilters turns selectedOnly off", () => {
+    const table = makeTable([{ selection: true }, "category"]);
+    table.setSelectedOnly(true);
+    table.clearColumnFilters();
+    expect(table.selectedOnly).toBe(false);
+  });
+
+  test("setSelectedOnly is a no-op without a selection column", () => {
+    const table = makeTable(["category"]);
+    table.setSelectedOnly(true);
+    expect(table.selectedOnly).toBe(false);
+    expect(ids(table.clientFilteredRows)).toEqual([1, 2, 3, 4, 5]);
+  });
+
+  test("an explicit filter on the selection column is kept and driven", () => {
+    const filter = new SetFilter();
+    const table = makeTable([{ selection: true, filter }, "category"]);
+    expect(table.selectionColumn?.filter).toBe(filter);
+    table.setSelectedOnly(true);
+    expect(filter.has(true)).toBe(true);
+  });
+
+  test("selectedOnly stays client-side under mode: server", () => {
+    const table = new TableModel({
+      data: people,
+      columns: [{ selection: true }, { key: "category", filter: new SetFilter() }],
+      getRowId: (p: Person) => p.id,
+      mode: "server",
+    });
+    table.toggleRow(people[0]!);
+    table.setSelectedOnly(true);
+    expect(table.column("category")?.filterMode).toBe("server");
+    expect(table.selectionColumn?.filterMode).toBe("client");
+    expect(table.filterQuery).toBeUndefined();
+    expect(ids(table.clientFilteredRows)).toEqual([1]);
+  });
+
   test("the predicate reacts to a swap that leaves `active` unchanged", () => {
     // same selection size throughout, so anything depending on `active` alone would go stale
     const filter = new SetFilter({ selected: ["a"] });

@@ -112,6 +112,29 @@ That distinction only stays decidable while filtering lives **inside** the table
 hand over `data: () => all.filter(pred)` — and the table cannot tell "filtered out" from "deleted",
 so neither behaviour is right. Keep `rows` as the dataset and filter through the table.
 
+### A "selected only" view
+
+Every selection column gets a built-in filter over whether each row is selected, so narrowing to the
+selection is one call:
+
+```ts
+table.setSelectedOnly(true); // show only selected rows
+table.setSelectedOnly(false); // show everything
+table.selectedOnly; // current state, for a toggle
+```
+
+It is an ordinary column filter underneath (`table.selectionColumn.filter`), so it composes into
+`filterPredicate`, counts in `activeColumnFilters`, and `clearColumnFilters()` turns it off.
+Inactive, it costs nothing. Points worth knowing:
+
+- **It is live.** Unchecking a row while the view is on filters it out immediately.
+- **It is always client-mode**, even under `mode: "server"` — no server knows the selection, so it
+  never enters `filterQuery`. In a paged table it shows only the selected rows already loaded,
+  which is all a selection can hold anyway.
+- **`filterable` stays `false`** on a selection column: its header is a checkbox, not a filter
+  control. Drive the view from a toggle of your own.
+- Without a selection column, `setSelectedOnly` is a no-op and `selectedOnly` is always `false`.
+
 ### Row-keyed state across a refresh
 
 `setData` **intersects** selection and expansion against the incoming rows rather than clearing them: ids that still resolve to a row stay, the rest drop. So a refetch, a poll, or a store invalidation arrives without costing the user their selection, while genuinely switching datasets drops it, because none of the old ids resolve.

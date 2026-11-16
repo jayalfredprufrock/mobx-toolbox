@@ -3,6 +3,7 @@ import type { FC } from "react";
 import { TableProvider, TableSlotsProvider } from "../table.context";
 import type { TableModel } from "../table.model";
 import { NativeCheckbox, type TableCheckboxProps } from "./checkbox";
+import { NativeExpandToggle, type TableExpandToggleProps } from "./expand-toggle";
 
 export interface TableRootProps {
   table: TableModel;
@@ -15,6 +16,11 @@ export interface TableRootProps {
    * `<input type="checkbox">`.
    */
   checkbox?: FC<TableCheckboxProps>;
+  /**
+   * Control used by `<Table.ExpandToggle>` when no render-prop is given. Defaults to a native
+   * `<button>`.
+   */
+  expandToggle?: FC<TableExpandToggleProps>;
 }
 
 /**
@@ -39,9 +45,14 @@ export interface TableRootProps {
  * | `height: "auto"` | hugs the rows — no dead space, and `<Table.StatusBar>` follows the last row. Pair it with a `minHeight` if the table can be empty, since an empty box hugs to just its header and `<Table.Overlay>` has nowhere to put the message |
  */
 export const TableRoot: FC<TableRootProps> = observer(
-  ({ table, children, style, className, checkbox }) => (
+  ({ table, children, style, className, checkbox, expandToggle }) => (
     <TableProvider value={table}>
-      <TableSlotsProvider value={{ checkbox: checkbox ?? NativeCheckbox }}>
+      <TableSlotsProvider
+        value={{
+          checkbox: checkbox ?? NativeCheckbox,
+          expandToggle: expandToggle ?? NativeExpandToggle,
+        }}
+      >
         <div
           className={["table-viewport", className].filter(Boolean).join(" ")}
           style={

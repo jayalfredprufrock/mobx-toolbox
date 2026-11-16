@@ -1,4 +1,5 @@
 import { TableResizer } from "./column-resizer";
+import { ExpandToggle } from "./expand-toggle";
 import { SelectAll, SelectionCell, SelectionHeaderCell } from "./selection";
 import { TableBody, TableCell, TableRow } from "./table-body";
 import { TableEmpty } from "./table-empty";
@@ -37,6 +38,7 @@ export const Table = {
   StatusBar: TableStatusBar,
   Overlay: TableOverlay,
   Expansion: TableExpansion,
+  ExpandToggle: ExpandToggle,
   Resizer: TableResizer,
   SelectionCell: SelectionCell,
   SelectionHeaderCell: SelectionHeaderCell,

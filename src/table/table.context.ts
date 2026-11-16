@@ -1,6 +1,8 @@
 import { createContext, type FC, useContext } from "react";
 import type { TableCheckboxProps } from "./components/checkbox";
 import { NativeCheckbox } from "./components/checkbox";
+import type { TableExpandToggleProps } from "./components/expand-toggle";
+import { NativeExpandToggle } from "./components/expand-toggle";
 import type { TableModel } from "./table.model";
 
 export const tableContext = createContext<TableModel | undefined>(undefined);
@@ -15,15 +17,16 @@ export const useTableContext = () => {
 export const TableProvider = tableContext.Provider;
 
 /**
- * Slots let a consumer register defaults once on `<Table.Root>` (currently just the selection
- * `checkbox`) that the built-in parts fall back to. Defaults to a native checkbox so selection
+ * Slots let a consumer register defaults once on `<Table.Root>` (the selection
+ * `checkbox` and the `expandToggle`) that the built-in parts fall back to. Defaults to a native checkbox so selection
  * works with zero wiring.
  */
 export interface TableSlots {
   checkbox: FC<TableCheckboxProps>;
+  expandToggle: FC<TableExpandToggleProps>;
 }
 
-const defaultSlots: TableSlots = { checkbox: NativeCheckbox };
+const defaultSlots: TableSlots = { checkbox: NativeCheckbox, expandToggle: NativeExpandToggle };
 
 export const slotsContext = createContext<TableSlots>(defaultSlots);
 export const TableSlotsProvider = slotsContext.Provider;

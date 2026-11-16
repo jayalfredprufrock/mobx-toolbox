@@ -741,14 +741,26 @@ and can say so.
 
 ## Expansion
 
-Render a detail panel as a sibling right after the row, gated on `isRowExpanded`:
+Render a detail panel as a sibling right after the row, gated on `isRowExpanded`. Rows are not
+focusable, so every expandable row also needs a `<Table.ExpandToggle>` — a real button keyboard and
+screen-reader users can reach. Whether anyone _sees_ it is up to you.
+
+#### Click anywhere on the row
+
+The usual case: the row click is the mouse affordance, and the toggle is there only for the keyboard.
+`visuallyHidden` keeps it focusable and announced but out of sight:
 
 ```tsx
 <Table.Body>
   {(row) => (
     <>
       <Table.Row row={row} onClick={() => table.toggleRowExpanded(row)}>
-        {(column) => <Table.Cell column={column}>{String(column.getValue(row))}</Table.Cell>}
+        {(column) => (
+          <Table.Cell column={column}>
+            {column === table.orderedColumns[0] && <Table.ExpandToggle row={row} visuallyHidden />}
+            {String(column.getValue(row))}
+          </Table.Cell>
+        )}
       </Table.Row>
       {table.isRowExpanded(row) && (
         <Table.Expansion row={row}>
@@ -759,6 +771,51 @@ Render a detail panel as a sibling right after the row, gated on `isRowExpanded`
   )}
 </Table.Body>
 ```
+
+```css
+/* the button is invisible, so show keyboard focus on its row */
+[role="row"]:has(:focus-visible) {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: -2px;
+}
+```
+
+Each row is one tab stop; Enter or Space toggles it, and a screen reader announces "Row details,
+button, collapsed". No extra column is needed. The toggle stops its click from bubbling, so it never
+toggles twice with the row's `onClick`.
+
+`visuallyHidden` is applied as a React `style` prop, like the rest of the table's layout styles —
+set through the CSSOM in the browser, so a CSP `style-src` without `'unsafe-inline'` doesn't block
+it. If you render your own control (render-prop or slot), spread the `style` you are given.
+
+#### A visible toggle
+
+Drop `visuallyHidden` and put the toggle in a column of its own — a chevron, say. Register your
+design system's button once with `<Table.Root expandToggle={MyToggle}>`, or pass a render-prop:
+
+```tsx
+<Table.ExpandToggle row={row}>
+  {({ expanded, ...props }) => <IconButton {...props} icon={expanded ? <Down /> : <Right />} />}
+</Table.ExpandToggle>
+```
+
+Either way the toggle sets `aria-expanded`, and `aria-controls` pointing at the panel
+(`table.expansionId(row)`) while it is open. Spread the props onto a real button and Tab, Enter and
+Space come from the element.
+
+⚠️ **A row `onClick` on its own is mouse-only.** Rows do not respond to Enter or Space, and making
+them focusable would not fix it: a `role="table"` row isn't a control, so a screen reader would land
+on it with no role or expanded state to announce.
+
+### Keyboard and focus
+
+The table uses `role="table"`, not `role="grid"`: there is no arrow-key navigation between cells,
+and every interactive thing in a row — the selection checkbox, the expand toggle, your own buttons —
+is an ordinary tab stop. So rows carry no `aria-selected`; a selection checkbox's `checked` state is
+what assistive tech reads. Style selected rows through `[data-selected]`.
+
+⚠️ **Rows outside the render window are unmounted**, so focus inside a row that scrolls far enough
+away is lost to `document.body`. Tabbing only moves through rendered rows for the same reason.
 
 Panel height is the fixed `expansionHeight` (default 320) — never measured, which is what keeps virtualization closed-form. Taller content scrolls inside the panel. Set `expandMode: "single"` to make expanding one row collapse the others.
 

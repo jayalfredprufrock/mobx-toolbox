@@ -80,7 +80,6 @@ const TableRowInner: FC<TableRowProps> = observer(
         role="row"
         // 1-based, offset past the header row (aria-rowindex 1)
         aria-rowindex={displayIndex !== undefined ? displayIndex + 2 : undefined}
-        aria-selected={table.selectable ? table.isRowSelected(row) : undefined}
         data-selected={table.isRowSelected(row) || undefined}
         data-expanded={table.isRowExpanded(row) || undefined}
         className={className}

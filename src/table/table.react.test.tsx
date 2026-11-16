@@ -151,19 +151,32 @@ describe("selection", () => {
     expect(selectAll.indeterminate).toBe(true);
   });
 
-  test("a selected row exposes aria-selected and data-selected", async () => {
+  test("a selected row exposes data-selected but not aria-selected (invalid on a table row)", async () => {
     const rows = makeRows(2);
     const table = makeTable(rows, columns);
     const { container } = await mount(<BasicTable table={table} />);
 
     const row = () => bodyRows(container)[0]!;
-    expect(row().getAttribute("aria-selected")).toBe("false");
-
     await act(async () => {
       table.toggleRow(rows[0]!);
     });
-    expect(row().getAttribute("aria-selected")).toBe("true");
     expect(row().hasAttribute("data-selected")).toBe(true);
+    expect(row().hasAttribute("aria-selected")).toBe(false);
+  });
+
+  test("scrolling a focused checkbox's row out of the window loses focus", async () => {
+    // Documents current behaviour rather than endorsing it: the row unmounts, focus falls to body.
+    const table = makeTable(makeRows(50), columns);
+    const { container } = await mount(<BasicTable table={table} />);
+    const box = bodyRows(container)[0]!.querySelector("input")!;
+    box.focus();
+    expect(document.activeElement).toBe(box);
+
+    await act(async () => {
+      table.setScroll(0, 1000);
+    });
+    expect(box.isConnected).toBe(false);
+    expect(document.activeElement).toBe(document.body);
   });
 
   test("a checkbox registered on Root replaces the native one everywhere", async () => {
@@ -359,5 +372,126 @@ describe("row keys and reconciliation", () => {
     const after = bodyRows(container)[0];
     expect(after).toBe(before); // same record by value, so the same node updates in place
     expect(after?.textContent).toContain("renamed");
+  });
+});
+
+describe("expand toggle", () => {
+  const ExpandableTable = ({
+    table,
+    onRowClick,
+  }: {
+    table: TableModel;
+    onRowClick?: () => void;
+  }) => (
+    <Table.Root table={table}>
+      <Table.Scroll>
+        <Table.Body className="body">
+          {(row) => (
+            <>
+              <Table.Row row={row} onClick={onRowClick}>
+                {(column) => (
+                  <Table.Cell column={column}>
+                    <Table.ExpandToggle row={row} />
+                  </Table.Cell>
+                )}
+              </Table.Row>
+              {table.isRowExpanded(row) && <Table.Expansion row={row}>details</Table.Expansion>}
+            </>
+          )}
+        </Table.Body>
+      </Table.Scroll>
+    </Table.Root>
+  );
+
+  test("is a button that toggles the panel and points aria-controls at it", async () => {
+    const rows = makeRows(2);
+    const table = makeTable(rows, ["name"]);
+    const { container } = await mount(<ExpandableTable table={table} />);
+    const button = () => container.querySelector("button")!;
+
+    expect(button().getAttribute("aria-expanded")).toBe("false");
+    expect(button().hasAttribute("aria-controls")).toBe(false);
+
+    await act(async () => {
+      button().click();
+    });
+    expect(table.isRowExpanded(rows[0]!)).toBe(true);
+    expect(button().getAttribute("aria-expanded")).toBe("true");
+    const panel = document.getElementById(button().getAttribute("aria-controls")!);
+    expect(panel?.textContent).toBe("details");
+  });
+
+  test("does not double-toggle when the row also has an onClick", async () => {
+    const rows = makeRows(1);
+    const table = makeTable(rows, ["name"]);
+    let rowClicks = 0;
+    const { container } = await mount(
+      <ExpandableTable table={table} onRowClick={() => rowClicks++} />,
+    );
+    await act(async () => {
+      container.querySelector("button")!.click();
+    });
+    expect(rowClicks).toBe(0);
+    expect(table.isRowExpanded(rows[0]!)).toBe(true);
+  });
+
+  test("a toggle registered on Root replaces the native one", async () => {
+    const table = makeTable(makeRows(1), ["name"]);
+    const { container } = await mount(
+      <Table.Root
+        table={table}
+        expandToggle={(p) => <a role="button" data-custom="" aria-expanded={p["aria-expanded"]} />}
+      >
+        <Table.Scroll>
+          <Table.Body className="body">
+            {(row) => (
+              <Table.Row row={row}>
+                {(column) => (
+                  <Table.Cell column={column}>
+                    <Table.ExpandToggle row={row} />
+                  </Table.Cell>
+                )}
+              </Table.Row>
+            )}
+          </Table.Body>
+        </Table.Scroll>
+      </Table.Root>,
+    );
+    expect(container.querySelector("[data-custom]")).not.toBeNull();
+  });
+
+  test("visuallyHidden hides the toggle but keeps it a focusable button", async () => {
+    const table = makeTable(makeRows(1), ["name"]);
+    const { container } = await mount(
+      <Table.Root table={table}>
+        <Table.Scroll>
+          <Table.Body className="body">
+            {(row) => (
+              <Table.Row row={row}>
+                {(column) => (
+                  <Table.Cell column={column}>
+                    <Table.ExpandToggle row={row} visuallyHidden />
+                  </Table.Cell>
+                )}
+              </Table.Row>
+            )}
+          </Table.Body>
+        </Table.Scroll>
+      </Table.Root>,
+    );
+    const button = container.querySelector("button")!;
+    expect(button.style.position).toBe("absolute");
+    expect(button.style.width).toBe("1px");
+    button.focus();
+    expect(document.activeElement).toBe(button);
+  });
+
+  test("expansion ids are unique across tables and rows", () => {
+    const rows = makeRows(2);
+    const a = makeTable(rows);
+    const b = makeTable(rows);
+    expect(a.expansionId(rows[0]!)).not.toBe(a.expansionId(rows[1]!));
+    expect(a.expansionId(rows[0]!)).not.toBe(b.expansionId(rows[0]!));
+    expect(a.expansionId({})).toBeUndefined();
   });
 });

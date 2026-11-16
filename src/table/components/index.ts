@@ -2,6 +2,7 @@ export * from "./cell-slot";
 export * from "./cell-style";
 export * from "./checkbox";
 export * from "./column-resizer";
+export * from "./expand-toggle";
 export * from "./namespace";
 export * from "./selection";
 export * from "./table-body";

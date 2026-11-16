@@ -34,6 +34,8 @@ import { isLazy, isPaged } from "./is-lazy";
 /** Below this, a column total that misses `width` is floating-point noise, not a real overflow. */
 const ROUNDING_TOLERANCE = 1e-6;
 
+let tableSeq = 0;
+
 export class TableModel {
   readonly config?: TableConfig<any>;
 
@@ -61,6 +63,10 @@ export class TableModel {
    * there is no config to switch it on. See {@link TableSearchFilter}.
    */
   readonly searchFilter: TableSearchFilter = new TableSearchFilter(this);
+
+  // Prefix for DOM ids the components derive from this table (see expansionId). Unique per
+  // instance so two tables on one page never collide.
+  private readonly domId = `mobx-table-${++tableSeq}`;
 
   scrollX = 0;
   scrollY = 0;
@@ -730,7 +736,7 @@ export class TableModel {
     return new Map(this.displayRows.map((row, i) => [row, i]));
   }
 
-  /** Whether the table has a selection column (drives aria-multiselectable / aria-selected). */
+  /** Whether the table has a selection column. */
   get selectable(): boolean {
     return this.allColumns.some((c) => c.selection);
   }
@@ -1530,6 +1536,17 @@ export class TableModel {
   toggleAllRows(): void {
     if (this.allRowsSelected) this.clearSelection();
     else this.selectAllRows();
+  }
+
+  /**
+   * The DOM id of the row's `<Table.Expansion>` panel — what `<Table.ExpandToggle>` points
+   * `aria-controls` at. Unique per table instance; `undefined` for a row not in the dataset.
+   */
+  expansionId(row: RowData): string | undefined {
+    const id = this.rowIds.get(row);
+    return id === undefined
+      ? undefined
+      : `${this.domId}-expansion-${encodeURIComponent(String(id))}`;
   }
 
   isRowExpanded(row: RowData): boolean {

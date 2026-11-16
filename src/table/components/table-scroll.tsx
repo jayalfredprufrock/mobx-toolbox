@@ -84,7 +84,6 @@ export const TableScroll: FC<TableScrollProps> = observer(
           // see `ariaRowCount`, which reports -1 when it is genuinely unknown.
           aria-rowcount={table.ariaRowCount}
           aria-colcount={table.orderedColumns.length}
-          aria-multiselectable={table.selectable || undefined}
           className={["table-scroll", className].filter(Boolean).join(" ")}
           style={
             {

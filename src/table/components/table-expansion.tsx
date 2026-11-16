@@ -19,33 +19,36 @@ export interface TableExpansionProps {
  * the header background) so horizontal scrolling moves the columns underneath the panel, not the
  * panel itself. Cosmetics are the consumer's via `className`/`style`.
  */
-const TableExpansionInner: FC<TableExpansionProps> = observer(({ className, style, children }) => {
-  const table = useTableContext();
-  useScrollportGuard("Expansion");
-  return (
-    <div
-      role="row"
-      data-expansion=""
-      style={{ gridColumn: "1 / -1", height: `${table.expansionHeight}px`, minWidth: 0 }}
-    >
+const TableExpansionInner: FC<TableExpansionProps> = observer(
+  ({ row, className, style, children }) => {
+    const table = useTableContext();
+    useScrollportGuard("Expansion");
+    return (
       <div
-        role="cell"
+        role="row"
         data-expansion=""
-        className={className}
-        style={{
-          position: "sticky",
-          left: 0,
-          width: "var(--table-scroll-width)",
-          height: "100%",
-          overflowY: "auto",
-          ...style,
-        }}
+        style={{ gridColumn: "1 / -1", height: `${table.expansionHeight}px`, minWidth: 0 }}
       >
-        {children}
+        <div
+          role="cell"
+          id={table.expansionId(row)}
+          data-expansion=""
+          className={className}
+          style={{
+            position: "sticky",
+            left: 0,
+            width: "var(--table-scroll-width)",
+            height: "100%",
+            overflowY: "auto",
+            ...style,
+          }}
+        >
+          {children}
+        </div>
       </div>
-    </div>
-  );
-});
+    );
+  },
+);
 
 /**
  * Memoized on row identity like `TableRow`, with `children` deliberately excluded: the panel's

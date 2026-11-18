@@ -64,3 +64,33 @@ useForm(Login, {
   initialValues: { nope: 1 },
   handleSubmit: async () => {},
 });
+
+// Clearable fields: a property schema branded `x-clearable` arrives as `T | null` in `handleSubmit`
+// and `toJSON()`; nothing else widens, and a form without one keeps `Static<T>` exactly (above).
+const ClearableString = T.Optional({ ...T.String(), "x-clearable": true } as T.TString & {
+  readonly "x-clearable": true;
+});
+const Profile = T.Object({
+  name: T.String(),
+  nickname: ClearableString,
+  bio: T.Optional(T.String()),
+});
+const profile = useForm(Profile, {
+  handleSubmit: async (data) => {
+    assertTrue<Equal<typeof data.nickname, string | null | undefined>>();
+    assertTrue<Equal<typeof data.bio, string | undefined>>();
+    assertTrue<Equal<typeof data.name, string>>();
+  },
+});
+assertTrue<Equal<ReturnType<typeof profile.toJSON>["nickname"], string | null | undefined>>();
+
+const Contact = DiscriminatedUnion("kind", [
+  T.Object({ kind: T.Literal("email"), label: ClearableString }),
+  T.Object({ kind: T.Literal("phone"), number: T.String() }),
+]);
+useForm(Contact, {
+  handleSubmit: async (data) => {
+    if (data.kind === "email") assertTrue<Equal<typeof data.label, string | null | undefined>>();
+    else assertTrue<Equal<typeof data.number, string>>();
+  },
+});

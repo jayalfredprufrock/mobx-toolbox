@@ -12,7 +12,8 @@ export type FormSchema = TObject | (TUnion & { discriminator: { propertyName: st
 export type StaticOrAny<T extends TSchema> = 0 extends 1 & T ? any : Static<T>;
 
 export interface FormConfig<T extends FormSchema = TObject, V = StaticOrAny<T>> {
-  handleSubmit: (data: V) => Promise<unknown>;
+  /** Receives `form.toJSON()`: `V`, except that an emptied clearable field arrives as `null`. */
+  handleSubmit: (data: FormOutput<T, V>) => Promise<unknown>;
   /**
    * Called when `handleSubmit` throws — for a toast, a report to your error tracker, or mapping an API
    * error onto fields with `form.fields.x.setError(...)`.
@@ -28,6 +29,38 @@ export interface FormConfig<T extends FormSchema = TObject, V = StaticOrAny<T>> 
   // Any field on any variant may be seeded — the merged field map holds them all.
   initialValues?: FormInitialValues<T, V>;
 }
+
+/**
+ * How a clearable property schema reads at the type level: TypeBox drops schema options from the
+ * type, so the keyword is only visible when the builder brands it in (handshake's `Clearable` does).
+ * An unbranded `x-clearable` still submits `null` at runtime; it just isn't typed as such.
+ */
+export type TClearable = TSchema & { readonly "x-clearable": true };
+
+/** Keys whose property schema is branded clearable, across every variant. */
+type ClearableKeys<O> = O extends TObject
+  ? {
+      [K in keyof O["properties"]]: O["properties"][K] extends TClearable ? K : never;
+    }[keyof O["properties"]]
+  : never;
+
+type WithNull<V, K extends PropertyKey> = V extends unknown
+  ? { [P in keyof V]: P extends K ? V[P] | null : V[P] }
+  : never;
+
+/**
+ * What `toJSON()` produces and `handleSubmit` receives: `V`, with `| null` on clearable fields. For
+ * a union, a key clearable in any variant is widened in every variant that has it.
+ */
+export type FormOutput<T extends FormSchema, V = StaticOrAny<T>> = 0 extends 1 & V
+  ? any
+  : [ClearableKeys<T extends TUnion<infer M> ? Flat<M[number]> : T>] extends [
+        infer K extends PropertyKey,
+      ]
+    ? [K] extends [never]
+      ? V
+      : WithNull<V, K>
+    : V;
 
 export interface FormFieldConfig<T extends TSchema = TSchema, V = StaticOrAny<T>> {
   name: string;

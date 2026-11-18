@@ -67,7 +67,7 @@ form.reset(); // restore initial values, clear errors and touched state
 
 form.dirty; // any field differs from its initial value — observable, so it can drive a navigation blocker
 form.setInitialValues(data); // replace the baseline (e.g. once fetched data arrives) and reset to it
-form.toJSON(); // { fieldName: value, ... } — current field values
+form.toJSON(); // { fieldName: value, ... } — what handleSubmit receives
 form.props(); // { onSubmit } — spread onto a <form> element
 form.setSubmitError(e); // set or clear (pass undefined) the submit error
 ```
@@ -133,9 +133,10 @@ Each field in `form.fields` is a `FormFieldModel` with its own reactive state.
 | `value`        | `Static<T> \| undefined` | Current value (TypeBox-coerced)                                     |
 | `initialValue` | `Static<T> \| undefined` | Baseline for `dirty` and `reset`; moved by each successful submit   |
 | `touched`      | `boolean`                | Set to `true` on blur or explicit `setTouched(true)`                |
-| `submitValue`  | `Static<T> \| undefined` | `value` as submitted: strings trimmed, passwords excepted           |
+| `submitValue`  | `Static<T> \| undefined` | `value` as submitted: trimmed, empty optional values `undefined`    |
 | `dirty`        | `boolean`                | `value` deeply differs from `initialValue` (undoing an edit cleans) |
 | `valid`        | `boolean`                | Passes TypeBox schema check                                         |
+| `clearable`    | `boolean`                | Optional and `x-clearable`: an empty value is submitted as `null`   |
 | `error`        | `string                  | undefined`                                                          | Manually-set error (see below); blocks validity |
 | `errorMessage` | `string`                 | `error` when set, else the schema message when `touched && !valid`  |
 
@@ -148,12 +149,36 @@ field.setError(msg?)     // set or clear a manual error
 field.reset()            // restore initialValue, clear touched
 field.setInitialValue(v) // replace the baseline and reset to it
 field.props()            // { name, value, onChange, onBlur } — spread onto any input
-field.toJSON()           // current plain value
+field.toJSON()           // submitValue as plain data; null when empty and clearable
 ```
 
 ### Value coercion
 
 TypeBox's `Value.Convert` runs on every `setValue` call. This means `"42"` converts to `42` for `T.Number()` schemas, `"true"` converts to `true` for `T.Boolean()`, etc. Undefined coerces to `""` for string fields.
+
+### Empty values and `null`
+
+An optional field that is empty — `undefined`, or a string that trims to `""` — is submitted as `undefined`, not `""`. `value` still holds what was typed, so the input is unaffected. An emptied control on a non-string field (`""` from a number input) is `undefined` too, rather than being converted to `0`: optional, it isn't submitted; required, it fails with "This field is required.". A required string still holds and submits `""`, and fails `minLength: 1` with the same message. An empty array is a value, not empty: a multi-select with nothing chosen submits `[]`.
+
+`null` is never converted. It stays `null` when the field's schema accepts it (`T.Union([T.String(), T.Null()])`, `T.Unknown()`) and becomes `undefined` otherwise, so a record loaded with nulls seeds a blank form rather than the string `"null"`.
+
+### Clearable fields
+
+Leaving an optional field out of a PATCH keeps the stored value, so emptying it can't clear it. Mark the field clearable and an empty value goes out as `null` instead, which the server takes as "remove":
+
+```ts
+const Profile = T.Object({
+  name: T.String(),
+  nickname: Clearable(T.String()), // handshake: T.Optional(...) carrying "x-clearable": true
+});
+
+form.fields.nickname.setValue("");
+form.toJSON(); // { name: "Ada", nickname: null }
+```
+
+The form recognises the `x-clearable: true` keyword on an optional schema, so any builder that writes it works (`IsClearable(schema)` tests for it). `T.Required(...)` keeps the keyword but drops the optionality, which switches it off. The `null` exists only in `toJSON()` and `handleSubmit`: the field holds `undefined`, so validity, `dirty` and `reset` behave as for any optional field, and a successful submit rebases the `null` back to `undefined`, leaving the form clean. Fields not marked clearable keep sending `undefined`, which a JSON body omits.
+
+`handleSubmit`'s `data` and `toJSON()` are typed `T | null` for a clearable field when its schema type carries the brand (`TClearable`, `{ "x-clearable": true }`). TypeBox drops schema options from types, so an unbranded keyword submits `null` at runtime without the type saying so.
 
 ### Edge whitespace
 

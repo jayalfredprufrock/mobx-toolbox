@@ -1,7 +1,14 @@
 import Schema, { type Validator } from "typebox/schema";
 import { IsUnion, Union, type TObject, type TSchema } from "typebox";
 import { makeAutoObservable } from "mobx";
-import type { FormConfig, FormFields, FormSchema, RawFormFields, StaticOrAny } from "./form.types";
+import type {
+  FormConfig,
+  FormFields,
+  FormOutput,
+  FormSchema,
+  RawFormFields,
+  StaticOrAny,
+} from "./form.types";
 import { FormFieldModel } from "./form-field.model";
 import {
   IsDiscriminatedUnion,
@@ -65,7 +72,10 @@ export class FormModel<T extends FormSchema = TObject, V = StaticOrAny<T>> {
    */
   submitError: unknown;
 
-  constructor(schema: T, config: FormConfig<T, V>) {
+  // `NoInfer`: `T` comes from `schema` and `V` defaults from it. Inferring them back out of the
+  // config — `handleSubmit`'s `FormOutput<T, V>`, or a partial `initialValues` — narrows a union form
+  // to whichever variant the seed describes.
+  constructor(schema: T, config: NoInfer<FormConfig<T, V>>) {
     this.schema = schema;
     this.config = config;
     // Type-only casts, for the same reason as in FormFieldModel.
@@ -144,7 +154,9 @@ export class FormModel<T extends FormSchema = TObject, V = StaticOrAny<T>> {
     if (!fields.every((field) => field.valid)) return false;
     // The whole-object check catches what no single field can: no variant selected yet, and any
     // constraint the schema places on the object itself.
-    return this.variants ? this.validator.Check(this.toJSON()) : true;
+    // Checked against the values, not `toJSON()`: its `null` for an emptied clearable field is a
+    // wire encoding the schema (rightly) doesn't accept.
+    return this.variants ? this.validator.Check(this.collect((field) => field.submitValue)) : true;
   }
 
   /**
@@ -177,10 +189,12 @@ export class FormModel<T extends FormSchema = TObject, V = StaticOrAny<T>> {
         }
 
         this.setSubmitting(true);
-        const data = this.toJSON() as V;
+        // Validated above, so complete.
+        const data = this.toJSON() as FormOutput<T, V>;
         this.config
           .handleSubmit(data)
           .then((resp) => {
+            // A cleared field's `null` rebases to `undefined` (see FormFieldModel), so it's clean.
             this.rebase(data as Record<string, unknown>);
             this.setSubmitted(true);
             return resp;
@@ -271,12 +285,20 @@ export class FormModel<T extends FormSchema = TObject, V = StaticOrAny<T>> {
     return !variant || field.name in variant.properties;
   }
 
-  toJSON(): Partial<V> {
+  /**
+   * The values to submit: each field's `toJSON()`, so trimmed, with empty optional fields
+   * `undefined` — and empty clearable fields `null`, which asks the server to remove the value.
+   */
+  toJSON(): Partial<FormOutput<T, V>> {
+    return this.collect((field) => field.toJSON()) as Partial<FormOutput<T, V>>;
+  }
+
+  private collect(read: (field: FormFieldModel<TSchema>) => unknown): Record<string, unknown> {
     const data: Record<string, unknown> = {};
     for (const field of Object.values<FormFieldModel<TSchema>>(this.rawFields)) {
       // Another variant's fields are dropped, so the payload matches the selected variant exactly.
-      if (this.submits(field)) data[field.name] = field.toJSON();
+      if (this.submits(field)) data[field.name] = read(field);
     }
-    return data as Partial<V>;
+    return data;
   }
 }

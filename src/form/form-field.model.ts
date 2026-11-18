@@ -8,6 +8,36 @@ import type { FormFieldConfig, StaticOrAny } from "./form.types";
 // TODO: should also allow for "id", defaulting to name
 // TODO: probably shouldn't assume value is of correct type, maybe unknown?
 
+/**
+ * Optional, or a union some member of which is optional — how a field shared by union variants
+ * reads when one variant makes it optional and another doesn't (the merged schema is a plain union).
+ */
+function isOptional(schema: T.TSchema): boolean {
+  return T.IsOptional(schema) || (T.IsUnion(schema) && schema.anyOf.some(isOptional));
+}
+
+/** A string schema, or a union with one — a field whose control's `""` is a real (if empty) value. */
+function isStringy(schema: T.TSchema): boolean {
+  return T.IsString(schema) || (T.IsUnion(schema) && schema.anyOf.some(isStringy));
+}
+
+/**
+ * The keyword that marks an optional field as clearable: emptied, it's submitted as `null` so the
+ * server removes the stored value. Recognised by keyword, like `discriminator` — any builder that
+ * writes it (handshake's `Clearable`, for one) works. Must be on an optional schema to count, so
+ * `T.Required(...)`, which keeps the keyword but drops the optionality, switches it off.
+ */
+export const CLEARABLE = "x-clearable";
+
+/** An optional schema carrying `x-clearable: true`. */
+export function IsClearable(schema: unknown): boolean {
+  return (
+    T.IsSchema(schema) &&
+    T.IsOptional(schema) &&
+    (schema as unknown as Record<string, unknown>)[CLEARABLE] === true
+  );
+}
+
 // Validators for variant schemas, compiled on first use and shared by every form over the same schema.
 const variantValidators = new WeakMap<T.TSchema, Validator<T.TSchema, unknown>>();
 
@@ -67,7 +97,8 @@ export class FormFieldModel<T extends T.TSchema = T.TSchema, V = StaticOrAny<T>>
   }
 
   /**
-   * `value` as it will be submitted: strings trimmed of edge whitespace, passwords excepted. Validity,
+   * `value` as it will be submitted: strings trimmed of edge whitespace, passwords excepted, and an
+   * empty optional field (`undefined`, or a string that trims to `""`) as `undefined`. Validity,
    * error messages, `dirty` and `toJSON` all read this, so what is validated is what is submitted —
    * while `value` stays exactly what was typed, so the space in "John Smith" survives being typed.
    */
@@ -85,8 +116,20 @@ export class FormFieldModel<T extends T.TSchema = T.TSchema, V = StaticOrAny<T>>
   }
 
   private normalize(value: V | undefined): V | undefined {
-    if (typeof value !== "string" || this.isPassword) return value;
-    return value.trim() as V;
+    if (typeof value !== "string") return value;
+    const normalized = this.isPassword ? value : value.trim();
+    // Judged on the active schema, so a field optional in one variant and required in another is
+    // empty-means-absent exactly when its optional variant is selected.
+    if (normalized === "" && isOptional(this.activeSchema ?? this.schema)) return undefined;
+    return normalized as V;
+  }
+
+  /**
+   * Submitted as `null` when empty, rather than left out: the field is optional and marked
+   * `x-clearable`, so emptying it asks the server to remove the stored value. See `IsClearable`.
+   */
+  get clearable(): boolean {
+    return IsClearable(this.activeSchema);
   }
 
   get errorMessage(): string {
@@ -156,6 +199,16 @@ export class FormFieldModel<T extends T.TSchema = T.TSchema, V = StaticOrAny<T>>
   }
 
   private convertValue(value: unknown): V | undefined {
+    // `null` is never converted: Value.Convert turns it into "null", 0 or ["null"]. It survives only
+    // where the schema accepts it (a `T.Null()` member, `T.Unknown()`, …); elsewhere it means
+    // "no value" — a record loaded with nulls, or a submitted clearable field being rebased.
+    if (value === null) return this.validator.Check(null) ? (value as V) : undefined;
+    // An emptied control on a non-string field is no value, not a converted one: Convert would turn
+    // "" into 0 for a number — which passes as real input, so a required field never reports itself
+    // missing — or [""] for an array.
+    if (typeof value === "string" && value.trim() === "" && !isStringy(this.schema)) {
+      return undefined;
+    }
     // Value.Convert fabricates zero-values for undefined primitives ("" / 0 / false).
     // Only "" and false faithfully represent an empty control; a fabricated 0 reads
     // as real input (e.g. an epoch-0 date), so everything else stays undefined.
@@ -200,7 +253,10 @@ export class FormFieldModel<T extends T.TSchema = T.TSchema, V = StaticOrAny<T>>
     };
   }
 
-  toJSON(): V | undefined {
-    return toJS(this.submitValue);
+  /** `submitValue` as plain data — and `null` for an empty clearable field. */
+  toJSON(): V | null | undefined {
+    const value = this.submitValue;
+    if (value === undefined && this.clearable) return null;
+    return toJS(value);
   }
 }

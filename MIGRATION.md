@@ -994,6 +994,35 @@ are anchored regardless of order.
 
 ---
 
+### form — empty optional fields, `null`, and clearable fields
+
+Fields now treat an empty optional value as absent, never convert `null`, and support clearing a
+stored value through a PATCH-style save.
+
+- ⚠️ **An emptied optional string submits `undefined`, not `""`.** `T.Optional(T.String())` used to
+  go out as `""` once cleared (or `"   "` trimmed to `""`). `field.value` still holds what was typed,
+  so inputs don't change; `submitValue` and `toJSON()` read `undefined`. Check any `handleSubmit` or
+  server code that relied on receiving `""` to mean "blank". Required strings still submit `""`.
+- ⚠️ **An emptied non-string field is `undefined` instead of a converted value.** A `""` from an
+  emptied control used to become `0` on a number field and `[""]` on an array field. An optional field
+  now submits nothing; a **required** number is now invalid with "This field is required." where it
+  used to pass, and submit, as `0`. If `0` was the intended default, seed it in `initialValues`.
+- ⚠️ **`null` is no longer converted.** It used to become `"null"`, `0` or `["null"]` — for instance
+  from `initialValues` loaded off a record with nulls. It now stays `null` where the field's schema
+  accepts it (`T.Union([X, T.Null()])`, `T.Unknown()`) and becomes `undefined` everywhere else.
+- ⚠️ **An empty optional string passes constraints it used to fail.**
+  `T.Optional(T.String({ format: "email" }))` left blank was invalid, because `""` isn't an email; it's
+  now valid, because it isn't submitted. If a blank must be rejected, make the field required.
+- **Clearable fields.** An optional property schema carrying `"x-clearable": true` (what handshake's
+  `Clearable(schema)` builds) goes out of `toJSON()` and into `handleSubmit` as `null` when empty, so
+  the server removes the stored value. The field itself still holds `undefined` — validity, `dirty`
+  and `reset` are unaffected, and a successful submit rebases the `null` back to `undefined`, so the
+  form is clean. `handleSubmit`'s `data` and `toJSON()` are typed `T | null` for such fields when the
+  schema type carries the brand (`TClearable`); an unbranded keyword works at runtime only.
+  Purely additive: nothing is clearable unless marked.
+
+---
+
 ## Worth adopting (Phase 2 — propose first)
 
 ### table — `ColumnPin`, and `pinned` is never `undefined`

@@ -1,7 +1,7 @@
 import { describe, expect, test, vi } from "vite-plus/test";
 import * as T from "typebox";
 import { autorun } from "mobx";
-import { FormFieldModel } from "./form-field.model";
+import { FormFieldModel, IsClearable } from "./form-field.model";
 import { FormModel } from "./form.model";
 import type { FormConfig } from "./form.types";
 import { DiscriminatedUnion } from "../util/union-schema";
@@ -1028,5 +1028,214 @@ describe("FormModel (active variant)", () => {
     expect(() => new FormModel(Plain as any, { handleSubmit: vi.fn() })).toThrow(
       /DiscriminatedUnion/,
     );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Empty values, null, and clearable fields
+// ---------------------------------------------------------------------------
+
+// What handshake's `Clearable(schema)` builds: an optional schema carrying `x-clearable: true`.
+// Branded, so `toJSON()`'s type widens too.
+const Clearable = <S extends T.TSchema>(schema: S) =>
+  T.Optional({ ...schema, "x-clearable": true } as S & { readonly "x-clearable": true });
+
+const flushAll = () => new Promise<void>((resolve) => setTimeout(resolve, 0));
+const submitForm = (form: { props(): any }) => form.props().onSubmit({ preventDefault: () => {} });
+
+const field = <S extends T.TSchema>(schema: S, initialValue?: unknown) =>
+  new FormFieldModel<T.TSchema>({ name: "f", schema, initialValue });
+
+describe("null and empty values", () => {
+  const Colour = T.Enum(["red", "blue"]);
+
+  // [schema, then what undefined / null / "" each submit as]
+  const rows: [string, T.TSchema, unknown, unknown, unknown][] = [
+    ["Optional(String)", T.Optional(T.String()), undefined, undefined, undefined],
+    ["Optional(Number)", T.Optional(T.Number()), undefined, undefined, undefined],
+    ["Optional(Array(String))", T.Optional(T.Array(T.String())), undefined, undefined, undefined],
+    ["Optional(Enum)", T.Optional(Colour), undefined, undefined, undefined],
+    // undefined isn't converted for a non-string schema, so it stays undefined (as before).
+    ["Union(String, Null)", T.Union([T.String(), T.Null()]), undefined, null, ""],
+  ];
+
+  describe.each(rows)("%s", (_, schema, fromUndefined, fromNull, fromEmpty) => {
+    test("undefined", () => {
+      const f = field(schema);
+      f.setValue(undefined);
+      expect(f.submitValue).toEqual(fromUndefined);
+    });
+
+    test("null, as an initial value and through setValue", () => {
+      expect(field(schema, null).submitValue).toEqual(fromNull);
+      const f = field(schema, "x");
+      f.setValue(null);
+      expect(f.submitValue).toEqual(fromNull);
+    });
+
+    test('""', () => {
+      const f = field(schema);
+      f.setValue("");
+      expect(f.submitValue).toEqual(fromEmpty);
+    });
+  });
+
+  test("an emptied optional string keeps what was typed in value, so the input doesn't jump", () => {
+    const f = field(T.Optional(T.String()), "Ada");
+    f.setValue("  ");
+    expect(f.value).toBe("  ");
+    expect(f.submitValue).toBeUndefined();
+    expect(f.toJSON()).toBeUndefined();
+  });
+
+  test("required fields keep submitting an empty string", () => {
+    const f = field(T.String(), "Ada");
+    f.setValue(" ");
+    expect(f.submitValue).toBe("");
+  });
+
+  test("an emptied required number is missing, not 0", () => {
+    const f = field(T.Number(), 1);
+    f.setValue("");
+    f.setTouched(true);
+    expect(f.value).toBeUndefined();
+    expect(f.valid).toBe(false);
+    expect(f.errorMessage).toBe("This field is required.");
+  });
+
+  test("an empty array is a value, not empty", () => {
+    const f = field(T.Optional(T.Array(T.String())), ["a"]);
+    f.setValue([]);
+    expect(f.submitValue).toEqual([]);
+  });
+
+  test("null survives where the schema admits it: Unknown", () => {
+    expect(field(T.Unknown(), null).submitValue).toBeNull();
+  });
+
+  test("a null on a non-nullable required field becomes undefined, so it reads as required", () => {
+    const f = field(T.String({ minLength: 1 }), null);
+    f.setTouched(true);
+    expect(f.value).toBeUndefined();
+    expect(f.errorMessage).toBe("This field is required.");
+  });
+
+  test("an empty optional string passes constraints it used to fail", () => {
+    const f = field(T.Optional(T.String({ minLength: 2, format: "email" })));
+    f.setValue(" ");
+    expect(f.valid).toBe(true);
+    f.setValue("a");
+    expect(f.valid).toBe(false);
+  });
+
+  test("an optional field loaded as null and left alone is clean", () => {
+    expect(field(T.Optional(T.String()), null).dirty).toBe(false);
+    expect(field(T.Optional(T.Number()), null).dirty).toBe(false);
+  });
+
+  test("an optional password is emptied but never trimmed", () => {
+    const f = field(T.Optional(T.String({ format: "password" })));
+    f.setValue(" ");
+    expect(f.submitValue).toBe(" ");
+    f.setValue("");
+    expect(f.submitValue).toBeUndefined();
+  });
+});
+
+describe("clearable fields", () => {
+  const Profile = T.Object({
+    name: T.String(),
+    nickname: Clearable(T.String()),
+    age: Clearable(T.Number()),
+    bio: T.Optional(T.String()),
+    note: T.Union([T.String(), T.Null()]),
+  });
+
+  const makeForm = (handleSubmit = vi.fn().mockResolvedValue(undefined)) =>
+    new FormModel(Profile, {
+      handleSubmit,
+      initialValues: { name: "Ada", nickname: "Countess", age: 36, bio: "Hi", note: null },
+    });
+
+  test("IsClearable needs the keyword and optionality", () => {
+    expect(IsClearable(Clearable(T.String()))).toBe(true);
+    expect(IsClearable(T.Optional(T.String()))).toBe(false);
+    const required = T.Required(T.Object({ a: Clearable(T.String()) }));
+    expect(IsClearable(required.properties.a)).toBe(false);
+  });
+
+  test("an emptied clearable field goes out as null; a plain optional one stays undefined", () => {
+    const form = makeForm();
+    form.fields.nickname.setValue("");
+    form.fields.age.setValue("" as any); // what an emptied number input emits
+    form.fields.bio.setValue("");
+    const data = form.toJSON();
+    expect(data.nickname).toBeNull();
+    expect(data.age).toBeNull();
+    expect(data.bio).toBeUndefined();
+    expect("bio" in data).toBe(true);
+  });
+
+  test("the null is output only: the field itself holds undefined and stays valid", () => {
+    const form = makeForm();
+    form.fields.nickname.setValue("");
+    expect(form.fields.nickname.submitValue).toBeUndefined();
+    expect(form.fields.nickname.valid).toBe(true);
+    expect(form.valid).toBe(true);
+  });
+
+  test("a filled clearable field goes out as its value", () => {
+    expect(makeForm().toJSON().nickname).toBe("Countess");
+  });
+
+  test("a nullable field round-trips null", async () => {
+    const handleSubmit = vi.fn().mockResolvedValue(undefined);
+    const form = makeForm(handleSubmit);
+    expect(form.fields.note.value).toBeNull();
+    submitForm(form);
+    await flushAll();
+    expect(handleSubmit.mock.calls[0]![0].note).toBeNull();
+    expect(form.dirty).toBe(false);
+  });
+
+  test("clearing and submitting leaves the field clean", async () => {
+    const handleSubmit = vi.fn().mockResolvedValue(undefined);
+    const form = makeForm(handleSubmit);
+    form.fields.nickname.setValue("");
+    form.fields.age.setValue(undefined);
+    submitForm(form);
+    await flushAll();
+    expect(handleSubmit.mock.calls[0]![0]).toMatchObject({ nickname: null, age: null });
+    expect(form.fields.nickname.dirty).toBe(false);
+    expect(form.fields.age.dirty).toBe(false);
+    expect(form.dirty).toBe(false);
+  });
+
+  describe("in a union form", () => {
+    const Contact = DiscriminatedUnion("kind", [
+      T.Object({ kind: T.Literal("email"), address: T.String(), label: Clearable(T.String()) }),
+      T.Object({ kind: T.Literal("phone"), number: T.String(), label: T.String() }),
+    ]);
+
+    test("follows the active variant, and the whole-object check isn't tripped by the null", async () => {
+      const handleSubmit = vi.fn().mockResolvedValue(undefined);
+      const form = new FormModel(Contact, {
+        handleSubmit,
+        initialValues: { kind: "email", address: "a@b.c", label: "Work" },
+      });
+      form.fields.label.setValue("");
+      expect(form.toJSON()).toEqual({ kind: "email", address: "a@b.c", label: null });
+      expect(form.valid).toBe(true);
+      submitForm(form);
+      await flushAll();
+      expect(handleSubmit).toHaveBeenCalledWith({ kind: "email", address: "a@b.c", label: null });
+      expect(form.dirty).toBe(false);
+
+      form.fields.kind.setValue("phone");
+      form.rawFields.number.setValue("123");
+      expect(form.fields.label.clearable).toBe(false);
+      expect(form.toJSON().label).toBe("");
+      expect(form.valid).toBe(true);
+    });
   });
 });

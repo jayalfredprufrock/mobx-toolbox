@@ -206,9 +206,6 @@ refresh leaves the previous timestamp in place (still showing data from then).
 observed — otherwise a mounted component sat at its initial value forever, with no spinner, no
 error, and no request.
 
-Going unobserved always discards the value regardless of `keepOnUnobserved` timing, since nothing
-can be showing it.
-
 `getOrLoad()` joins a load already in flight; `reload()` deliberately starts another and discards
 the earlier result. `set()` also abandons anything in flight, so a slow fetch can never overwrite
 an explicit write.
@@ -235,6 +232,15 @@ lazy(fetch, {
   unmount/remount)
 
 Error state is never kept, regardless of this setting.
+
+The same setting decides what happens to a request still **in flight** when the last observer
+leaves. Under `false` it is aborted on the spot. Under `true` it runs to completion and its result
+is kept, so the value is there on the next observation. Under `{ for: ms }` it keeps running until
+the timer expires, and is aborted then if it hasn't landed. A caller awaiting `getOrLoad()` is never
+left hanging either way: an aborted load restarts for them.
+
+Only that transition — observed to unobserved — drops anything. A value written with `set()` to a
+lazy that has never been observed stays put, and the first observer reads it without a fetch.
 
 ### Aborting superseded requests
 

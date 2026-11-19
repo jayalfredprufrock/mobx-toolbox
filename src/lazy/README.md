@@ -559,6 +559,17 @@ its own behalf, exactly as `getOrLoad()` fetches for one.
 A failed page rejects and leaves the pages already loaded in place, so a retry continues from where
 it stopped rather than starting over.
 
+To cancel it yourself — a dialog's Cancel button — pass a signal:
+
+```ts
+const controller = new AbortController();
+await feed.loadAll({ signal: controller.signal }); // controller.abort() rejects with its reason
+```
+
+Aborting rejects at once and requests nothing further. A page already in flight is left to land
+rather than cancelled, since a scroll-driven `loadMore` may be sharing it, and its rows are kept like
+every page before it.
+
 ### Properties
 
 Beyond everything on a [`lazyArray`](#lazyarray):

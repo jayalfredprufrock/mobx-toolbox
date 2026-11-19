@@ -414,6 +414,8 @@ export interface ColumnConfig {
   filterable?: boolean;
   /** See BaseColumnDef.searchable. Defaults to true. */
   searchable?: boolean | ((row: RowData) => string);
+  /** See BaseColumnDef.exportable. */
+  exportable?: boolean | ((row: RowData) => unknown);
   /** See BaseColumnDef.hidden. Initial value only. */
   hidden?: boolean;
   /** See BaseColumnDef.hideable — advisory for pickers, and proof against a snapshot. */
@@ -437,6 +439,48 @@ export interface ColumnConfig {
  * - `selection` decides which components render the column at all.
  */
 export type ColumnConfigPatch = Partial<Omit<ColumnConfig, "key" | "filter" | "selection">>;
+
+/**
+ * Which rows `TableModel.exportData` writes. All three follow the current sort.
+ *
+ * - `"filtered"` — `displayRows`: what the filters and search leave, in table order.
+ * - `"selected"` — the selected rows among those. A selected row a filter hides is left out, as it
+ *   is from the header checkbox: the export is of what the user can see.
+ * - `"loaded"` — every row the table holds, ignoring client filters and search. On a paged source
+ *   that is only the pages loaded so far; call `table.pages.loadAll()` first for the rest.
+ */
+export type ExportRows = "filtered" | "selected" | "loaded";
+
+/**
+ * Which columns `TableModel.exportData` writes. Only exportable ones (see
+ * {@link BaseColumnDef.exportable}), in on-screen order — pinned blocks at their edges.
+ *
+ * - `"visible"` — the columns the user can see.
+ * - `"all"` — hidden ones too, each where it would sit if shown.
+ * - a list of keys — exactly those, in the order given. An unknown or non-exportable key throws.
+ */
+export type ExportColumns = "visible" | "all" | readonly string[];
+
+/**
+ * Options for `TableModel.exportData`. Plain strings and arrays, so they serialize — an app can send
+ * them, with `table.query`, to a server that runs the export instead.
+ */
+export interface ExportOptions {
+  /** Defaults to `"selected"` when any row the user can see is selected, otherwise `"filtered"`. */
+  rows?: ExportRows;
+  /** Defaults to `"visible"`. */
+  columns?: ExportColumns;
+}
+
+/**
+ * The table's data as plain values: a header and one array per row, cells in column order. Arrays
+ * rather than objects keyed by column, because that is what SheetJS (`aoa_to_sheet`), papaparse
+ * (`unparse({ fields, data })`) and a tab-joined clipboard string all take directly.
+ */
+export interface ExportedData {
+  columns: { key: string; title: string }[];
+  rows: unknown[][];
+}
 
 /** Which edge a column is pinned to, or `false` for not pinned. */
 export type ColumnPin = false | "left" | "right";
@@ -602,6 +646,19 @@ export interface BaseColumnDef<T> {
    * Applies to hidden columns: it describes the data, not what is on screen.
    */
   searchable?: boolean | ((row: T) => string);
+  /**
+   * Whether `TableModel.exportData` includes this column, or the value to write for it instead of
+   * the raw one — `exportable: (r) => users.nameOf(r.ownerId)` exports a name rather than an id,
+   * the same way `searchable` projects a column into text.
+   *
+   * Defaults to true, except on a column that only carries data or a filter (`hidden: true` with
+   * `hideable: false`), which the user never sees and so never gets in a file. Setting it
+   * explicitly on such a column opts it back in. The selection column is never exported.
+   *
+   * The projection may return anything. Values pass through to the consumer untouched — a `Date`
+   * stays a `Date` — so formatting belongs to whoever writes the file.
+   */
+  exportable?: boolean | ((row: T) => unknown);
   /**
    * Who applies this column's filter. `"client"` narrows rows here; `"server"` means whoever
    * produced the rows already did.

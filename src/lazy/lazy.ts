@@ -1095,8 +1095,13 @@ export interface LazyPagesApi<T, Q = undefined> extends LazyArrayApi<T> {
    *
    * Rejects if a page does, leaving the pages already loaded in place — so a retry continues from
    * where it stopped rather than starting over.
+   *
+   * Pass a `signal` to cancel the walk yourself (a dialog's Cancel button). Aborting rejects at
+   * once with `signal.reason` and requests no further pages. A page already in flight is left to
+   * land rather than cancelled — it may be shared with a scroll-driven `loadMore` — so the rows it
+   * brings are kept, like every page before it.
    */
-  loadAll(): Promise<IObservableArray<T>>;
+  loadAll(options?: { signal?: AbortSignal }): Promise<IObservableArray<T>>;
   /**
    * A page request is in flight *behind rows already held* — the append counterpart of
    * {@link LazyApi.refreshing}, and mutually exclusive with it.
@@ -1366,15 +1371,25 @@ export function lazyPages<T, Q = undefined>(
 
     loadAll: {
       enumerable: true,
-      value: async (): Promise<IObservableArray<T>> => {
+      value: async ({ signal }: { signal?: AbortSignal } = {}): Promise<IObservableArray<T>> => {
+        signal?.throwIfAborted();
+        // A page in flight is shared — a scroll-driven `loadMore` may be joined to it — so aborting
+        // doesn't cancel it. It lets that page land and stops the walk, rejecting now rather than
+        // when it lands so a cancel button responds immediately.
+        const aborted =
+          signal &&
+          new Promise<never>((_, reject) =>
+            signal.addEventListener("abort", () => reject(signal.reason), { once: true }),
+          );
         // Whether this walk is serving something on screen. Captured once: a walk that began
         // unobserved is a caller asking on its own behalf and runs to the end, the same way
         // `getOrLoad()` fetches for one.
         const startedObserved = base.observed;
 
         while (state.hasMore) {
+          signal?.throwIfAborted();
           const before = state.pages;
-          await request("more");
+          await (aborted ? Promise.race([request("more"), aborted]) : request("more"));
 
           // Nothing was added. Either the list restarted under us — a `setQuery`, a `reload`, a
           // discard, whose reset put `pages` back and whose generation bump discarded this page —

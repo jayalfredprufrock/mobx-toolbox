@@ -1528,6 +1528,67 @@ useEffect(() => {
 `lazyPages` has no such ordering problem, which is the clearest illustration of why the query flows
 table → source: the source never needs the table, so nothing has to be sequenced.
 
+## Exporting
+
+`table.exportData()` hands back the table's data as plain values, ready for a CSV writer, an XLSX
+writer or the clipboard. It reads the table rather than re-deriving it, so the file matches the
+screen: filters, search, sort, column order, pinning and visibility. Encoding, file names and the
+download are yours.
+
+```ts
+const { columns, rows } = table.exportData({ rows: "selected", columns: "visible" });
+
+// papaparse
+Papa.unparse({ fields: columns.map((c) => c.title), data: rows });
+// SheetJS
+XLSX.utils.aoa_to_sheet([columns.map((c) => c.title), ...rows]);
+```
+
+| Option    | Values                                   | Default                                                        |
+| --------- | ---------------------------------------- | -------------------------------------------------------------- |
+| `rows`    | `"filtered"` · `"selected"` · `"loaded"` | `"selected"` if any visible row is selected, else `"filtered"` |
+| `columns` | `"visible"` · `"all"` · `string[]`       | `"visible"`                                                    |
+
+- **`filtered`** is `displayRows`. **`selected`** is the selected rows among them — a selected row a
+  filter hides is left out, as it is from the header checkbox. **`loaded`** is every row the table
+  holds, ignoring client filters and search. All three follow the current sort.
+- **`visible`** and **`all`** come out in on-screen order — left-pinned, unpinned, right-pinned, as
+  in `visualColumns` — with `all` placing hidden columns where they would sit if shown. A key list
+  is taken in the order given, and an unknown or non-exportable key throws.
+- Headers are `column.title`.
+
+The options are plain strings and arrays, so they serialize: a table too large to export in the
+browser can send them, with [`table.query`](#tablequery--what-the-server-is-being-asked), to a server
+that runs the export instead.
+
+### What a cell exports as
+
+The raw value — `column.getValue(row)` — passed through untouched. A `Date` stays a `Date` and an
+array stays an array; formatting belongs to whoever writes the file. Where the raw value reads badly
+outside the table, give the column an `exportable` projection, the same way `searchable` projects one
+into text:
+
+```ts
+{ key: "ownerId", render: (r) => <UserName id={r.ownerId} />, exportable: (r) => users.nameOf(r.ownerId) }
+```
+
+`exportable: false` leaves a column out. The selection column is never exported, and neither is a
+[column that only carries data](#a-column-that-only-carries-data) (`hidden` with `hideable: false`)
+unless its def sets `exportable` explicitly. `column.exportable` is the resolved flag, and
+`column.exportValue(row)` the value.
+
+### Paged tables
+
+On a paged source, `"loaded"` means the pages loaded so far. To export everything, load the rest
+first — `table.pages.loadAll({ signal })` — and show progress from `table.rows.length` against
+`table.pages.total`. `total` is only there if the server reports one; without it, `pages.hasMore`
+still says whether more exists.
+
+```tsx
+const { pages, rows } = table;
+pages?.hasMore && `${rows.length}${pages.total === undefined ? "" : ` of ${pages.total}`} loaded`;
+```
+
 ## Columns exist before the data does
 
 Configured columns are built at construction, not when rows first arrive, so `column(key)`,

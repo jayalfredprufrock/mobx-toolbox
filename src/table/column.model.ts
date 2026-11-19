@@ -230,6 +230,18 @@ export class ColumnModel {
   }
 
   /**
+   * Whether `TableModel.exportData` may include this column. See {@link BaseColumnDef.exportable}:
+   * never the selection column, and not a data carrier (`hidden` locked by `hideable: false`)
+   * unless the def opts it in.
+   */
+  get exportable(): boolean {
+    const exportable = this.config.exportable;
+    if (this.selection || exportable === false) return false;
+    if (exportable !== undefined) return true;
+    return !(this.hidden && !this.hideable);
+  }
+
+  /**
    * The value this column's filter compares against — its own `facets` domain, in other words.
    *
    * `[]` when no filter is attached: a distinct-values API for every column would be a different
@@ -372,6 +384,7 @@ export class ColumnModel {
       isPinnedOuterEdge: computed,
       offset: computed,
       title: computed,
+      exportable: computed,
       ariaColIndex: computed,
       sortDirection: computed,
       sortIndex: computed,
@@ -453,6 +466,15 @@ export class ColumnModel {
   searchValue(row: RowData): unknown {
     const searchable = this.config.searchable;
     return typeof searchable === "function" ? searchable(row) : this.config.value(row);
+  }
+
+  /**
+   * What `TableModel.exportData` writes for this row: the `exportable` projection when one is
+   * given, otherwise the raw cell value.
+   */
+  exportValue(row: RowData): unknown {
+    const exportable = this.config.exportable;
+    return typeof exportable === "function" ? exportable(row) : this.config.value(row);
   }
 
   /** Reset this column's filter, if it has one. A no-op otherwise. */

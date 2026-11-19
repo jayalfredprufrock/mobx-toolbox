@@ -20,6 +20,10 @@ import type {
   ColumnSort,
   ColumnsDef,
   ColumnState,
+  ExportColumns,
+  ExportedData,
+  ExportOptions,
+  ExportRows,
   FilterCondition,
   FilterMode,
   RowData,
@@ -672,7 +676,11 @@ export class TableModel {
   }
 
   get displayRows(): RowData[] {
-    const rows = this.clientFilteredRows;
+    return this.sortRows(this.clientFilteredRows);
+  }
+
+  // `rows` in the current sort order — a copy when it reorders anything, `rows` itself otherwise
+  private sortRows(rows: RowData[]): RowData[] {
     // manual mode: sorts is reactive state for the consumer to serialize; rows arrive pre-sorted
     if (this.sortMode === "manual") return rows;
     const active = this.sorts.flatMap(({ key, direction }) => {
@@ -1257,6 +1265,59 @@ export class TableModel {
     const value = columnFilters[col.key];
     if (value === undefined) filter.clear();
     else filter.setValue(value);
+  }
+
+  /**
+   * The table's data as plain values, for a CSV writer, an XLSX writer or the clipboard — see
+   * {@link ExportOptions} for which rows and columns, and {@link ExportedData} for the shape.
+   *
+   * It reads the table rather than re-deriving it, so the file matches the screen: current filters,
+   * search, sort, column order, pinning and visibility. Cells are `ColumnModel.exportValue` — the
+   * `exportable` projection or the raw value — passed through untouched; encoding is the caller's.
+   *
+   * A plain method, not a computed: call it from a click handler. A dialog wanting counts can read
+   * `displayRows.length`, `visibleSelectedRows.length` and `rows.length` directly.
+   */
+  exportData(options: ExportOptions = {}): ExportedData {
+    const columns = this.exportColumns(options.columns ?? "visible");
+    const rows = this.exportRows(
+      options.rows ?? (this.visibleSelectedRows.length ? "selected" : "filtered"),
+    );
+    return {
+      columns: columns.map((c) => ({ key: c.key, title: c.title })),
+      rows: rows.map((row) => columns.map((c) => c.exportValue(row))),
+    };
+  }
+
+  private exportRows(which: ExportRows): RowData[] {
+    if (which === "loaded") return this.sortRows(this.rows);
+    if (which === "filtered") return this.displayRows;
+    const ids = this.rowIds;
+    return this.displayRows.filter((row) => {
+      const id = ids.get(row);
+      return id !== undefined && this.selectedIds.has(id);
+    });
+  }
+
+  private exportColumns(which: ExportColumns): ColumnModel[] {
+    if (typeof which !== "string") {
+      return which.map((key) => {
+        const col = this.columns.get(key);
+        if (!col) throw new Error(`exportData: no column "${key}".`);
+        if (!col.exportable) throw new Error(`exportData: column "${key}" is not exportable.`);
+        return col;
+      });
+    }
+    // on-screen order: left-pinned, unpinned, right-pinned, each in column order — `visualColumns`,
+    // widened to hidden columns for "all"
+    const pool = (which === "all" ? this.allColumns : this.orderedColumns).filter(
+      (c) => c.exportable,
+    );
+    return [
+      ...pool.filter((c) => c.pinned === "left"),
+      ...pool.filter((c) => !c.pinned),
+      ...pool.filter((c) => c.pinned === "right"),
+    ];
   }
 
   /** The column under this key, if it exists. */

@@ -237,6 +237,39 @@ describe("lazyPages", () => {
     expect(fetch).not.toHaveBeenCalled();
   });
 
+  test("loadAll with an already-aborted signal rejects without fetching", async () => {
+    const fetch = cursorApi(50, 10);
+    const feed = lazyPages(fetch, { pageSize: 10 });
+    const controller = new AbortController();
+    controller.abort();
+
+    await expect(feed.loadAll({ signal: controller.signal })).rejects.toBe(
+      controller.signal.reason,
+    );
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  test("aborting loadAll rejects at once, keeps the pages held and requests no more", async () => {
+    const fetch = pacedApi(500, 10);
+    const feed = lazyPages(fetch, { pageSize: 10 });
+    const controller = new AbortController();
+
+    const walk = feed.loadAll({ signal: controller.signal });
+    await new Promise((r) => setTimeout(r, 12));
+    const reason = new Error("cancelled");
+    controller.abort(reason);
+    await expect(walk).rejects.toBe(reason);
+
+    // the page in flight is left to land, then nothing further is requested
+    await new Promise((r) => setTimeout(r, 20));
+    const calls = fetch.mock.calls.length;
+    await new Promise((r) => setTimeout(r, 20));
+    expect(fetch.mock.calls.length).toBe(calls);
+    expect(feed.value!.length).toBe(feed.pages * 10);
+    expect(feed.pages).toBeGreaterThan(0);
+    expect(feed.hasMore).toBe(true);
+  });
+
   test("loadAll stops when the list restarts underneath it", async () => {
     const fetch = pacedApi(500, 10);
     const feed = lazyPages(fetch, { pageSize: 10 });

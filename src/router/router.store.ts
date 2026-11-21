@@ -148,6 +148,16 @@ export class RouterStore {
   private stopRearm: (() => void) | undefined;
   private deciding = false;
 
+  /** Disposer for the history listener `initialize` installs. See {@link initialize}. */
+  private stopListening: (() => void) | undefined;
+
+  /**
+   * Bumped by a re-`initialize`, so a navigation still in flight to the same
+   * pathname reads as stale — {@link isStale} otherwise compares pathnames
+   * only, and the re-match targets the pathname already on screen.
+   */
+  private generation = 0;
+
   get search(): URLSearchParams {
     return new URLSearchParams(this.location?.search);
   }
@@ -281,14 +291,28 @@ export class RouterStore {
    * through. Await it to hand off from a boot screen, or to hold a test
    * until there is a route to assert on; ignore it to let `[SPLASH]` and
    * `[LOADING]` cover the wait, which is the usual case.
+   *
+   * Safe to call again — the HMR case. A later call replaces the route
+   * definitions, swaps (never adds) the history listener, and runs the
+   * current URL as a fresh navigation against the new definitions, without
+   * touching history; a redirect it reaches replaces as usual.
    */
   initialize(routesDef: Routes): Promise<void> {
+    const rematch = this.stopListening !== undefined;
+
+    this.stopListening?.();
     this.routesDef = routesDef;
-    this.history.listen((data) => {
+    this.stopListening = this.history.listen((data) => {
       void this.setLocation(data.location);
     });
 
-    void this.setLocation(this.history.location);
+    if (rematch) {
+      // the pathname is unchanged, so `setLocation`'s same-pathname shortcut
+      // would skip the match; this generation bump both forces it and
+      // retires any navigation still in flight under the old definitions
+      this.generation++;
+    }
+    void this.applyLocation(this.history.location, rematch);
 
     // `setLocation` has already claimed the navigation clock synchronously
     // — it only awaits once matching is done — so there is no window here
@@ -730,7 +754,15 @@ export class RouterStore {
     return value;
   }
 
-  async setLocation(location: Location): Promise<void> {
+  setLocation(location: Location): Promise<void> {
+    return this.applyLocation(location, false);
+  }
+
+  /**
+   * `setLocation`, optionally bypassing the same-pathname shortcut. `rematch`
+   * is the re-`initialize` case: same URL, new route definitions.
+   */
+  private async applyLocation(location: Location, rematch: boolean): Promise<void> {
     if (!this.routesDef) return;
 
     // TODO: this should not be the responsibility of mobx-router
@@ -746,12 +778,17 @@ export class RouterStore {
     // rebuilding the route, so query-param changes don't refetch loaders
     // or replace activeRoute. Also guards against restarting a match for
     // a pathname that a still-pending navigation is already resolving.
-    if ((this.activeRoute || this.pendingRoute) && this.location?.pathname === location.pathname) {
+    if (
+      !rematch &&
+      (this.activeRoute || this.pendingRoute) &&
+      this.location?.pathname === location.pathname
+    ) {
       this.location = location;
       return;
     }
 
     this.location = location;
+    const generation = this.generation;
 
     // a cold load has no previous page to preserve, so the pending route
     // renders and its [LOADING] components are on screen — the only case
@@ -780,7 +817,7 @@ export class RouterStore {
 
       // navigating within a guard function
       // is essentially a redirect
-      if (this.isStale(location)) {
+      if (this.isStale(location, generation)) {
         return;
       }
 
@@ -792,7 +829,7 @@ export class RouterStore {
 
       // another navigation started while this one was loading — it owns
       // the swap now, and its own pendingRoute assignment has replaced ours
-      if (this.isStale(location)) {
+      if (this.isStale(location, generation)) {
         return;
       }
 
@@ -836,7 +873,7 @@ export class RouterStore {
       }
 
       // navigating within a guard before it threw — treat as a redirect
-      if (this.isStale(location)) {
+      if (this.isStale(location, generation)) {
         return;
       }
 
@@ -945,8 +982,8 @@ export class RouterStore {
    * history-state change during a pending navigation replaces `location`
    * without re-matching, and must not cancel the navigation in flight.
    */
-  private isStale(location: Location): boolean {
-    return this.location?.pathname !== location.pathname;
+  private isStale(location: Location, generation: number): boolean {
+    return this.location?.pathname !== location.pathname || this.generation !== generation;
   }
 
   /**

@@ -3045,3 +3045,77 @@ describe("runtime redirect loops", () => {
     expect(router.activeRoute?.error).toBeUndefined();
   });
 });
+
+describe("initialize() called again (HMR)", () => {
+  const boot = async (routes: any, path: string) => {
+    const history = createMemoryHistory({ initialEntries: [path] });
+    const router = new RouterStore({ history });
+    const listen = vi.spyOn(history, "listen");
+    await router.initialize(routes);
+    return { router, history, listen };
+  };
+
+  test("keeps exactly one history listener", async () => {
+    const routes = makeRoutes()({ index: PageA, about: PageB });
+    const { router, history, listen } = await boot(routes, "/");
+    const setLocation = vi.spyOn(router, "setLocation");
+
+    await router.initialize(routes);
+    expect(listen).toHaveBeenCalledTimes(2);
+
+    history.push("/about");
+    expect(setLocation).toHaveBeenCalledTimes(1);
+    await vi.waitFor(() => expect(router.activeRoute?.path).toBe("about"));
+  });
+
+  test("re-matches the current location against the new definitions", async () => {
+    const PageA2 = () => null;
+    const { router, history } = await boot(makeRoutes()({ index: PageA, about: PageB }), "/about");
+    const before = router.activeRoute;
+
+    await router.initialize(makeRoutes()({ index: PageA, about: PageA2 }));
+
+    expect(router.activeRoute).not.toBe(before);
+    expect(router.activeRoute?.outlets.at(-1)?.component).toBe(PageA2);
+    expect(history.index).toBe(0);
+  });
+
+  test("re-runs the current route's guard; a redirect it throws replaces", async () => {
+    let allowed = true;
+    const guard = vi.fn<Guard>(async () => {
+      if (!allowed) throw redirect({ to: "/login" });
+    });
+    const routes = makeRoutes()({
+      login: PageB,
+      secret: { [GUARD]: guard, [PAGE]: PageA },
+    });
+    const { router, history } = await boot(routes, "/secret");
+    expect(guard).toHaveBeenCalledTimes(1);
+
+    allowed = false;
+    await router.initialize(routes);
+
+    expect(guard).toHaveBeenCalledTimes(2);
+    expect(router.activeRoute?.path).toBe("login");
+    expect(history.location.pathname).toBe("/login");
+    // replaced, not pushed: still the first and only entry
+    expect(history.index).toBe(0);
+  });
+
+  test("retires a navigation still in flight under the old definitions", async () => {
+    let release!: () => void;
+    const slow = new Promise<void>((r) => (release = r));
+    const PageA2 = () => null;
+    const history = createMemoryHistory({ initialEntries: ["/"] });
+    const router = new RouterStore({ history });
+
+    void router.initialize(makeRoutes()({ index: { [GUARD]: () => slow, [PAGE]: PageA } }));
+    const second = router.initialize(makeRoutes()({ index: PageA2 }));
+    await second;
+    release();
+    await slow;
+    await Promise.resolve();
+
+    expect(router.activeRoute?.outlets.at(-1)?.component).toBe(PageA2);
+  });
+});

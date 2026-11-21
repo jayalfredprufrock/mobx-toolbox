@@ -1099,6 +1099,19 @@ to hand off from a boot screen, or to hold a test until there is a route to asse
 let `[SPLASH]` and `[LOADING]` cover the wait, which is the usual case — as the
 [setup example](#setup) does.
 
+Calling `initialize()` again is safe, and is how hot module replacement picks up edited routes. A
+second call swaps in the new definitions, keeps the single history listener, and re-runs the current
+URL as a fresh navigation (guards, redirects, context, loaders) without adding a history entry. A
+redirect it reaches replaces, as redirects always do. Unchanged layouts, wrappers and pages (same
+function reference) reconcile in place and keep their React state:
+
+```tsx
+// app.tsx — `router` must outlive the module (e.g. created in a module that isn't re-run)
+router.initialize(routes);
+root.render(<App />);
+import.meta.hot?.accept();
+```
+
 Ignoring it is safe: neither promise rejects. If you lint with `no-floating-promises`, mark the
 fire-and-forget calls `void router.navigate(...)`. One place that isn't optional is a React effect
 callback, which must return a cleanup function or nothing — `useEffect(() => void router.navigate(...))`,
@@ -1314,7 +1327,7 @@ What the shortcut trades away:
 
 ```ts
 const router = new RouterStore(config?: MobxRouterConfig);
-router.initialize(routes);             // Promise<void> — call once; resolves when the first navigation lands
+router.initialize(routes);             // Promise<void> — resolves when the first navigation lands; safe to call again (HMR)
 
 // Observable state
 router.location                        // History Location — updates as soon as navigation starts

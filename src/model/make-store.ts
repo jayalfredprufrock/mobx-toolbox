@@ -243,7 +243,7 @@ export type StoreInstance<M, MC, Cfg> = {
    * ```
    *
    * `Q` is the query type the list is driven by — `TableQuery` when a table owns it. Deduplication
-   * defaults to the model's `identityKey`, and `sort` is not an option: see
+   * defaults to the model's `identityOf`, and `sort` is not an option: see
    * {@link PagedCollectionOptions}.
    */
   pagedCollection<Q = undefined>(
@@ -444,7 +444,7 @@ export function makeStore(
      * That is the whole of what a store had to add: `collection()` maps `R[] -> M[]`, and this maps
      * the `items` inside whatever shape they arrived in.
      *
-     * **Deduplication is on by default** for an identity-mapped model, keyed on `identityKey`.
+     * **Deduplication is on by default** for an identity-mapped model, keyed on `identityOf`.
      * That is not a nicety: a record served on two pages — a cursor over a non-unique sort key, an
      * offset while rows are being inserted — is *literally the same object* under identity, so it
      * would appear twice in one array. A table keys its rows by identity, so that means two rows
@@ -476,7 +476,7 @@ export function makeStore(
           // deep: false — models are observable in their own right, so nothing needs converting.
           deep: false,
           // Identity is exactly the right key, and the failure it prevents is invisible otherwise.
-          ...(Array.isArray(Model.keys) ? { dedupeBy: (m: any) => Model.identityKey(m) } : {}),
+          ...(Array.isArray(Model.keys) ? { dedupeBy: (m: any) => Model.identityOf(m) } : {}),
           ...pagesOptions,
           ...(dedupeBy ? { dedupeBy } : {}),
         },

@@ -148,7 +148,7 @@ export function useCollection(model: AnyModelClass, fetch: any, options?: any): 
  * ```
  *
  * Everything `pagedCollection()` gives a store-owned list applies here: payloads become
- * identity-mapped models, duplicates across page boundaries are dropped on `identityKey`, a
+ * identity-mapped models, duplicates across page boundaries are dropped on `identityOf`, a
  * `created` event restarts the list, and a deletion removes the record from it. Being
  * component-scoped costs none of that — the model's identity map and event fan-out are global, so
  * an edit here shows up in the app-wide store and vice versa, and nothing needs disposing because

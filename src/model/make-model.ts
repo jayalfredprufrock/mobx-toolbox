@@ -330,6 +330,23 @@ export interface ModelConfig<S extends ModelSchema, K> {
    */
   optimistic?: boolean;
   /**
+   * The schema field holding the record's server-assigned version — typically `updatedAt`. Declare
+   * it and a payload *older* than the instance it lands on is skipped instead of applied, so a
+   * response that arrives late (a slow `get` that started before an `update`, a lagging search
+   * index) cannot put stale fields back.
+   *
+   * Only strictly older payloads are skipped: an equal version applies, exactly as without this
+   * option. A missing version on either side applies too — what cannot be compared is not blocked.
+   *
+   * Values compare with `<`: numbers numerically, strings by character. ISO timestamps compare
+   * correctly only in one consistent format (e.g. all `toISOString()` output); when they don't,
+   * override the static `versionOf` to return a number.
+   *
+   * Guards every load — `instantiate`, `get`, `reload`, `update`, custom actions — but not
+   * `setData` or `updateData`, which apply exactly what they are given.
+   */
+  versionKey?: keyof Resource<S> & string;
+  /**
    * Create a record. Exposed as the static `Model.create(body)`.
    *
    * The body is deliberately unconstrained: its real type comes from whatever you attach or
@@ -397,6 +414,17 @@ type ModelInstanceMembers<S extends ModelSchema, K, Cfg> = {
  * Mutation fan-out, which every model class has whatever it declared for `keys` — a model with no
  * identity still creates, updates and deletes records, and stores still need to hear about it.
  */
+/** The version static, present on every model class. */
+export interface ModelVersion<S extends ModelSchema, I extends object> {
+  /**
+   * The version of a payload or model, compared to decide whether a loaded payload is older than
+   * the instance it would replace. Reads the `versionKey` field by default, and is `undefined` —
+   * never blocking — without one. Override on a subclass to compute it, e.g. to parse timestamps
+   * in mixed formats.
+   */
+  versionOf(source: Resource<S> | I): string | number | undefined;
+}
+
 export interface ModelEvents<I extends object> {
   /**
    * Start hearing about mutations to this resource. Held weakly, so registering never keeps a
@@ -413,7 +441,7 @@ export interface ModelEvents<I extends object> {
  * config-less `makeModel(schema)` that means the same thing, leave these off the class type.
  */
 export interface ModelIdentity<S extends ModelSchema, K, I extends object> {
-  readonly identityCache: WeakRefMap<string | number, I>;
+  readonly identityMap: WeakRefMap<string | number, I>;
   /**
    * The record for these params if it is already in the identity map, without ever fetching.
    * Synchronous, so it can answer during render.
@@ -428,7 +456,7 @@ export interface ModelIdentity<S extends ModelSchema, K, I extends object> {
     params: KeyShape<S, K>,
   ): InstanceType<This> | undefined;
   /** The registry key for a payload or model. Override on a subclass to scope identity. */
-  identityKey(source: Resource<S> | I): string | number;
+  identityOf(source: Resource<S> | I): string | number;
   /**
    * The one instance for this record — existing and updated, or newly created and registered.
    * Typed through the class it is called on, so a subclass's own members come through:
@@ -486,6 +514,7 @@ export type ModelConstructor<S extends ModelSchema, K, Cfg> = {
   /** Exactly what was declared, so `Model.keys` reads back the tuple — or `false`. */
   readonly keys: K;
 } & ModelEvents<ModelInstance<S, K, Cfg>> &
+  ModelVersion<S, ModelInstance<S, K, Cfg>> &
   (HasIdentity<K> extends true ? ModelIdentity<S, K, ModelInstance<S, K, Cfg>> : {}) &
   ModelStatics<Cfg>;
 
@@ -524,6 +553,33 @@ function createModelClass(
     }
   }
 
+  const versionKey = config?.versionKey as string | undefined;
+  if (versionKey !== undefined && !propertyNames.includes(versionKey)) {
+    throw new Error(
+      `[makeModel] versionKey names "${versionKey}", which is not a field of this schema. ` +
+        `Known fields: ${propertyNames.join(", ")}.`,
+    );
+  }
+
+  /**
+   * Whether a loaded payload may replace a model's fields: anything but a strictly older version.
+   * Read through the model's own class, so a subclass's `versionOf` override applies.
+   */
+  const supersedes = (model: any, data: any): boolean => {
+    const Cls = model.constructor as { versionOf(source: any): string | number | undefined };
+    const next = Cls.versionOf(data);
+    const current = Cls.versionOf(model);
+    if (next === undefined || current === undefined) return true;
+    // A number against a string has no meaningful order; apply rather than guess.
+    if (typeof next !== typeof current) return true;
+    return !(next < current);
+  };
+
+  /** Apply a loaded payload unless it is older than what the model holds. */
+  const applyLoaded = (model: any, data: any): void => {
+    if (supersedes(model, data)) runInAction(() => model.setData(data));
+  };
+
   abstract class BaseModel {
     static readonly schema = schema;
     static readonly keys = keySpec;
@@ -533,14 +589,14 @@ function createModelClass(
      * rather than an inherited one — so a subclass never shares its parent's registry and can
      * never be handed a parent instance in its place.
      */
-    static get identityCache(): WeakRefMap<string | number, any> {
-      if (!Object.hasOwn(this, "_identityCache")) {
-        Object.defineProperty(this, "_identityCache", {
+    static get identityMap(): WeakRefMap<string | number, any> {
+      if (!Object.hasOwn(this, "_identityMap")) {
+        Object.defineProperty(this, "_identityMap", {
           value: new WeakRefMap<string | number, any>(),
           configurable: true,
         });
       }
-      return (this as any)._identityCache;
+      return (this as any)._identityMap;
     }
 
     /**
@@ -548,7 +604,15 @@ function createModelClass(
      * subclass to scope identity, e.g. to fold in a tenant id so ids from different tenants can't
      * collide.
      */
-    static identityKey(source: any): string | number {
+    /**
+     * The version of a payload or model, read from `versionKey`. Override on a subclass to compute
+     * it. `undefined` never blocks a load.
+     */
+    static versionOf(source: any): string | number | undefined {
+      return versionKey === undefined ? undefined : source[versionKey];
+    }
+
+    static identityOf(source: any): string | number {
       if (!hasIdentity) {
         throw new Error(
           "This model has no identity — it was declared with `keys: false`, or with no config at all. Use `new Model(data)` for a detached instance, or declare `keys` to identity-map it.",
@@ -565,13 +629,15 @@ function createModelClass(
      * loads the same record ends up holding the same object.
      */
     static instantiate(data: any): any {
-      const key = this.identityKey(data);
-      const existing = this.identityCache.get(key);
+      const key = this.identityOf(data);
+      const existing = this.identityMap.get(key);
       if (existing) {
-        existing.setData(data);
+        // An older payload leaves the instance — and its load stamp — untouched: nothing newer
+        // was loaded.
+        if (supersedes(existing, data)) existing.setData(data);
         return existing;
       }
-      return this.identityCache.add(key, new (this as any)(data));
+      return this.identityMap.add(key, new (this as any)(data));
     }
 
     /**
@@ -579,7 +645,7 @@ function createModelClass(
      * safe to call during render.
      */
     static peek(params?: any): any {
-      return this.identityCache.get(this.identityKey(params));
+      return this.identityMap.get(this.identityOf(params));
     }
 
     /**
@@ -587,16 +653,16 @@ function createModelClass(
      * than reviving this one. Called automatically by `delete()`.
      */
     static forget(source: any): boolean {
-      return this.identityCache.delete(this.identityKey(source));
+      return this.identityMap.delete(this.identityOf(source));
     }
 
     /** Forget every record. For teardown — a logout, or switching tenant. */
     static clearIdentity(): void {
-      this.identityCache.clear();
+      this.identityMap.clear();
     }
 
     /**
-     * Listeners, held weakly and per class, exactly as `identityCache` is. Weak because the model
+     * Listeners, held weakly and per class, exactly as `identityMap` is. Weak because the model
      * class outlives everything: a strong set would keep every store ever created alive, which for
      * a scoped store means leaking it and every model in its collections.
      */
@@ -773,7 +839,7 @@ function createModelClass(
     (BaseModel as any).get = function (this: any, ...args: any[]) {
       if (cacheable) {
         // A keyed model is called as `get(params, ...rest)`; a singleton has no params, so every
-        // argument is rest. `identityKey` ignores its source for a singleton either way.
+        // argument is rest. `identityOf` ignores its source for a singleton either way.
         const rest = keys.length === 0 ? args : args.slice(1);
         const existing = this.peek(args[0]);
 
@@ -814,7 +880,7 @@ function createModelClass(
     proto.reload = async function (...rest: any[]) {
       const params = this.buildParams();
       const data = params === undefined ? await reload(...rest) : await reload(params, ...rest);
-      runInAction(() => this.setData(data));
+      applyLoaded(this, data);
       return this;
     };
   }
@@ -825,7 +891,7 @@ function createModelClass(
       const params = this.buildParams();
       const data =
         params === undefined ? await update(body, ...rest) : await update(params, body, ...rest);
-      runInAction(() => this.setData(data));
+      applyLoaded(this, data);
       (this.constructor as typeof BaseModel).notifyListeners("updated", this);
       return this;
     };
@@ -855,7 +921,7 @@ function createModelClass(
         } else {
           data = body === undefined ? await call(params) : await call(params, body, ...rest);
         }
-        runInAction(() => this.setData(data));
+        applyLoaded(this, data);
         (this.constructor as typeof BaseModel).notifyListeners("updated", this);
         return this;
       };
@@ -999,6 +1065,7 @@ export type UnionModelConstructor<S extends UnionSchema, D extends keyof Resourc
   readonly discriminator: D;
   readonly keys: K;
 } & ModelEvents<UnionModelInstance<S, D, K, Cfg>> &
+  ModelVersion<S, UnionModelInstance<S, D, K, Cfg>> &
   (HasIdentity<K> extends true ? ModelIdentity<S, K, UnionModelInstance<S, D, K, Cfg>> : {}) &
   ModelStatics<Cfg>;
 

@@ -147,7 +147,7 @@ Which rows "still resolve" is the whole question, and it is decided by where the
 | plain JSON, or `keys: false` models  | the row's own object identity | drops — every row is a new object   |
 | anything, with `getRowId` configured | what you return               | survives if the key does            |
 
-So **`getRowId` is worth configuring, but it is not the difference between working and not** — see [row identity](#row-identity). Reach for it when row objects are replaced by fresh ones that mean the same row, which is the plain-JSON case. For an identity-mapped model it is dead config; if you want it written down anyway, `getRowId: (r) => MyModel.identityKey(r)` is the right spelling rather than `r.id`, which is only there if the schema declared it.
+So **`getRowId` is worth configuring, but it is not the difference between working and not** — see [row identity](#row-identity). Reach for it when row objects are replaced by fresh ones that mean the same row, which is the plain-JSON case. For an identity-mapped model it is dead config; if you want it written down anyway, `getRowId: (r) => MyModel.identityOf(r)` is the right spelling rather than `r.id`, which is only there if the schema declared it.
 
 ⚠️ **Uniqueness is yours**, and a paginated source is where it breaks: a record served on two pages becomes two rows sharing one id — one React key, and one selection toggle that hits both. Deduplicate at the source ([`lazyPages`' `dedupeBy`](../lazy/README.md#options-2)).
 

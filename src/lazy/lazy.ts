@@ -1047,7 +1047,7 @@ export interface LazyPagesOptions<T, Q = undefined> extends Pick<
    * harmless — a table keys its rows by identity, so two entries for one record produce two rows
    * that share a React key and a single selection toggle that hits both.
    *
-   * For a model-backed list, `dedupeBy: SurveyModel.identityKey` is exactly this.
+   * For a model-backed list, `dedupeBy: SurveyModel.identityOf` is exactly this.
    */
   dedupeBy?: (item: T) => unknown;
 }

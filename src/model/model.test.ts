@@ -607,11 +607,11 @@ describe("model identity", () => {
     expect(() => OptedOut.instantiate(alice())).toThrow(/no identity/);
   });
 
-  test("identityKey can be overridden to scope identity", () => {
+  test("identityOf can be overridden to scope identity", () => {
     const UserModel = makeModel(UserSchema, { keys: ["id"] as const });
     let tenant = "acme";
     class TenantUser extends UserModel {
-      static override identityKey(source: { id: number }) {
+      static override identityOf(source: { id: number }) {
         return `${tenant}:${source.id}`;
       }
     }

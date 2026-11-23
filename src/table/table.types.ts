@@ -184,7 +184,7 @@ export interface TableConfig<T> {
    * rows are new objects with new ids, so `setData` finds none of the old ids and drops the
    * selection with them.
    *
-   * For an identity-mapped model, `getRowId: (r) => MyModel.identityKey(r)` is the right spelling
+   * For an identity-mapped model, `getRowId: (r) => MyModel.identityOf(r)` is the right spelling
    * rather than `r.id`, which is only there if the schema declared it.
    *
    * ⚠️ Uniqueness is yours to guarantee, and paginated sources are where it breaks: a record

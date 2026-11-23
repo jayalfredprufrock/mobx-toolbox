@@ -650,7 +650,7 @@ lazyPages(fetch, {
 offset while rows are being inserted. Both hand back a record already held, and the duplicate is not
 harmless: a table keys its rows by identity, so two entries for one record render two rows sharing a
 React key and one selection toggle that hits both. For a model-backed list, `dedupeBy:
-SurveyModel.identityKey` is exactly this. Deduplication never shortens the list early — `hasMore` is
+SurveyModel.identityOf` is exactly this. Deduplication never shortens the list early — `hasMore` is
 resolved from the page's _own_ row count, so a page made entirely of records already held is still a
 page the server had.
 

@@ -98,7 +98,7 @@ describe("pagedCollection", () => {
     expect(store.feed.hasMore).toBe(false);
   });
 
-  test("deduplicates on identityKey by default — the same record twice is the same object", async () => {
+  test("deduplicates on identityOf by default — the same record twice is the same object", async () => {
     const Survey = makeSurveyModel();
     const fetch = vi
       .fn<(r: LazyPageRequest<any>) => Promise<LazyPageResult<SurveyPayload>>>()

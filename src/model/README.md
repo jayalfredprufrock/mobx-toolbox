@@ -150,7 +150,7 @@ Two consequences worth knowing:
 
 ### Identity — one instance per record
 
-A keyed model class is an identity map. `Model.instantiate(data, store?)` returns the _same_ object
+A keyed model class is an identity map. `Model.instantiate(data)` returns the _same_ object
 every time it sees the same record, applying the newer payload to it rather than building a second
 copy:
 
@@ -175,13 +175,14 @@ const active = createStore(UserModel, { collections: { all: api.listActiveUsers 
 At scale this is also a performance feature: reloading a 50k-row list reuses the instances instead of
 running `makeObservable` 50k more times, which measured ~10× faster (233ms → 24ms).
 
-| Static                      | Description                                                              |
-| --------------------------- | ------------------------------------------------------------------------ |
-| `instantiate(data, store?)` | The one instance for this record, created or updated                     |
-| `identityKey(source)`       | The registry key for a payload or model — override to scope identity     |
-| `forget(source)`            | Drop the entry, so the next `instantiate` builds a fresh instance        |
-| `clearIdentity()`           | Forget every record — for logout or a tenant switch                      |
-| `keys`, `schema`            | Exactly what was declared — the tuple, `[]`, or `false` — and the schema |
+| Static               | Description                                                              |
+| -------------------- | ------------------------------------------------------------------------ |
+| `instantiate(data)`  | The one instance for this record, created or updated                     |
+| `identityOf(source)` | The registry key for a payload or model — override to scope identity     |
+| `versionOf(source)`  | The version compared by `versionKey` — override to compute it            |
+| `forget(source)`     | Drop the entry, so the next `instantiate` builds a fresh instance        |
+| `clearIdentity()`    | Forget every record — for logout or a tenant switch                      |
+| `keys`, `schema`     | Exactly what was declared — the tuple, `[]`, or `false` — and the schema |
 
 Notes:
 
@@ -199,12 +200,12 @@ Notes:
   plain `UserModel` where an `Admin` was expected. `Admin.instantiate(data)` is typed as an `Admin`,
   and so are `Admin.get(...)` and `Admin.create(...)` — every static is typed through the class it
   is called on, so a subclass's own members come through.
-- **Override `identityKey` to scope identity** — folding in a tenant id, say, so ids from different
+- **Override `identityOf` to scope identity** — folding in a tenant id, say, so ids from different
   tenants cannot collide:
 
 ```ts
 class TenantUser extends UserModel {
-  static override identityKey(source: { id: number }) {
+  static override identityOf(source: { id: number }) {
     return `${session.tenantId}:${source.id}`;
   }
 }
@@ -214,6 +215,45 @@ class TenantUser extends UserModel {
   every field. If a list endpoint returns a projection and the detail endpoint returns the whole
   record, a list refresh would wipe the detail-only fields — use separate models/stores for shapes
   that genuinely differ.
+
+### Ordering payloads — `versionKey`
+
+Every load applies its payload to the one instance, so by default the **last response to arrive
+wins** — even when it is the oldest. A slow `get` that started before an `update` lands after it and
+puts the old fields back; so does a search index that has not caught up with a write. Name the field
+holding the server's version and an older payload is skipped instead:
+
+```ts
+export const PanelModel = makeModel(PanelSchema, {
+  keys: ["id"],
+  versionKey: "updatedAt",
+});
+
+const panel = PanelModel.instantiate({ id: 1, name: "Renamed", updatedAt: "2026-11-23T10:05:00Z" });
+PanelModel.instantiate({ id: 1, name: "Old name", updatedAt: "2026-11-23T10:00:00Z" });
+panel.name; // "Renamed"
+```
+
+- **Only strictly older payloads are skipped.** An equal version applies, exactly as without
+  `versionKey` — so a field that changes without the version bumping (a background recount, say)
+  still refreshes. A payload or instance with no version always applies.
+- **Every load is guarded**: `instantiate`, and so every store list, `get`, `reload`, `update` and
+  custom actions. A skipped payload leaves the load stamp alone, so `cache` does not count it as a
+  fresh load. `update` and actions still emit `updated` — the mutation happened either way.
+- **`setData` and `updateData` are not guarded.** They apply exactly what they are given, so
+  optimistic edits and their rollback work as before.
+- **Values compare with `<`**: numbers numerically, strings by character. ISO timestamps compare
+  correctly only in one consistent format (e.g. all `toISOString()` output). When they don't, or
+  the version needs computing, override the static `versionOf`, the same way `identityOf` is
+  overridden:
+
+```ts
+class Panel extends PanelModel {
+  static override versionOf(source: { updatedAt: string }) {
+    return Date.parse(source.updatedAt);
+  }
+}
+```
 
 ### Caching a record
 
@@ -981,7 +1021,7 @@ intact, so `total` is readable off the list and the paging fields still decide `
 the whole of what a store had to add: `collection()` maps `R[] → M[]`, and this maps the `items`
 inside whatever shape they arrived in. The "paginated envelopes" caveat is gone with it.
 
-**Deduplication is on by default**, keyed on the model's `identityKey`. That is not a nicety. A
+**Deduplication is on by default**, keyed on the model's `identityOf`. That is not a nicety. A
 record served on two pages — a cursor over a non-unique sort key, an offset while rows are being
 inserted — is _literally the same object_ under identity, so it would sit at two indices in one
 array. A table keys its rows by identity, so that means two rows sharing a React key and one

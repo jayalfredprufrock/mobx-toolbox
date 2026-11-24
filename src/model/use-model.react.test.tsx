@@ -69,6 +69,25 @@ describe("useModel", () => {
     expect(get).toHaveBeenCalledOnce();
   });
 
+  test("two components mounting together share one request", async () => {
+    const { get, StudyModel } = setup();
+    const Probe = observer(() => {
+      const study = useModel(StudyModel, { id: 1, orgId: "acme" });
+      return <span>{study.value?.title ?? "loading"}</span>;
+    });
+
+    const { container } = await mount(
+      <>
+        <Probe />
+        <Probe />
+      </>,
+    );
+    await act(async () => {});
+
+    expect(container.textContent).toBe("study 1 of acmestudy 1 of acme");
+    expect(get).toHaveBeenCalledOnce();
+  });
+
   test("hands back the identity-mapped instance, so edits elsewhere show up", async () => {
     const { StudyModel } = setup();
     let seen!: any;

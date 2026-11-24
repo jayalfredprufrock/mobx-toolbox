@@ -1,6 +1,6 @@
 import { describe, expect, test, vi } from "vite-plus/test";
 import * as T from "typebox";
-import { LOADED_AT, makeModel } from "./make-model";
+import { LOADED_AT, RETAINED, makeModel } from "./make-model";
 
 const StudySchema = T.Object({
   id: T.Number(),
@@ -328,5 +328,409 @@ describe("optimistic", () => {
     expect(api.calls).toBe(3);
 
     logged.mockRestore();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// concurrent gets
+// ---------------------------------------------------------------------------
+
+describe("concurrent get", () => {
+  test("two gets for the same record share one request", async () => {
+    const { api, StudyModel } = makeStudy();
+    const [a, b] = await Promise.all([StudyModel.get({ id: 1 }), StudyModel.get({ id: 1 })]);
+
+    expect(api.calls).toBe(1);
+    expect(a).toBe(b);
+  });
+
+  test("gets for different records do not share", async () => {
+    const { api, StudyModel } = makeStudy();
+    await Promise.all([StudyModel.get({ id: 1 }), StudyModel.get({ id: 2 })]);
+    expect(api.calls).toBe(2);
+  });
+
+  test("a get after the request settles sends a new one", async () => {
+    const { api, StudyModel } = makeStudy();
+    await StudyModel.get({ id: 1 });
+    await StudyModel.get({ id: 1 });
+    expect(api.calls).toBe(2);
+  });
+
+  test("a failed request is shared, then cleared", async () => {
+    const { api, StudyModel } = makeStudy();
+    api.error = new Error("offline");
+    const results = await Promise.allSettled([
+      StudyModel.get({ id: 1 }),
+      StudyModel.get({ id: 1 }),
+    ]);
+
+    expect(results.map((r) => r.status)).toEqual(["rejected", "rejected"]);
+    expect(api.calls).toBe(1);
+
+    api.error = undefined;
+    await expect(StudyModel.get({ id: 1 })).resolves.toBeDefined();
+    expect(api.calls).toBe(2);
+  });
+
+  test("a get with arguments beyond the params never shares", async () => {
+    let calls = 0;
+    const StudyModel = makeModel(StudySchema, {
+      keys: ["id"],
+      get: async ({ id }: { id: number }, _opts?: { tag: string }) => {
+        calls++;
+        return { id, name: "First" };
+      },
+    });
+    // even the very same object: the rule is "no extra arguments", not an identity comparison
+    const opts = { tag: "a" };
+    await Promise.all([StudyModel.get({ id: 1 }, opts), StudyModel.get({ id: 1 }, opts)]);
+    expect(calls).toBe(2);
+  });
+
+  test("optimistic background refreshes share one request", async () => {
+    const { api, StudyModel } = makeStudy({ cache: { for: 1000 }, optimistic: true });
+    await StudyModel.get({ id: 1 });
+
+    vi.setSystemTime(Date.now() + 5000);
+    await Promise.all([StudyModel.get({ id: 1 }), StudyModel.get({ id: 1 })]);
+    expect(api.calls).toBe(2);
+    vi.useRealTimers();
+  });
+
+  test("clearIdentity detaches requests already in flight", async () => {
+    const { api, StudyModel } = makeStudy();
+    const before = StudyModel.get({ id: 1 });
+    StudyModel.clearIdentity();
+    await Promise.all([before, StudyModel.get({ id: 1 })]);
+    expect(api.calls).toBe(2);
+  });
+
+  test("a subclass does not join its parent's request", async () => {
+    const { api, StudyModel } = makeStudy();
+    class Special extends StudyModel {}
+    const [base, special] = await Promise.all([StudyModel.get({ id: 1 }), Special.get({ id: 1 })]);
+
+    expect(api.calls).toBe(2);
+    expect(special).toBeInstanceOf(Special);
+    expect(base).not.toBeInstanceOf(Special);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// shared requests and abort signals
+// ---------------------------------------------------------------------------
+
+describe("shared requests and abort signals", () => {
+  /** A `get` held open until released, recording the signal each request was sent with. */
+  const makeHeld = (config: { cache?: boolean | { for: number }; optimistic?: boolean } = {}) => {
+    const sent: (AbortSignal | undefined)[] = [];
+    let release = () => {};
+    const StudyModel = makeModel(StudySchema, {
+      keys: ["id"],
+      get: ({ id }: { id: number }, options?: { signal: AbortSignal }) => {
+        sent.push(options?.signal);
+        return new Promise<{ id: number; name: string }>((resolve) => {
+          release = () => resolve({ id, name: `Fetched ${sent.length}` });
+        });
+      },
+      ...config,
+    });
+    return { StudyModel, sent, release: () => release() };
+  };
+
+  test("gets passing only a signal share one request, sent with a signal of its own", async () => {
+    const { StudyModel, sent, release } = makeHeld();
+    const a = new AbortController();
+    const b = new AbortController();
+    const first = StudyModel.get({ id: 1 }, { signal: a.signal });
+    const second = StudyModel.get({ id: 1 }, { signal: b.signal });
+    release();
+
+    expect(await first).toBe(await second);
+    expect(sent).toHaveLength(1);
+    expect(sent[0]).not.toBe(a.signal);
+    expect(sent[0]).not.toBe(b.signal);
+  });
+
+  test("one caller aborting rejects only that caller; the request carries on", async () => {
+    const { StudyModel, sent, release } = makeHeld();
+    const a = new AbortController();
+    const first = StudyModel.get({ id: 1 }, { signal: a.signal });
+    const second = StudyModel.get({ id: 1 }, { signal: new AbortController().signal });
+
+    a.abort();
+    await expect(first).rejects.toBe(a.signal.reason);
+    expect(sent[0]!.aborted).toBe(false);
+
+    release();
+    expect((await second).name).toBe("Fetched 1");
+  });
+
+  test("the request aborts once every caller has, and the next get starts afresh", async () => {
+    const { StudyModel, sent } = makeHeld();
+    const a = new AbortController();
+    const b = new AbortController();
+    const first = StudyModel.get({ id: 1 }, { signal: a.signal });
+    const second = StudyModel.get({ id: 1 }, { signal: b.signal });
+
+    a.abort();
+    expect(sent[0]!.aborted).toBe(false);
+    b.abort();
+    expect(sent[0]!.aborted).toBe(true);
+    await Promise.allSettled([first, second]);
+
+    void StudyModel.get({ id: 1 }, { signal: new AbortController().signal });
+    expect(sent).toHaveLength(2);
+  });
+
+  test("a caller with no signal keeps the request alive", async () => {
+    const { StudyModel, sent, release } = makeHeld();
+    const a = new AbortController();
+    const withSignal = StudyModel.get({ id: 1 }, { signal: a.signal });
+    const without = StudyModel.get({ id: 1 });
+
+    a.abort();
+    await expect(withSignal).rejects.toBeDefined();
+    expect(sent[0]!.aborted).toBe(false);
+
+    release();
+    await expect(without).resolves.toBeDefined();
+  });
+
+  test("an already-aborted signal rejects without sending anything", async () => {
+    const { StudyModel, sent } = makeHeld();
+    const a = new AbortController();
+    a.abort();
+    await expect(StudyModel.get({ id: 1 }, { signal: a.signal })).rejects.toBe(a.signal.reason);
+    expect(sent).toHaveLength(0);
+  });
+
+  test("a background refresh is never aborted by the caller that set it off", async () => {
+    const logged = vi.spyOn(console, "error").mockImplementation(() => {});
+    const { StudyModel, sent, release } = makeHeld({ cache: { for: 1000 }, optimistic: true });
+    const first = StudyModel.get({ id: 1 });
+    release();
+    const study = await first;
+
+    vi.setSystemTime(Date.now() + 5000);
+    const a = new AbortController();
+    expect(await StudyModel.get({ id: 1 }, { signal: a.signal })).toBe(study);
+    a.abort(); // the component that asked unmounts
+
+    expect(sent[1]!.aborted).toBe(false);
+    release();
+    await vi.waitFor(() => expect(study.name).toBe("Fetched 2"));
+    expect(logged).not.toHaveBeenCalled();
+
+    vi.useRealTimers();
+    logged.mockRestore();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// retention — `cache` holds records strongly for as long as it promises them
+// ---------------------------------------------------------------------------
+
+/** The keys a model class is holding strongly, read fresh on each call. */
+const heldKeys = (Model: object) => (): (string | number)[] => (Model as any)[RETAINED]();
+
+describe("retention", () => {
+  test("cache: { for } releases the record once the window passes", async () => {
+    vi.useFakeTimers();
+    const { StudyModel } = makeStudy({ cache: { for: 1000 } });
+    await StudyModel.get({ id: 1 });
+    const retention = heldKeys(StudyModel);
+    expect(retention()).toEqual([1]);
+
+    vi.advanceTimersByTime(1000);
+    expect(retention()).toEqual([]);
+    vi.useRealTimers();
+  });
+
+  test("a reload re-arms the window", async () => {
+    vi.useFakeTimers();
+    const { StudyModel } = makeStudy({ cache: { for: 1000 } });
+    const study = await StudyModel.get({ id: 1 });
+    const retention = heldKeys(StudyModel);
+
+    vi.advanceTimersByTime(800);
+    await study.reload();
+    vi.advanceTimersByTime(800);
+    expect(retention()).toEqual([1]);
+
+    vi.advanceTimersByTime(200);
+    expect(retention()).toEqual([]);
+    vi.useRealTimers();
+  });
+
+  test("records expire one by one, on a single timer", async () => {
+    vi.useFakeTimers();
+    const { StudyModel } = makeStudy({ cache: { for: 1000 } });
+    const retention = heldKeys(StudyModel);
+    await StudyModel.get({ id: 1 });
+    vi.advanceTimersByTime(400);
+    await StudyModel.get({ id: 2 });
+    expect(vi.getTimerCount()).toBe(1);
+
+    vi.advanceTimersByTime(600);
+    expect(retention()).toEqual([2]);
+    vi.advanceTimersByTime(400);
+    expect(retention()).toEqual([]);
+    expect(vi.getTimerCount()).toBe(0);
+    vi.useRealTimers();
+  });
+
+  test("cache: true holds until forget", async () => {
+    vi.useFakeTimers();
+    const { StudyModel } = makeStudy({ cache: true });
+    const retention = heldKeys(StudyModel);
+    const study = await StudyModel.get({ id: 1 });
+
+    vi.advanceTimersByTime(1e9);
+    expect(retention()).toEqual([1]);
+    expect(vi.getTimerCount()).toBe(0);
+
+    StudyModel.forget(study);
+    expect(retention()).toEqual([]);
+    vi.useRealTimers();
+  });
+
+  test("clearIdentity releases everything and stops the timer", async () => {
+    vi.useFakeTimers();
+    const { StudyModel } = makeStudy({ cache: { for: 1000 } });
+    const retention = heldKeys(StudyModel);
+    await StudyModel.get({ id: 1 });
+    await StudyModel.get({ id: 2 });
+
+    StudyModel.clearIdentity();
+    expect(retention()).toEqual([]);
+    expect(vi.getTimerCount()).toBe(0);
+    vi.useRealTimers();
+  });
+
+  test("a model without cache holds nothing", async () => {
+    const { StudyModel } = makeStudy();
+    await StudyModel.get({ id: 1 });
+    expect(heldKeys(StudyModel)()).toEqual([]);
+  });
+
+  test("records loaded by a list are held too", async () => {
+    const { StudyModel } = makeStudy({ cache: true });
+    StudyModel.instantiate({ id: 7, name: "From a list" });
+    expect(heldKeys(StudyModel)()).toEqual([7]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// forgotten mid-flight
+// ---------------------------------------------------------------------------
+
+describe("a record forgotten while its fetch is in flight", () => {
+  const makeGated = () => {
+    let release = () => {};
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let calls = 0;
+    const StudyModel = makeModel(StudySchema, {
+      keys: ["id"],
+      get: async ({ id }: { id: number }) => {
+        calls++;
+        if (calls > 1) await gate;
+        return { id, name: "Fetched" };
+      },
+      delete: async () => {},
+    });
+    return { StudyModel, release: () => release(), calls: () => calls };
+  };
+
+  test("a get after a delete does not join the request from before it", async () => {
+    const { StudyModel, release, calls } = makeGated();
+    const study = await StudyModel.get({ id: 1 });
+
+    const late = StudyModel.get({ id: 1 });
+    await study.delete();
+    const fresh = StudyModel.get({ id: 1 });
+    release();
+
+    await Promise.all([late, fresh]);
+    expect(calls()).toBe(3);
+  });
+
+  test("clearIdentity keeps a pre-teardown fetch out of the map", async () => {
+    const { StudyModel, release } = makeGated();
+    await StudyModel.get({ id: 1 });
+
+    const late = StudyModel.get({ id: 1 });
+    StudyModel.clearIdentity();
+    release();
+
+    // the caller still gets its data, detached
+    expect((await late).name).toBe("Fetched");
+    expect(StudyModel.peek({ id: 1 })).toBeUndefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// where the mechanisms meet
+// ---------------------------------------------------------------------------
+
+describe("cache, optimistic, sharing and versionKey together", () => {
+  test("a failed shared background refresh is logged once and clears the stamp", async () => {
+    const logged = vi.spyOn(console, "error").mockImplementation(() => {});
+    const { api, StudyModel } = makeStudy({ cache: { for: 1000 }, optimistic: true });
+    const study = await StudyModel.get({ id: 1 });
+
+    vi.setSystemTime(Date.now() + 5000);
+    api.error = new Error("offline");
+    await Promise.all([StudyModel.get({ id: 1 }), StudyModel.get({ id: 1 })]);
+    await vi.waitFor(() => expect(stampOf(study)).toBeUndefined());
+
+    expect(api.calls).toBe(2);
+    expect(logged).toHaveBeenCalledTimes(1);
+    vi.useRealTimers();
+    logged.mockRestore();
+  });
+
+  test("a get during an optimistic refresh joins it rather than sending another", async () => {
+    const { api, StudyModel } = makeStudy({ cache: { for: 1000 }, optimistic: true });
+    const study = await StudyModel.get({ id: 1 });
+
+    vi.setSystemTime(Date.now() + 5000);
+    api.name = "Second";
+    const stale = StudyModel.get({ id: 1 });
+    // the stamp is still stale, so this one would refresh too — it joins instead
+    const again = StudyModel.get({ id: 1 });
+
+    expect(await stale).toBe(study);
+    expect(await again).toBe(study);
+    await vi.waitFor(() => expect(study.name).toBe("Second"));
+    expect(api.calls).toBe(2);
+    vi.useRealTimers();
+  });
+
+  test("an older payload landing late is neither applied nor re-arms retention", async () => {
+    vi.useFakeTimers();
+    const VersionSchema = T.Object({ id: T.Number(), name: T.String(), version: T.Number() });
+    let respond: (v: { id: number; name: string; version: number }) => void = () => {};
+    const VModel = makeModel(VersionSchema, {
+      keys: ["id"],
+      versionKey: "version",
+      cache: { for: 1000 },
+      get: (_params: { id: number }) => new Promise((resolve) => (respond = resolve)),
+    });
+
+    const slow = VModel.get({ id: 1 });
+    const current = VModel.instantiate({ id: 1, name: "Newer", version: 2 });
+    vi.advanceTimersByTime(600);
+
+    respond({ id: 1, name: "Older", version: 1 });
+    expect(await slow).toBe(current);
+    expect(current.name).toBe("Newer");
+
+    vi.advanceTimersByTime(400);
+    expect(heldKeys(VModel)()).toEqual([]);
+    vi.useRealTimers();
   });
 });

@@ -63,6 +63,12 @@ export const serializeKey = (values: readonly unknown[]): string | number =>
  */
 export const LOADED_AT = Symbol("loadedAt");
 
+/**
+ * Internal: a static method listing the keys `cache` is holding strongly. For tests, which can't
+ * observe retention through garbage collection; not part of the public API.
+ */
+export const RETAINED = Symbol("retained");
+
 /** The registry key a singleton (`keys: []`) maps to. Prefixed so no real id can collide with it. */
 const SINGLETON_KEY = "\u0000singleton";
 
@@ -575,9 +581,78 @@ function createModelClass(
     return !(next < current);
   };
 
+  // `cache` is a policy over the identity map, so a model without identity (or without `get`) has none.
+  const cache = (hasIdentity && config?.get ? (config.cache ?? false) : false) as CacheSpec;
+
+  /**
+   * Whether a record may be answered with as it stands. An absent stamp always means no — that is
+   * how a failed background refresh forces the next `get` back to the API even under `cache: true`.
+   */
+  const isFresh = (model: any): boolean => {
+    const loadedAt = model[LOADED_AT];
+    if (loadedAt === undefined || cache === false) return false;
+    return cache === true || Date.now() - loadedAt < cache.for;
+  };
+
+  /**
+   * What a class tracks beside its identity map, kept per class as `identityMap` is — a subclass
+   * has its own records, so it has its own of these too. `clearIdentity` discards it whole, which
+   * is also how a fetch started before a teardown knows it landed after one.
+   *
+   * - `held`: records `cache` holds strongly. The identity map holds records weakly, so on its own
+   *   it is no cache — a record nothing else holds could be collected at any moment, and `cache`
+   *   would answer or miss depending on when the collector last ran. So a record is held exactly
+   *   while `isFresh` says `cache` may answer with it, on one timer per class.
+   * - `inflight`: `get` requests on their way, which a `get` for the same record joins. Each has
+   *   its own signal, aborted once every caller waiting on it has aborted theirs.
+   */
+  type ClassState = {
+    held: Map<string | number, any>;
+    timer?: ReturnType<typeof setTimeout>;
+    inflight: Map<string | number, Inflight>;
+  };
+  type Inflight = { promise: Promise<any>; controller: AbortController; waiters: number };
+  const states = new WeakMap<object, ClassState>();
+  const stateOf = (Cls: object): ClassState => {
+    let state = states.get(Cls);
+    if (!state) states.set(Cls, (state = { held: new Map(), inflight: new Map() }));
+    return state;
+  };
+
+  /** Drop every held record that has gone stale, then wait for the next to. */
+  const sweep = (state: ClassState): void => {
+    state.timer = undefined;
+    let next = Infinity;
+    for (const [key, model] of state.held) {
+      if (!isFresh(model)) state.held.delete(key);
+      else next = Math.min(next, model[LOADED_AT]);
+    }
+    if (next !== Infinity) schedule(state, next);
+  };
+  const schedule = (state: ClassState, loadedAt: number): void => {
+    const expiresIn = loadedAt + (cache as { for: number }).for - Date.now();
+    state.timer = setTimeout(() => sweep(state), Math.max(0, expiresIn));
+    // Never the reason a server process stays alive.
+    (state.timer as { unref?: () => void }).unref?.();
+  };
+
+  /** Hold a just-loaded record while `cache` may answer with it, if it is the one its class maps. */
+  const retain = (model: any): void => {
+    if (cache === false) return;
+    const Cls = model.constructor;
+    const key = Cls.identityOf(model);
+    if (Cls.identityMap.get(key) !== model) return;
+    const state = stateOf(Cls);
+    state.held.set(key, model);
+    if (cache !== true && state.timer === undefined) schedule(state, model[LOADED_AT]);
+  };
+
   /** Apply a loaded payload unless it is older than what the model holds. */
   const applyLoaded = (model: any, data: any): void => {
-    if (supersedes(model, data)) runInAction(() => model.setData(data));
+    if (supersedes(model, data)) {
+      runInAction(() => model.setData(data));
+      retain(model);
+    }
   };
 
   abstract class BaseModel {
@@ -634,10 +709,15 @@ function createModelClass(
       if (existing) {
         // An older payload leaves the instance — and its load stamp — untouched: nothing newer
         // was loaded.
-        if (supersedes(existing, data)) existing.setData(data);
+        if (supersedes(existing, data)) {
+          existing.setData(data);
+          retain(existing);
+        }
         return existing;
       }
-      return this.identityMap.add(key, new (this as any)(data));
+      const model = this.identityMap.add(key, new (this as any)(data));
+      retain(model);
+      return model;
     }
 
     /**
@@ -653,12 +733,25 @@ function createModelClass(
      * than reviving this one. Called automatically by `delete()`.
      */
     static forget(source: any): boolean {
-      return this.identityMap.delete(this.identityOf(source));
+      const key = this.identityOf(source);
+      const state = stateOf(this);
+      state.held.delete(key);
+      // A `get` after this sends its own request rather than joining one from before.
+      state.inflight.delete(key);
+      return this.identityMap.delete(key);
+    }
+
+    static [RETAINED](): (string | number)[] {
+      return [...stateOf(this).held.keys()];
     }
 
     /** Forget every record. For teardown — a logout, or switching tenant. */
     static clearIdentity(): void {
       this.identityMap.clear();
+      // Releases every held record and request in flight at once; a load started before this sees
+      // a different state when it lands, and stays out of the map.
+      clearTimeout(states.get(this)?.timer);
+      states.delete(this);
     }
 
     /**
@@ -812,36 +905,92 @@ function createModelClass(
 
   if (config?.get) {
     const get = config.get as (...args: any[]) => Promise<any>;
-    const cache = config.cache ?? false;
     const optimistic = config.optimistic ?? false;
-    // Cache is a policy over the identity map, so a model without one can never answer from it.
-    const cacheable = hasIdentity && cache !== false;
-
-    /**
-     * Whether a record may be answered with as it stands. An absent stamp always means no — that is
-     * how a failed background refresh forces the next `get` back to the API even under `cache: true`.
-     */
-    const isFresh = (model: any): boolean => {
-      const loadedAt = model[LOADED_AT];
-      if (loadedAt === undefined) return false;
-      if (cache === true) return true;
-      return Date.now() - loadedAt < (cache as { for: number }).for;
-    };
 
     (BaseModel as any).reload = function (this: any, ...args: any[]) {
       // Without identity there is nothing to map through, and the opt-out was explicit — so hand
       // back a detached instance rather than throwing.
+      if (!hasIdentity) return get(...args).then((data: any) => new this(data));
+
+      const state = stateOf(this);
       return get(...args).then((data: any) =>
-        hasIdentity ? this.instantiate(data) : new this(data),
+        stateOf(this) === state ? this.instantiate(data) : new this(data),
       );
     };
 
+    /**
+     * The signal a `get` brings to a shared request, or `null` when the call can't share: only one
+     * with nothing beyond the params, or just a `{ signal }` bag (what `useModel` passes), asks for
+     * the same response as any other. Anything else may ask for a different one.
+     */
+    const sharingSignal = (rest: any[]): AbortSignal | undefined | null => {
+      if (rest.length === 0) return undefined;
+      const [bag] = rest;
+      const onlySignal =
+        rest.length === 1 &&
+        typeof bag === "object" &&
+        bag !== null &&
+        Object.keys(bag).every((k) => k === "signal");
+      return onlySignal ? bag.signal : null;
+    };
+
+    /**
+     * Join the request in flight for `key`, or start one with `send` and record it. The request
+     * carries its own signal, so no one caller's abort cancels it for the others: a caller whose
+     * signal aborts rejects alone and stops waiting, and the request itself aborts only once no
+     * one is left. A caller with no signal waits until it settles.
+     */
+    const shared = (
+      Cls: object,
+      key: string | number,
+      signal: AbortSignal | undefined,
+      send: (signal: AbortSignal) => Promise<any>,
+    ): Promise<any> => {
+      if (signal?.aborted) return Promise.reject(signal.reason);
+      const { inflight } = stateOf(Cls);
+      let entry = inflight.get(key);
+      if (!entry) {
+        const controller = new AbortController();
+        const started: Inflight = { controller, waiters: 0, promise: send(controller.signal) };
+        started.promise
+          .finally(() => {
+            if (inflight.get(key) === started) inflight.delete(key);
+          })
+          .catch(() => {}); // the waiters handle the outcome; this branch only tidies up
+        inflight.set(key, (entry = started));
+      }
+      entry.waiters++;
+      if (!signal) return entry.promise;
+
+      const joined = entry;
+      return new Promise((resolve, reject) => {
+        const leave = () => {
+          reject(signal.reason);
+          if (--joined.waiters > 0) return;
+          joined.controller.abort();
+          if (inflight.get(key) === joined) inflight.delete(key);
+        };
+        signal.addEventListener("abort", leave, { once: true });
+        joined.promise
+          .then(resolve, reject)
+          .finally(() => signal.removeEventListener("abort", leave));
+      });
+    };
+
     (BaseModel as any).get = function (this: any, ...args: any[]) {
-      if (cacheable) {
-        // A keyed model is called as `get(params, ...rest)`; a singleton has no params, so every
-        // argument is rest. `identityOf` ignores its source for a singleton either way.
-        const rest = keys.length === 0 ? args : args.slice(1);
-        const existing = this.peek(args[0]);
+      if (!hasIdentity) return this.reload(...args);
+
+      // A keyed model is called as `get(params, ...rest)`; a singleton has no params, so every
+      // argument is rest. `identityOf` ignores its source for a singleton either way.
+      const params = keys.length === 0 ? [] : [args[0]];
+      const rest = args.slice(params.length);
+      const key = this.identityOf(args[0]);
+      const signal = sharingSignal(rest);
+      // A shared request is sent with its own signal, in the bag the caller used, or none.
+      const restWith = (own: AbortSignal) => (rest.length > 0 ? [{ signal: own }] : []);
+
+      if (cache !== false) {
+        const existing = this.identityMap.get(key);
 
         if (existing) {
           if (isFresh(existing)) return Promise.resolve(existing);
@@ -850,16 +999,23 @@ function createModelClass(
             // Answer now, refresh behind. A failure has nowhere to surface — this promise has
             // already resolved — so it clears the stamp instead, which sends the next `get` to the
             // API where the error can be reported normally.
-            void existing.reload(...rest).catch((cause: unknown) => {
-              console.error(cause);
-              existing[LOADED_AT] = undefined;
-            });
+            const refresh = (rest: any[]) =>
+              existing.reload(...rest).catch((cause: unknown) => {
+                console.error(cause);
+                existing[LOADED_AT] = undefined;
+              });
+            // Joined with no signal: nobody waits on a background refresh, so no caller's abort
+            // (an unmount, say) may cancel it. The handler is part of the shared request, so a
+            // refresh several `get`s joined is logged once.
+            if (signal === null) void refresh(rest);
+            else void shared(this, key, undefined, (own) => refresh(restWith(own)));
             return Promise.resolve(existing);
           }
         }
       }
 
-      return this.reload(...args);
+      if (signal === null) return this.reload(...args);
+      return shared(this, key, signal, (own) => this.reload(...params, ...restWith(own)));
     };
   }
 

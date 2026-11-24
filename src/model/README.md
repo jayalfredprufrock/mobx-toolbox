@@ -272,7 +272,7 @@ export const StudyModel = makeModel(StudySchema, {
 | `cache`           | `Model.get(params)`                       |
 | ----------------- | ----------------------------------------- |
 | `false` (default) | always calls the API                      |
-| `true`            | reuses a loaded record indefinitely       |
+| `true`            | reuses a loaded record until `forget`     |
 | `{ for: ms }`     | reuses a record loaded within that window |
 
 There is no second store of records and nothing to invalidate: the record `get` hands back is the
@@ -294,6 +294,27 @@ StudyModel.reload({ id }); // always calls the API
 is the one to use during render, or to decide whether a fetch is needed at all. `reload` is the
 static mirror of `instance.reload()` — same endpoint, params passed in rather than read off a record
 you already hold — and it re-freshens the record, so the next `get` is cached again.
+
+**Concurrent `get`s share one request.** A `get` for a record that is already being fetched joins
+that request rather than sending another — two components mounting together cost one call, with or
+without `cache`. A `get` shares when it passes nothing beyond the params, or only a `{ signal }` (as
+`useModel` does); any other argument may ask for a different response, so that call sends its own.
+The shared request carries its own signal: a caller whose signal aborts rejects alone, and the request
+itself aborts only once every caller waiting on it has. `reload` never joins; it always calls the API.
+
+**`cache` keeps what it promises.** The identity map holds records weakly, so on its own a record
+nothing references could be collected and the next `get` would refetch. A model with `cache` therefore
+also holds each loaded record for as long as `cache` would answer with it: for the window under
+`{ for: ms }`, released when it passes, and until `forget` or `clearIdentity` under `true`. That makes
+`cache: true` a real cost — memory grows with every distinct record loaded — so prefer a window unless
+the set of records is small and bounded. Under `optimistic`, a record past its window is answered
+stale only if something else still holds it; otherwise `get` waits for the API.
+
+**A teardown is final.** A `get` still in flight when `clearIdentity` runs resolves its caller's
+promise with a detached instance, but never puts the record back in the identity map — a slow
+response can't carry the previous session's data past a logout. A single `delete()` is lighter: a
+`get` after it always sends its own request, but one already in flight may still re-register the
+record when it lands, as a list fetch in flight can.
 
 #### `optimistic`
 

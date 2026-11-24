@@ -314,7 +314,8 @@ export interface ModelConfig<S extends ModelSchema, K> {
   get?: KeyedFn<S, K, Resource<S>>;
   /**
    * Whether `Model.get` may answer from the identity map instead of the API, and for how long.
-   * Defaults to `false`.
+   * Defaults to `false`. Requires `keys`, not `get`: without `get` it still decides how long
+   * loaded records are held and what `Model.isFresh` reports.
    *
    * Only turn this on when this model's payload is the *same shape* wherever it is loaded from. A
    * list endpoint returning a projection and a detail endpoint returning the whole record are two
@@ -330,6 +331,7 @@ export interface ModelConfig<S extends ModelSchema, K> {
    *
    * The refreshed fields land on the same instance, so anything observing it re-renders when they
    * do. Only meaningful alongside `cache`: with nothing cached there is nothing to answer with.
+   * Requires `get` — building a model with `optimistic` and no `get` throws.
    *
    * A background refresh that fails is logged and clears the record's load stamp, so the *next*
    * `get()` goes to the API and reports its failure through the normal path. Nothing new to catch.
@@ -452,8 +454,9 @@ export interface ModelIdentity<S extends ModelSchema, K, I extends object> {
    * The record for these params if it is already in the identity map, without ever fetching.
    * Synchronous, so it can answer during render.
    *
-   * Presence, not freshness: a record `cache` would consider stale still comes back. Use it to
-   * decide whether a fetch is needed at all, or to reach a record you know is loaded.
+   * Presence, not freshness: a record `cache` would consider stale still comes back. Pair it with
+   * `isFresh` to decide whether a fetch is needed, or use it alone to reach a record you know is
+   * loaded.
    *
    * Typed through the class it is called on, like `instantiate`: `Admin.peek(...)` is an `Admin`.
    */
@@ -461,6 +464,16 @@ export interface ModelIdentity<S extends ModelSchema, K, I extends object> {
     this: This,
     params: KeyShape<S, K>,
   ): InstanceType<This> | undefined;
+  /**
+   * Whether `cache` would answer with this record as it stands — the same predicate `get` uses. No
+   * load stamp (never loaded, or a failed `optimistic` refresh) is never fresh; under `cache: false`
+   * nothing is; under `true` every stamped record is; under `{ for }` one loaded within the window
+   * is. `undefined` is never fresh, so `Model.isFresh(Model.peek(params))` reads in one step.
+   *
+   * Override on a subclass to change what `get` treats as fresh. Retention still follows the
+   * declared `cache`.
+   */
+  isFresh(model: I | undefined): boolean;
   /** The registry key for a payload or model. Override on a subclass to scope identity. */
   identityOf(source: Resource<S> | I): string | number;
   /**
@@ -581,15 +594,23 @@ function createModelClass(
     return !(next < current);
   };
 
-  // `cache` is a policy over the identity map, so a model without identity (or without `get`) has none.
-  const cache = (hasIdentity && config?.get ? (config.cache ?? false) : false) as CacheSpec;
+  // `cache` is a policy over the identity map, so a model without identity has none. It does not
+  // need `get`: records loaded by lists and `instantiate` are retained and judged fresh the same way.
+  const cache = (hasIdentity ? (config?.cache ?? false) : false) as CacheSpec;
+  // A background refresh needs an endpoint to refresh from. Silently ignoring the flag would leave
+  // the author believing stale records refresh themselves.
+  if (config?.optimistic && !config.get) {
+    throw new Error(
+      "[makeModel] `optimistic` refreshes a stale record through `get`, but this model declares no `get`. Remove `optimistic`, or declare `get`.",
+    );
+  }
 
   /**
    * Whether a record may be answered with as it stands. An absent stamp always means no — that is
    * how a failed background refresh forces the next `get` back to the API even under `cache: true`.
    */
   const isFresh = (model: any): boolean => {
-    const loadedAt = model[LOADED_AT];
+    const loadedAt = model?.[LOADED_AT];
     if (loadedAt === undefined || cache === false) return false;
     return cache === true || Date.now() - loadedAt < cache.for;
   };
@@ -726,6 +747,15 @@ function createModelClass(
      */
     static peek(params?: any): any {
       return this.identityMap.get(this.identityOf(params));
+    }
+
+    /**
+     * Whether `cache` would answer with this record as it stands — the predicate `get` uses.
+     * `undefined` (a `peek` miss) is never fresh. Override on a subclass to change what `get`
+     * treats as fresh; retention still follows the declared `cache`.
+     */
+    static isFresh(model: any): boolean {
+      return isFresh(model);
     }
 
     /**
@@ -993,7 +1023,7 @@ function createModelClass(
         const existing = this.identityMap.get(key);
 
         if (existing) {
-          if (isFresh(existing)) return Promise.resolve(existing);
+          if (this.isFresh(existing)) return Promise.resolve(existing);
 
           if (optimistic) {
             // Answer now, refresh behind. A failure has nowhere to surface — this promise has

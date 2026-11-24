@@ -734,3 +734,106 @@ describe("cache, optimistic, sharing and versionKey together", () => {
     vi.useRealTimers();
   });
 });
+
+// ---------------------------------------------------------------------------
+// Model.isFresh — the predicate `get` uses, public
+// ---------------------------------------------------------------------------
+
+describe("Model.isFresh", () => {
+  test("cache: false — never fresh", async () => {
+    const { StudyModel } = makeStudy();
+    const study = await StudyModel.get({ id: 1 });
+    expect(StudyModel.isFresh(study)).toBe(false);
+  });
+
+  test("cache: true — fresh while stamped", async () => {
+    const { StudyModel } = makeStudy({ cache: true });
+    const study = await StudyModel.get({ id: 1 });
+    expect(StudyModel.isFresh(study)).toBe(true);
+    setStamp(study, undefined);
+    expect(StudyModel.isFresh(study)).toBe(false);
+  });
+
+  test("cache: { for } — fresh within the window only", async () => {
+    vi.useFakeTimers();
+    const { StudyModel } = makeStudy({ cache: { for: 1000 } });
+    const study = await StudyModel.get({ id: 1 });
+    vi.advanceTimersByTime(999);
+    expect(StudyModel.isFresh(study)).toBe(true);
+    vi.advanceTimersByTime(1);
+    expect(StudyModel.isFresh(study)).toBe(false);
+    vi.useRealTimers();
+  });
+
+  test("a peek miss is not fresh", () => {
+    const { StudyModel } = makeStudy({ cache: true });
+    expect(StudyModel.isFresh(StudyModel.peek({ id: 1 }))).toBe(false);
+  });
+
+  test("goes false after a failed optimistic refresh", async () => {
+    vi.useFakeTimers();
+    const errors = vi.spyOn(console, "error").mockImplementation(() => {});
+    const { api, StudyModel } = makeStudy({ cache: { for: 1000 }, optimistic: true });
+    const study = await StudyModel.get({ id: 1 });
+    vi.advanceTimersByTime(1000);
+    api.error = new Error("down");
+    await StudyModel.get({ id: 1 });
+    await vi.waitFor(() => expect(errors).toHaveBeenCalled());
+    expect(stampOf(study)).toBeUndefined();
+    expect(StudyModel.isFresh(study)).toBe(false);
+    errors.mockRestore();
+    vi.useRealTimers();
+  });
+
+  test("a subclass override is what get consults", async () => {
+    const { api, StudyModel } = makeStudy({ cache: true });
+    class Study extends StudyModel {
+      static override isFresh() {
+        return false;
+      }
+    }
+    await Study.get({ id: 1 });
+    await Study.get({ id: 1 });
+    expect(api.calls).toBe(2);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// cache without get
+// ---------------------------------------------------------------------------
+
+describe("cache without get", () => {
+  const makeBlock = (cache: boolean | { for: number }) =>
+    makeModel(StudySchema, { keys: ["id"], cache });
+
+  test("instantiated records are retained for the window and judged fresh", () => {
+    vi.useFakeTimers();
+    const Block = makeBlock({ for: 1000 });
+    const retention = heldKeys(Block);
+    const block = Block.instantiate({ id: 1, name: "A" });
+    expect(retention()).toEqual([1]);
+    expect(Block.isFresh(block)).toBe(true);
+
+    vi.advanceTimersByTime(1000);
+    expect(retention()).toEqual([]);
+    expect(Block.isFresh(block)).toBe(false);
+    vi.useRealTimers();
+  });
+
+  test("forget and clearIdentity drop held records", () => {
+    const Block = makeBlock(true);
+    const retention = heldKeys(Block);
+    const a = Block.instantiate({ id: 1, name: "A" });
+    Block.instantiate({ id: 2, name: "B" });
+    Block.forget(a);
+    expect(retention()).toEqual([2]);
+    Block.clearIdentity();
+    expect(retention()).toEqual([]);
+  });
+
+  test("optimistic without get throws", () => {
+    expect(() => makeModel(StudySchema, { keys: ["id"], cache: true, optimistic: true })).toThrow(
+      /optimistic/,
+    );
+  });
+});

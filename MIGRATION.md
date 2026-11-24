@@ -677,6 +677,12 @@ the record. If you have code compensating for the old single-store behaviour, it
 because identity means they hold the same object. If a list's _membership_ depends on a field that
 `update` can change (a status, an owner), opt in: `invalidateOn: ["created", "updated"]`.
 
+⚠️ **`cache` no longer needs `get`** (1.16). A model that declared `cache` with `keys` but no `get`
+used to ignore it; now its loaded records are held strongly for the window (or, under `true`, until
+`forget` / `clearIdentity`) and `Model.isFresh` reports by it. Check any such model — `cache: true`
+there now grows memory with every distinct record. `optimistic` without `get` now throws when the
+model is built. Code reading `LOADED_AT` to judge freshness should call `Model.isFresh(model)`.
+
 #### Collections
 
 Lists are named by you and declared in one place. Which place depends only on whether the store needs

@@ -280,18 +280,25 @@ same instance every list, loader and other `get` holds, so a cache hit and a fre
 indistinguishable to everything downstream.
 
 `cache` only ever applies to a model that declared `keys`. Without identity there is nothing to reuse,
-and the setting is ignored.
+and the setting is ignored. It does **not** need `get`: a model loaded only through lists or
+`instantiate` can declare `cache` too, and its records are retained and judged fresh by the same
+rules. `get`, `reload` and `optimistic` still need `get` — declaring `optimistic` without it throws.
 
 **Three ways to reach a record**, so nothing needs a per-call cache flag:
 
 ```ts
 StudyModel.peek({ id }); // sync — the loaded record or undefined, never fetches
+StudyModel.isFresh(StudyModel.peek({ id })); // sync — would `get` answer with it as it stands?
 StudyModel.get({ id }); // honors `cache`
 StudyModel.reload({ id }); // always calls the API
 ```
 
 `peek` reports _presence, not freshness_: a record `cache` would consider stale still comes back. It
-is the one to use during render, or to decide whether a fetch is needed at all. `reload` is the
+is the one to use during render. For freshness, ask `isFresh` — the exact predicate `get` uses: no
+load stamp (never loaded, or a failed `optimistic` refresh) is never fresh, `cache: false` never,
+`true` always, `{ for }` within the window. It takes `undefined`, so a batch loader outside `get` can
+skip records with `Model.isFresh(Model.peek(params))`. A subclass may override it to change what
+`get` treats as fresh; retention still follows the declared `cache`. `reload` is the
 static mirror of `instance.reload()` — same endpoint, params passed in rather than read off a record
 you already hold — and it re-freshens the record, so the next `get` is cached again.
 
